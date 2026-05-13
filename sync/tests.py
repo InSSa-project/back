@@ -17,3 +17,12 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.count(), 3)
         self.assertEqual(ScheduleEvent.objects.count(), 3)
 
+    def test_preflight_request_allows_local_frontend_origin(self):
+        response = self.client.options(
+            reverse('sync-crawl-run'),
+            HTTP_ORIGIN='http://localhost:5173',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Access-Control-Allow-Origin'], 'http://localhost:5173')
+        self.assertIn('POST', response['Access-Control-Allow-Methods'])
