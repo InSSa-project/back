@@ -1,0 +1,8 @@
+{% extends 'core/base.html' %}
+{% block content %}
+<h1>{{ item.title }}</h1>
+<p><strong>URL:</strong> <a href="{{ item.source_url }}" target="_blank">{{ item.source_url }}</a></p>
+<p>{{ item.content }}</p>
+<p><small>저장일: {{ item.created_at }}</small></p>
+<a href="{% url 'crawl_data_list' %}">목록으로 돌아가기</a>
+{% endblock %}

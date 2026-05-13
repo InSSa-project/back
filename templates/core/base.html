@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>크롤링 서비스</title>
+</head>
+<body>
+    <header>
+        <nav>
+            <a href="{% url 'index' %}">홈</a> |
+            {% if user.is_authenticated %}
+                <a href="{% url 'crawl_data_list' %}">크롤링 데이터</a> |
+                <a href="{% url 'logout' %}">로그아웃</a>
+            {% else %}
+                <a href="{% url 'login' %}">로그인</a> |
+                <a href="{% url 'signup' %}">회원가입</a>
+            {% endif %}
+        </nav>
+    </header>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
