@@ -1,4 +1,4 @@
-# Python 3.14 이상에서 테스트됨
 Django>=4.2,<5.0
+djangorestframework>=3.14.0
 requests>=2.31.0
 beautifulsoup4>=4.12.2

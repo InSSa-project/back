@@ -1,13 +1,12 @@
-from django.urls import path
-from . import views
+from django.urls import include, path
 
 urlpatterns = [
-    path('', views.index, name='index'),
-    path('signup/', views.signup, name='signup'),
-    path('login/', views.login_view, name='login'),
-    path('logout/', views.logout_view, name='logout'),
-    path('data/', views.crawl_data_list, name='crawl_data_list'),
-    path('data/<int:pk>/', views.crawl_data_detail, name='crawl_data_detail'),
-    path('api/data/', views.api_crawl_data, name='api_crawl_data'),
-    path('api/user/', views.api_user_info, name='api_user_info'),
+    path('api/v1/users/', include('apps.users.urls')),
+    path('api/v1/calendar/', include('apps.calendar.urls')),
+    path('api/v1/ai/', include('apps.ai.urls')),
+    path('api/v1/ssafy/', include('apps.notices.urls')),
+    path('api/v1/ocr/', include('apps.ocr.urls')),
+    path('api/v1/notifications/', include('apps.notifications.urls')),
+    path('api/v1/risk/', include('apps.risk.urls')),
+    path('', include('common.urls')),
 ]

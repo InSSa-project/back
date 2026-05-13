@@ -14,7 +14,15 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'core',
+    'rest_framework',
+    'apps.users',
+    'apps.calendar',
+    'apps.ai',
+    'apps.notices',
+    'apps.ocr',
+    'apps.notifications',
+    'apps.risk',
+    'common',
 ]
 
 MIDDLEWARE = [
@@ -79,3 +87,4 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+AUTH_USER_MODEL = 'users.User'
