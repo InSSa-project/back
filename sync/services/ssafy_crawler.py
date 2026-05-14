@@ -1,7 +1,8 @@
 import json
 import os
+import re
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from django.conf import settings
 import requests
@@ -145,6 +146,8 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor):
     soup = BeautifulSoup(page.content(), 'html.parser')
     links = link_extractor(soup, list_url)
     if not links:
+        if source_type == 'academic_rule':
+            return [_parse_detail_soup(soup, list_url, source_type=source_type)]
         raise SsafyCrawlerError(f'No {source_type} detail links were found: {list_url}')
     return [fetch_authenticated_detail(page, detail_url, source_type=source_type) for detail_url in links]
 
@@ -213,12 +216,19 @@ def _extract_links_by_keywords(soup, base_url, keywords):
     seen = set()
     for anchor in soup.select('a[href]'):
         href = anchor.get('href', '').strip()
+        onclick = anchor.get('onclick', '').strip()
         text = _clean_text(anchor.get_text(' ', strip=True))
-        if not href or href.startswith(('javascript:', '#', 'mailto:')):
+        onclick_detail_url = _extract_detail_url_from_onclick(onclick, base_url)
+        if onclick_detail_url:
+            absolute_url = onclick_detail_url
+        else:
+            if not href or href.startswith(('javascript:', '#', 'mailto:')):
+                continue
+            if not _looks_like_link(href, text, keywords):
+                continue
+            absolute_url = urljoin(base_url, href)
+        if _is_same_or_list_page_url(absolute_url, base_url):
             continue
-        if not _looks_like_link(href, text, keywords):
-            continue
-        absolute_url = urljoin(base_url, href)
         if absolute_url in seen:
             continue
         seen.add(absolute_url)
@@ -229,6 +239,29 @@ def _extract_links_by_keywords(soup, base_url, keywords):
 def _looks_like_link(href, text, keywords):
     target = f'{href} {text}'.lower()
     return any(keyword in target for keyword in keywords)
+
+
+def _extract_detail_url_from_onclick(onclick, base_url):
+    match = re.search(r"fnDetail\(['\"]?(?P<id>[^'\",)]+)['\"]?", onclick or '')
+    if not match:
+        return ''
+
+    parsed_base_url = urlparse(base_url)
+    detail_path = parsed_base_url.path.replace('/list.do', '/detail.do')
+    if detail_path == parsed_base_url.path:
+        return ''
+    detail_url = urljoin(base_url, detail_path)
+    return f'{detail_url}?brdItmSeq={quote(match.group("id"))}'
+
+
+def _is_same_or_list_page_url(url, base_url):
+    parsed_url = urlparse(url)
+    parsed_base_url = urlparse(base_url)
+    if parsed_url._replace(fragment='') == parsed_base_url._replace(fragment=''):
+        return True
+
+    path_name = parsed_url.path.rstrip('/').split('/')[-1].lower()
+    return path_name in {'list.do', 'list', 'index.do', 'index'}
 
 
 def _guess_notice_id(url):
