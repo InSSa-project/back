@@ -6,14 +6,21 @@ from django.utils import timezone
 
 
 DATE_PATTERN = re.compile(
-    r'(?<![\d:])(?:(?P<year>\d{4})[.\-/년]\s*)?(?P<month>\d{1,2})[.\-/월]\s*(?P<day>\d{1,2})일?(?![\d:])'
+    r'(?<![\d:])'
+    r'(?:(?P<year>\d{4})\s*(?:[.\-/]|년|\?+)\s*)?'
+    r'(?P<month>\d{1,2})\s*(?:[.\-/]|월|\?+)\s*'
+    r'(?P<day>\d{1,2})\s*(?:일|\?+)?'
+    r'(?![\d:])'
 )
 TIME_RANGE_PATTERN = re.compile(
-    r'(?<![\d:])(?P<start_hour>\d{1,2})(?::(?P<start_minute>\d{2}))?\s*'
+    r'(?<!\d)'
+    r'(?P<start_hour>\d{1,2})(?::(?P<start_minute>\d{2}))?\s*'
     r'(?:~|-|부터)\s*'
-    r'(?P<end_hour>\d{1,2})(?::(?P<end_minute>\d{2}))?(?![\d:])'
+    r'(?P<end_hour>\d{1,2})(?::(?P<end_minute>\d{2}))?'
+    r'(?!\d)'
 )
-SINGLE_TIME_PATTERN = re.compile(r'(?<![\d:])(?P<hour>\d{1,2}):(?P<minute>\d{2})(?![\d:])')
+SINGLE_TIME_PATTERN = re.compile(r'(?<!\d)(?P<hour>\d{1,2}):(?P<minute>\d{2})(?:\s*까지)?(?!\d)')
+EVENT_KEYWORDS = ['제출', '마감', '평가', '시험', '테스트', '특강', '프로젝트', '멘토링', '발표', '설명회']
 
 
 @dataclass
@@ -35,17 +42,21 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정'):
         if not date_match:
             continue
 
-        year = int(date_match.group('year') or current_year)
-        month = int(date_match.group('month'))
-        day = int(date_match.group('day'))
-        event_date = date(year, month, day)
+        try:
+            year = int(date_match.group('year') or current_year)
+            month = int(date_match.group('month'))
+            day = int(date_match.group('day'))
+            event_date = date(year, month, day)
+        except ValueError:
+            continue
+
         start_at, end_at, is_all_day = _parse_datetimes(line[date_match.end():], event_date)
         title = _parse_title(line, default_title)
 
         schedules.append(
             ParsedSchedule(
                 title=title,
-                description='SSAFY 공지에서 추출된 일정',
+                description='SSAFY 공지에서 추출한 일정',
                 start_at=start_at,
                 end_at=end_at,
                 is_all_day=is_all_day,
@@ -57,7 +68,14 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정'):
 
 
 def _candidate_lines(raw_text):
-    return [line.strip(' -\t') for line in raw_text.splitlines() if line.strip()]
+    lines = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip(' -\t')
+        if not line:
+            continue
+        if DATE_PATTERN.search(line) or any(keyword in line for keyword in EVENT_KEYWORDS):
+            lines.append(line)
+    return lines
 
 
 def _parse_datetimes(line, event_date):
@@ -92,7 +110,7 @@ def _parse_title(line, default_title):
     cleaned = re.sub(DATE_PATTERN, '', line)
     cleaned = re.sub(TIME_RANGE_PATTERN, '', cleaned)
     cleaned = re.sub(SINGLE_TIME_PATTERN, '', cleaned)
-    cleaned = cleaned.strip(' :-|[]()')
+    cleaned = cleaned.strip(' :-|[]()~까지')
     return cleaned or default_title
 
 
@@ -101,8 +119,8 @@ def _parse_event_type(line):
         return 'exam'
     if any(keyword in line for keyword in ['제출', '마감', '과제']):
         return 'assignment'
-    if any(keyword in line for keyword in ['프로젝트']):
+    if '프로젝트' in line:
         return 'project'
-    if any(keyword in line for keyword in ['특강', '세미나', '멘토링']):
+    if any(keyword in line for keyword in ['특강', '강의', '멘토링']):
         return 'lecture'
     return 'notice'

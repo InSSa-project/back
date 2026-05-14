@@ -22,6 +22,11 @@ def run_crawl(request):
             'raw_count': job_log.raw_count,
             'event_count': job_log.event_count,
             'failed_count': job_log.failed_count,
+            'skipped_count': job_log.skipped_count,
+            'notice_count': job_log.notice_count,
+            'academic_rule_count': job_log.academic_rule_count,
+            'no_schedule_count': job_log.no_schedule_count,
+            'crawler_mode': job_log.crawler_mode,
         }
     )
 
