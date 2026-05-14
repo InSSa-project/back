@@ -5,10 +5,12 @@ from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
+from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.schedule_parser import parse_schedule_candidates
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
+    extract_image_urls_from_html,
     get_crawler_mode,
     load_notices_by_mode,
 )
@@ -27,6 +29,9 @@ class ImportSummary:
     notice_count: int = 0
     academic_rule_count: int = 0
     no_schedule_count: int = 0
+    image_count: int = 0
+    ocr_processed_count: int = 0
+    ocr_failed_count: int = 0
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
 
@@ -55,6 +60,9 @@ def run_notice_import(mode=None):
         job_log.notice_count = summary.notice_count
         job_log.academic_rule_count = summary.academic_rule_count
         job_log.no_schedule_count = summary.no_schedule_count
+        job_log.image_count = summary.image_count
+        job_log.ocr_processed_count = summary.ocr_processed_count
+        job_log.ocr_failed_count = summary.ocr_failed_count
         job_log.finished_at = timezone.now()
         job_log.save()
         return job_log
@@ -69,10 +77,12 @@ def _import_raw_items(raw_items):
     summary = ImportSummary()
 
     for item in raw_items:
-        raw_data, created = _create_raw_data_if_new(item)
-        if not created:
+        if _find_existing_raw_data(item):
             summary.skipped_count += 1
             continue
+
+        item = _apply_ocr_pipeline(item, summary)
+        raw_data = _create_raw_data(item)
 
         summary.raw_count += 1
         _increment_source_count(summary, raw_data.source_type)
@@ -132,6 +142,9 @@ def _build_success_message(selected_mode, summary):
         f'notice_count={summary.notice_count}, '
         f'academic_rule_count={summary.academic_rule_count}, '
         f'no_schedule_candidates={summary.no_schedule_count}, '
+        f'image_count={summary.image_count}, '
+        f'ocr_processed_count={summary.ocr_processed_count}, '
+        f'ocr_failed_count={summary.ocr_failed_count}, '
         f'failed_count={summary.failed_count}, '
         f'skipped_count={summary.skipped_count}'
     )
@@ -145,11 +158,56 @@ def _build_success_message(selected_mode, summary):
     return message
 
 
-def _create_raw_data_if_new(item):
-    existing = _find_existing_raw_data(item)
-    if existing:
-        return existing, False
+def _apply_ocr_pipeline(item, summary):
+    prepared = dict(item)
+    metadata = dict(prepared.get('metadata_json') or {})
+    image_urls = metadata.get('image_urls')
+    if image_urls is None:
+        image_urls = extract_image_urls_from_html(prepared.get('raw_html', ''), prepared.get('source_url', ''))
+    metadata['image_urls'] = image_urls
+    summary.image_count += len(image_urls)
 
+    ocr_result = _safe_extract_ocr_text(image_urls)
+    if image_urls:
+        summary.ocr_processed_count += 1
+    if ocr_result['ocr_status'] == 'failed':
+        summary.ocr_failed_count += 1
+
+    ocr_text = ocr_result.get('ocr_text', '')
+    metadata.update(
+        {
+            'ocr_provider': ocr_result.get('ocr_provider', 'mock'),
+            'ocr_status': ocr_result.get('ocr_status', 'skipped'),
+            'ocr_error': ocr_result.get('ocr_error', ''),
+            'ocr_text_length': len(ocr_text),
+        }
+    )
+    prepared['metadata_json'] = metadata
+    prepared['raw_text'] = _merge_ocr_text(prepared.get('raw_text', ''), ocr_text)
+    return prepared
+
+
+def _safe_extract_ocr_text(image_urls):
+    try:
+        return extract_text_from_image_urls(image_urls)
+    except Exception as exc:
+        return {
+            'ocr_text': '',
+            'ocr_provider': 'mock',
+            'ocr_status': 'failed',
+            'ocr_error': str(exc),
+        }
+
+
+def _merge_ocr_text(raw_text, ocr_text):
+    if not ocr_text:
+        return raw_text
+    if raw_text:
+        return f'{raw_text}\n\n[OCR_TEXT]\n{ocr_text}'
+    return f'[OCR_TEXT]\n{ocr_text}'
+
+
+def _create_raw_data(item):
     return RawSsafyData.objects.create(
         source_type=item.get('source_type', 'notice'),
         source_url=item.get('source_url', ''),
@@ -159,7 +217,7 @@ def _create_raw_data_if_new(item):
         status=RawSsafyData.STATUS_COLLECTED,
         metadata_json=item.get('metadata_json', {}),
         collected_at=timezone.now(),
-    ), True
+    )
 
 
 def _find_existing_raw_data(item):
@@ -191,6 +249,9 @@ def _mark_job_failed(job_log, message):
     job_log.notice_count = 0
     job_log.academic_rule_count = 0
     job_log.no_schedule_count = 0
+    job_log.image_count = 0
+    job_log.ocr_processed_count = 0
+    job_log.ocr_failed_count = 0
     job_log.finished_at = timezone.now()
     job_log.save()
     return job_log

@@ -26,6 +26,9 @@ def run_crawl(request):
             'notice_count': job_log.notice_count,
             'academic_rule_count': job_log.academic_rule_count,
             'no_schedule_count': job_log.no_schedule_count,
+            'image_count': job_log.image_count,
+            'ocr_processed_count': job_log.ocr_processed_count,
+            'ocr_failed_count': job_log.ocr_failed_count,
             'crawler_mode': job_log.crawler_mode,
         }
     )

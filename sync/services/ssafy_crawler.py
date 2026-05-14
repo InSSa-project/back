@@ -177,6 +177,7 @@ def _parse_detail_soup(soup, detail_url, source_type):
 
     raw_text = _clean_text(content_node.get_text('\n', strip=True))
     raw_html = str(content_node)
+    image_urls = extract_image_urls_from_html(raw_html, detail_url)
     notice_id = _guess_notice_id(detail_url)
     published_at = _extract_published_at(soup)
 
@@ -190,6 +191,8 @@ def _parse_detail_soup(soup, detail_url, source_type):
             'notice_id': notice_id,
             'collected_from': MODE_SSAFY_NOTICE,
             'published_at': published_at,
+            'image_urls': image_urls,
+            'ocr_status': 'pending' if image_urls else 'skipped',
         },
     }
 
@@ -209,6 +212,25 @@ def _extract_notice_links(soup, base_url):
 
 def _extract_academic_rule_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['rule', 'policy', 'academic', 'board', 'bbs', '\uaddc\uc815', '\ud559\uc0ac'])
+
+
+def extract_image_urls_from_html(raw_html, source_url):
+    if not raw_html:
+        return []
+
+    soup = BeautifulSoup(raw_html, 'html.parser')
+    image_urls = []
+    seen = set()
+    for image in soup.select('img[src]'):
+        src = image.get('src', '').strip()
+        if not src or src.startswith(('data:', 'javascript:', 'mailto:', '#')):
+            continue
+        absolute_url = urljoin(source_url, src)
+        if absolute_url in seen:
+            continue
+        seen.add(absolute_url)
+        image_urls.append(absolute_url)
+    return image_urls
 
 
 def _extract_links_by_keywords(soup, base_url, keywords):

@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 
 from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
+    extract_image_urls_from_html,
     _extract_notice_links,
     _login_ssafy,
     _collect_authenticated_list,
@@ -256,6 +257,88 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['source_type'], 'academic_rule')
         self.assertEqual(items[0]['source_url'], 'https://edu.ssafy.com/edu/board/rule/list.do')
+
+    def test_extract_image_urls_from_html_normalizes_and_deduplicates_urls(self):
+        html = '''
+        <article>
+            <img src="/upload/notice/a.png">
+            <img src="images/b.png">
+            <img src="https://cdn.example.com/c.png">
+            <img src="/upload/notice/a.png">
+            <img src="data:image/png;base64,AAAA">
+        </article>
+        '''
+
+        image_urls = extract_image_urls_from_html(
+            html,
+            'https://edu.ssafy.com/edu/board/docReq/detail.do?brdItmSeq=1',
+        )
+
+        self.assertEqual(
+            image_urls,
+            [
+                'https://edu.ssafy.com/upload/notice/a.png',
+                'https://edu.ssafy.com/edu/board/docReq/images/b.png',
+                'https://cdn.example.com/c.png',
+            ],
+        )
+
+    def test_ocr_mock_result_is_saved_to_metadata(self):
+        item = _notice_item('https://example.com/notices/ocr-metadata', 'notice-ocr-metadata')
+        item['raw_html'] = '<main><img src="/notice.png">SSAFY ?쇱젙 2026.05.20</main>'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(job_log.image_count, 1)
+        self.assertEqual(job_log.ocr_processed_count, 1)
+        self.assertEqual(job_log.ocr_failed_count, 0)
+        self.assertEqual(raw_data.metadata_json['image_urls'], ['https://example.com/notice.png'])
+        self.assertEqual(raw_data.metadata_json['ocr_provider'], 'mock')
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'skipped')
+        self.assertEqual(raw_data.metadata_json['ocr_text_length'], 0)
+
+    def test_ocr_failure_does_not_fail_crawl(self):
+        item = _notice_item('https://example.com/notices/ocr-failure', 'notice-ocr-failure')
+        item['raw_html'] = '<main><img src="/notice.png">SSAFY ?쇱젙 2026.05.20</main>'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch('sync.services.import_service.extract_text_from_image_urls', side_effect=RuntimeError('ocr down')):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_SUCCESS)
+        self.assertEqual(job_log.raw_count, 1)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(job_log.failed_count, 0)
+        self.assertEqual(job_log.ocr_failed_count, 1)
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
+        self.assertIn('ocr down', raw_data.metadata_json['ocr_error'])
+
+    def test_ocr_text_is_merged_into_raw_text_before_parsing(self):
+        item = _notice_item('https://example.com/notices/ocr-text', 'notice-ocr-text')
+        item['raw_text'] = 'SSAFY notice without date'
+        item['raw_html'] = '<main><img src="/notice.png">SSAFY notice without date</main>'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch(
+                'sync.services.import_service.extract_text_from_image_urls',
+                return_value={
+                    'ocr_text': 'OCR ?쇱젙 2026.05.20',
+                    'ocr_provider': 'mock',
+                    'ocr_status': 'success',
+                    'ocr_error': '',
+                },
+            ):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertIn('[OCR_TEXT]', raw_data.raw_text)
+        self.assertIn('OCR ?쇱젙 2026.05.20', raw_data.raw_text)
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'success')
+        self.assertEqual(raw_data.metadata_json['ocr_text_length'], len('OCR ?쇱젙 2026.05.20'))
+        self.assertEqual(job_log.event_count, 1)
 
 
 def _notice_item(source_url, notice_id):

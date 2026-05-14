@@ -22,7 +22,9 @@ class Command(BaseCommand):
                 f'event_count={job_log.event_count}, failed_count={job_log.failed_count}, '
                 f'skipped_count={job_log.skipped_count}, notice_count={job_log.notice_count}, '
                 f'academic_rule_count={job_log.academic_rule_count}, '
-                f'no_schedule_count={job_log.no_schedule_count}, crawler_mode={job_log.crawler_mode}'
+                f'no_schedule_count={job_log.no_schedule_count}, image_count={job_log.image_count}, '
+                f'ocr_processed_count={job_log.ocr_processed_count}, '
+                f'ocr_failed_count={job_log.ocr_failed_count}, crawler_mode={job_log.crawler_mode}'
             )
         )
 
