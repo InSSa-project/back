@@ -32,6 +32,7 @@ class ImportSummary:
     image_count: int = 0
     ocr_processed_count: int = 0
     ocr_failed_count: int = 0
+    event_skipped_count: int = 0
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
 
@@ -98,6 +99,11 @@ def _import_raw_items(raw_items):
                 continue
 
             for schedule in parsed_schedules:
+                if _find_existing_schedule_event(schedule, raw_data):
+                    summary.skipped_count += 1
+                    summary.event_skipped_count += 1
+                    continue
+
                 ScheduleEvent.objects.create(
                     raw_data=raw_data,
                     title=schedule.title,
@@ -148,6 +154,8 @@ def _build_success_message(selected_mode, summary):
         f'failed_count={summary.failed_count}, '
         f'skipped_count={summary.skipped_count}'
     )
+    if summary.event_skipped_count:
+        message = f'{message}, event_skipped_count={summary.event_skipped_count}'
     if summary.no_schedule_by_type:
         no_schedule_detail = ','.join(
             f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())
@@ -222,6 +230,23 @@ def _create_raw_data(item):
         metadata_json=item.get('metadata_json', {}),
         collected_at=timezone.now(),
     )
+
+
+def _find_existing_schedule_event(schedule, raw_data):
+    event_filter = {
+        'title': schedule.title,
+        'start_at': schedule.start_at,
+        'end_at': schedule.end_at,
+        'event_type': schedule.event_type,
+        'source_type': raw_data.source_type,
+    }
+
+    if raw_data.pk:
+        existing_for_raw_data = ScheduleEvent.objects.filter(raw_data=raw_data, **event_filter).first()
+        if existing_for_raw_data:
+            return existing_for_raw_data
+
+    return ScheduleEvent.objects.filter(**event_filter).first()
 
 
 def _find_existing_raw_data(item):

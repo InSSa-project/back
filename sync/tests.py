@@ -1,7 +1,9 @@
 import json
 import types
+from io import StringIO
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 
@@ -71,6 +73,18 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.count(), 3)
         self.assertEqual(ScheduleEvent.objects.count(), 3)
 
+    def test_sample_mode_can_run_repeatedly_without_duplicate_schedule_events(self):
+        first_log = run_notice_import(mode='sample')
+        second_log = run_notice_import(mode='sample')
+        third_log = run_notice_import(mode='sample')
+
+        self.assertEqual(first_log.event_count, 3)
+        self.assertEqual(second_log.event_count, 0)
+        self.assertEqual(third_log.event_count, 0)
+        self.assertEqual(second_log.skipped_count, 3)
+        self.assertEqual(third_log.skipped_count, 3)
+        self.assertEqual(ScheduleEvent.objects.count(), 3)
+
     def test_crawler_failure_keeps_existing_events(self):
         run_sample_notice_import()
         original_raw_count = RawSsafyData.objects.count()
@@ -120,6 +134,24 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
+    def test_duplicate_schedule_event_is_skipped_even_when_raw_data_is_new(self):
+        first_item = _notice_item('https://example.com/notices/event-1', 'notice-event-1')
+        second_item = _notice_item('https://example.com/notices/event-2', 'notice-event-2')
+        first_item['title'] = 'Notice A'
+        second_item['title'] = 'Notice B'
+        first_item['raw_text'] = 'Shared schedule 2026.05.20'
+        second_item['raw_text'] = 'Shared schedule 2026.05.20'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[first_item, second_item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 2)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(job_log.skipped_count, 1)
+        self.assertIn('event_skipped_count=1', job_log.message)
+        self.assertEqual(RawSsafyData.objects.count(), 2)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
     def test_existing_data_is_not_deleted_when_duplicate_is_skipped(self):
         existing = RawSsafyData.objects.create(
             source_type='notice',
@@ -148,6 +180,65 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(job_log.skipped_count, 1)
         self.assertEqual(RawSsafyData.objects.count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_raw_data_duplicate_skip_does_not_create_duplicate_schedule_event(self):
+        first_item = _notice_item('https://example.com/notices/raw-duplicate', 'notice-raw-duplicate')
+        second_item = _notice_item('https://example.com/notices/raw-duplicate', 'notice-raw-duplicate-copy')
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[first_item]):
+            first_log = run_notice_import(mode='ssafy_notice')
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[second_item]):
+            second_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(first_log.event_count, 1)
+        self.assertEqual(second_log.event_count, 0)
+        self.assertEqual(second_log.skipped_count, 1)
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_schedule_event_api_handles_existing_duplicate_rows(self):
+        run_sample_notice_import()
+        existing = ScheduleEvent.objects.first()
+        ScheduleEvent.objects.create(
+            raw_data=existing.raw_data,
+            title=existing.title,
+            description=existing.description,
+            start_at=existing.start_at,
+            end_at=existing.end_at,
+            is_all_day=existing.is_all_day,
+            event_type=existing.event_type,
+            source_type=existing.source_type,
+            source_id=existing.source_id,
+        )
+
+        response = self.client.get(reverse('schedule-event-list'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 4)
+
+    def test_dedupe_schedule_events_command_removes_duplicate_rows(self):
+        run_sample_notice_import()
+        existing = ScheduleEvent.objects.first()
+        ScheduleEvent.objects.create(
+            raw_data=existing.raw_data,
+            title=existing.title,
+            description=existing.description,
+            start_at=existing.start_at,
+            end_at=existing.end_at,
+            is_all_day=existing.is_all_day,
+            event_type=existing.event_type,
+            source_type=existing.source_type,
+            source_id=existing.source_id,
+        )
+        dry_run_output = StringIO()
+        run_output = StringIO()
+
+        call_command('dedupe_schedule_events', '--dry-run', stdout=dry_run_output)
+        call_command('dedupe_schedule_events', stdout=run_output)
+
+        self.assertIn('delete_count=1', dry_run_output.getvalue())
+        self.assertIn('deleted_count=1', run_output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.count(), 3)
 
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
@@ -289,8 +380,9 @@ class SampleNoticeImportTests(TestCase):
         item = _notice_item('https://example.com/notices/ocr-metadata', 'notice-ocr-metadata')
         item['raw_html'] = '<main><img src="/notice.png">SSAFY ?쇱젙 2026.05.20</main>'
 
-        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
-            job_log = run_notice_import(mode='ssafy_notice')
+        with patch.dict('os.environ', {'OCR_PROVIDER': 'mock'}):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                job_log = run_notice_import(mode='ssafy_notice')
 
         raw_data = RawSsafyData.objects.get()
         self.assertEqual(job_log.image_count, 1)
