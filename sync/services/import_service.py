@@ -1,3 +1,5 @@
+from dataclasses import dataclass, field
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -16,6 +18,19 @@ SUCCESS_MESSAGE = 'SSAFY notice collection and schedule import completed.'
 CRAWL_FAILED_MESSAGE = 'Failed to collect SSAFY notices.'
 
 
+@dataclass
+class ImportSummary:
+    raw_count: int = 0
+    event_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    notice_count: int = 0
+    academic_rule_count: int = 0
+    no_schedule_count: int = 0
+    no_schedule_by_type: dict = field(default_factory=dict)
+    failed_items: list = field(default_factory=list)
+
+
 def run_sample_notice_import():
     return run_notice_import(mode=MODE_SAMPLE)
 
@@ -29,14 +44,17 @@ def run_notice_import(mode=None):
         selected_mode = get_crawler_mode(mode)
         job_log.crawler_mode = selected_mode
         raw_items = load_notices_by_mode(selected_mode)
-        raw_count, event_count, failed_count, skipped_count = _import_raw_items(raw_items)
+        summary = _import_raw_items(raw_items)
 
         job_log.status = CrawlJobLog.STATUS_SUCCESS
-        job_log.message = f'{SUCCESS_MESSAGE} mode={selected_mode}'
-        job_log.raw_count = raw_count
-        job_log.event_count = event_count
-        job_log.failed_count = failed_count
-        job_log.skipped_count = skipped_count
+        job_log.message = _build_success_message(selected_mode, summary)
+        job_log.raw_count = summary.raw_count
+        job_log.event_count = summary.event_count
+        job_log.failed_count = summary.failed_count
+        job_log.skipped_count = summary.skipped_count
+        job_log.notice_count = summary.notice_count
+        job_log.academic_rule_count = summary.academic_rule_count
+        job_log.no_schedule_count = summary.no_schedule_count
         job_log.finished_at = timezone.now()
         job_log.save()
         return job_log
@@ -48,48 +66,83 @@ def run_notice_import(mode=None):
 
 @transaction.atomic
 def _import_raw_items(raw_items):
-    raw_count = 0
-    event_count = 0
-    failed_count = 0
-    skipped_count = 0
+    summary = ImportSummary()
 
     for item in raw_items:
         raw_data, created = _create_raw_data_if_new(item)
         if not created:
-            skipped_count += 1
+            summary.skipped_count += 1
             continue
 
-        raw_count += 1
-        if raw_data.source_type != 'notice':
+        summary.raw_count += 1
+        _increment_source_count(summary, raw_data.source_type)
+
+        try:
+            if raw_data.source_type != 'notice':
+                _mark_no_schedule(raw_data, summary)
+                continue
+
+            parsed_schedules = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
+            if not parsed_schedules:
+                _mark_no_schedule(raw_data, summary)
+                continue
+
+            for schedule in parsed_schedules:
+                ScheduleEvent.objects.create(
+                    raw_data=raw_data,
+                    title=schedule.title,
+                    start_at=schedule.start_at,
+                    description=schedule.description,
+                    end_at=schedule.end_at,
+                    is_all_day=schedule.is_all_day,
+                    event_type=schedule.event_type,
+                    source_type=raw_data.source_type,
+                    source_id=str(raw_data.pk),
+                )
+                summary.event_count += 1
+
             raw_data.status = RawSsafyData.STATUS_PARSED
             raw_data.save(update_fields=['status'])
-            continue
-
-        parsed_schedules = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
-        if not parsed_schedules:
-            failed_count += 1
+        except Exception as exc:
+            summary.failed_count += 1
             raw_data.status = RawSsafyData.STATUS_FAILED
             raw_data.save(update_fields=['status'])
-            continue
+            summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
 
-        for schedule in parsed_schedules:
-            ScheduleEvent.objects.create(
-                raw_data=raw_data,
-                title=schedule.title,
-                start_at=schedule.start_at,
-                description=schedule.description,
-                end_at=schedule.end_at,
-                is_all_day=schedule.is_all_day,
-                event_type=schedule.event_type,
-                source_type=raw_data.source_type,
-                source_id=str(raw_data.pk),
-            )
-            event_count += 1
+    return summary
 
-        raw_data.status = RawSsafyData.STATUS_PARSED
-        raw_data.save(update_fields=['status'])
 
-    return raw_count, event_count, failed_count, skipped_count
+def _increment_source_count(summary, source_type):
+    if source_type == 'notice':
+        summary.notice_count += 1
+    elif source_type == 'academic_rule':
+        summary.academic_rule_count += 1
+
+
+def _mark_no_schedule(raw_data, summary):
+    summary.no_schedule_count += 1
+    summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
+    raw_data.status = RawSsafyData.STATUS_PARSED
+    raw_data.save(update_fields=['status'])
+
+
+def _build_success_message(selected_mode, summary):
+    message = (
+        f'{SUCCESS_MESSAGE} mode={selected_mode}, '
+        f'notice_count={summary.notice_count}, '
+        f'academic_rule_count={summary.academic_rule_count}, '
+        f'no_schedule_candidates={summary.no_schedule_count}, '
+        f'failed_count={summary.failed_count}, '
+        f'skipped_count={summary.skipped_count}'
+    )
+    if summary.no_schedule_by_type:
+        no_schedule_detail = ','.join(
+            f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())
+        )
+        message = f'{message}, no_schedule_by_type={no_schedule_detail}'
+    if summary.failed_items:
+        message = f'{message}, failed_items={";".join(summary.failed_items[:5])}'
+    return message
 
 
 def _create_raw_data_if_new(item):
@@ -135,6 +188,9 @@ def _mark_job_failed(job_log, message):
     job_log.event_count = 0
     job_log.failed_count = 1
     job_log.skipped_count = 0
+    job_log.notice_count = 0
+    job_log.academic_rule_count = 0
+    job_log.no_schedule_count = 0
     job_log.finished_at = timezone.now()
     job_log.save()
     return job_log
