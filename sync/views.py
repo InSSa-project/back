@@ -22,6 +22,8 @@ def run_crawl(request):
             'raw_count': job_log.raw_count,
             'event_count': job_log.event_count,
             'failed_count': job_log.failed_count,
+            'skipped_count': job_log.skipped_count,
+            'crawler_mode': job_log.crawler_mode,
         }
     )
 
