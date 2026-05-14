@@ -1,0 +1,35 @@
+{
+  "notices": [
+    {
+      "source_type": "notice",
+      "source_url": "https://sample.ssafy.local/notices/2026-05-exam",
+      "title": "5월 월말평가 안내",
+      "raw_text": "월말평가\n2026-05-20 09:00~18:00 월말평가\n평가 장소는 추후 공지됩니다.",
+      "raw_html": "<article><h1>5월 월말평가 안내</h1><p>2026-05-20 09:00~18:00 월말평가</p></article>",
+      "metadata_json": {
+        "sample_id": "notice-2026-05-exam"
+      }
+    },
+    {
+      "source_type": "notice",
+      "source_url": "https://sample.ssafy.local/notices/2026-project-deadline",
+      "title": "프로젝트 제출 마감 안내",
+      "raw_text": "프로젝트 제출 마감\n2026.05.24 23:59 프로젝트 제출 마감\nGit 저장소와 발표자료를 함께 제출해 주세요.",
+      "raw_html": "<article><h1>프로젝트 제출 마감 안내</h1><p>2026.05.24 23:59 프로젝트 제출 마감</p></article>",
+      "metadata_json": {
+        "sample_id": "notice-2026-project-deadline"
+      }
+    },
+    {
+      "source_type": "notice",
+      "source_url": "https://sample.ssafy.local/notices/2026-special-lecture",
+      "title": "취업 특강 일정 안내",
+      "raw_text": "취업 특강 일정\n2026년 5월 28일 14:00-16:00 취업 특강\n온라인 라이브로 진행됩니다.",
+      "raw_html": "<article><h1>취업 특강 일정 안내</h1><p>2026년 5월 28일 14:00-16:00 취업 특강</p></article>",
+      "metadata_json": {
+        "sample_id": "notice-2026-special-lecture"
+      }
+    }
+  ]
+}
+
