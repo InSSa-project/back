@@ -51,6 +51,11 @@ class CrawlJobLog(models.Model):
     raw_count = models.PositiveIntegerField(default=0)
     event_count = models.PositiveIntegerField(default=0)
     failed_count = models.PositiveIntegerField(default=0)
+    skipped_count = models.PositiveIntegerField(default=0)
+    notice_count = models.PositiveIntegerField(default=0)
+    academic_rule_count = models.PositiveIntegerField(default=0)
+    no_schedule_count = models.PositiveIntegerField(default=0)
+    crawler_mode = models.CharField(max_length=50, blank=True)
 
     class Meta:
         ordering = ['-started_at']
