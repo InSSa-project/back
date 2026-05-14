@@ -1,4 +1,5 @@
 import json
+import types
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -7,6 +8,7 @@ from django.urls import reverse
 from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.import_service import run_notice_import, run_sample_notice_import
+from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.schedule_parser import parse_schedule_candidates
 from bs4 import BeautifulSoup
 
@@ -299,6 +301,47 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'skipped')
         self.assertEqual(raw_data.metadata_json['ocr_text_length'], 0)
 
+    def test_mock_provider_keeps_existing_skipped_behavior(self):
+        with patch.dict('os.environ', {'OCR_PROVIDER': 'mock'}):
+            result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_provider'], 'mock')
+        self.assertEqual(result['ocr_status'], 'skipped')
+        self.assertEqual(result['ocr_text'], '')
+
+    def test_google_vision_provider_extracts_text(self):
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': 'C:\\fake\\vision.json',
+            },
+        ):
+            with patch.dict('sys.modules', _google_vision_modules('OCR text 2026.05.20')):
+                with patch('sync.services.ocr_service.requests.get', return_value=_ImageResponse()):
+                    result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_provider'], 'google_vision')
+        self.assertEqual(result['ocr_status'], 'success')
+        self.assertEqual(result['ocr_text'], 'OCR text 2026.05.20')
+
+    def test_google_vision_missing_configuration_fails_without_secret_values(self):
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': '',
+            },
+        ):
+            result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_provider'], 'google_vision')
+        self.assertEqual(result['ocr_status'], 'failed')
+        self.assertIn('credentials are not configured', result['ocr_error'])
+        self.assertNotIn('GOOGLE_APPLICATION_CREDENTIALS=', result['ocr_error'])
+
     def test_ocr_failure_does_not_fail_crawl(self):
         item = _notice_item('https://example.com/notices/ocr-failure', 'notice-ocr-failure')
         item['raw_html'] = '<main><img src="/notice.png">SSAFY ?쇱젙 2026.05.20</main>'
@@ -315,6 +358,30 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(job_log.ocr_failed_count, 1)
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
         self.assertIn('ocr down', raw_data.metadata_json['ocr_error'])
+
+    def test_image_download_failure_does_not_fail_crawl(self):
+        item = _notice_item('https://example.com/notices/image-download-failure', 'notice-image-download-failure')
+        item['raw_text'] = 'SSAFY ?쇱젙 2026.05.20'
+        item['raw_html'] = '<main><img src="/notice.png">SSAFY ?쇱젙 2026.05.20</main>'
+
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': 'C:\\fake\\vision.json',
+            },
+        ):
+            with patch.dict('sys.modules', _google_vision_modules('')):
+                with patch('sync.services.ocr_service.requests.get', side_effect=RuntimeError('download down')):
+                    with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                        job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_SUCCESS)
+        self.assertEqual(job_log.failed_count, 0)
+        self.assertEqual(job_log.ocr_failed_count, 1)
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
 
     def test_ocr_text_is_merged_into_raw_text_before_parsing(self):
         item = _notice_item('https://example.com/notices/ocr-text', 'notice-ocr-text')
@@ -339,6 +406,31 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'success')
         self.assertEqual(raw_data.metadata_json['ocr_text_length'], len('OCR ?쇱젙 2026.05.20'))
         self.assertEqual(job_log.event_count, 1)
+
+    def test_google_vision_ocr_text_can_create_schedule_event(self):
+        item = _notice_item('https://example.com/notices/vision-schedule', 'notice-vision-schedule')
+        item['raw_text'] = 'SSAFY notice without date'
+        item['raw_html'] = '<main><img src="/notice.png">SSAFY notice without date</main>'
+
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': 'C:\\fake\\vision.json',
+            },
+        ):
+            with patch.dict('sys.modules', _google_vision_modules('OCR schedule 2026.05.20')):
+                with patch('sync.services.ocr_service.requests.get', return_value=_ImageResponse()):
+                    with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                        job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(raw_data.metadata_json['ocr_provider'], 'google_vision')
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'success')
+        self.assertIn('[OCR_TEXT]', raw_data.raw_text)
 
 
 def _notice_item(source_url, notice_id):
@@ -400,3 +492,37 @@ class _StaticPage:
 
     def content(self):
         return self.html
+
+
+class _ImageResponse:
+    content = b'image-bytes'
+
+    def raise_for_status(self):
+        return None
+
+
+def _google_vision_modules(ocr_text):
+    vision_module = types.ModuleType('google.cloud.vision')
+
+    class Image:
+        def __init__(self, content):
+            self.content = content
+
+    class ImageAnnotatorClient:
+        def text_detection(self, image):
+            return types.SimpleNamespace(
+                text_annotations=[types.SimpleNamespace(description=ocr_text)] if ocr_text else [],
+                error=types.SimpleNamespace(message=''),
+            )
+
+    vision_module.Image = Image
+    vision_module.ImageAnnotatorClient = ImageAnnotatorClient
+    google_module = types.ModuleType('google')
+    cloud_module = types.ModuleType('google.cloud')
+    cloud_module.vision = vision_module
+    google_module.cloud = cloud_module
+    return {
+        'google': google_module,
+        'google.cloud': cloud_module,
+        'google.cloud.vision': vision_module,
+    }
