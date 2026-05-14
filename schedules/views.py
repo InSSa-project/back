@@ -1,9 +1,12 @@
 from datetime import datetime, time, timedelta
 
+import json
+
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
-from django.views.decorators.http import require_GET
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_http_methods
 
 from .models import ScheduleEvent
 
@@ -20,6 +23,45 @@ def event_list(request):
         events = events.filter(start_at__lte=end_at)
 
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
+
+
+@csrf_exempt
+@require_http_methods(['PATCH'])
+def event_detail(request, event_id):
+    # TODO: Require authentication and per-user/admin permission before production use.
+    try:
+        event = ScheduleEvent.objects.get(pk=event_id)
+    except ScheduleEvent.DoesNotExist:
+        return JsonResponse({'detail': 'Schedule event not found.'}, status=404)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'detail': 'Invalid JSON payload.'}, status=400)
+
+    invalid_fields = set(payload) - {'title', 'description', 'start_at', 'end_at', 'is_all_day', 'event_type'}
+    if invalid_fields:
+        return JsonResponse(
+            {'detail': f'Unsupported fields: {", ".join(sorted(invalid_fields))}'},
+            status=400,
+        )
+
+    parsed_datetimes = {}
+    for field in ['start_at', 'end_at']:
+        if field not in payload:
+            continue
+        parsed_value = _parse_patch_datetime(payload[field])
+        if parsed_value is None:
+            return JsonResponse({'detail': f'Invalid datetime format: {field}'}, status=400)
+        parsed_datetimes[field] = parsed_value
+
+    for field in ['title', 'description', 'is_all_day', 'event_type']:
+        if field in payload:
+            setattr(event, field, payload[field])
+    for field, value in parsed_datetimes.items():
+        setattr(event, field, value)
+    event.save(update_fields=[*payload.keys(), 'updated_at'])
+    return JsonResponse(_serialize_event(event))
 
 
 def _parse_boundary(value, is_end):
@@ -43,9 +85,22 @@ def _parse_boundary(value, is_end):
     return timezone.make_aware(boundary, timezone.get_current_timezone())
 
 
+def _parse_patch_datetime(value):
+    if not isinstance(value, str):
+        return None
+
+    parsed_datetime = parse_datetime(value)
+    if not parsed_datetime:
+        return None
+    if timezone.is_naive(parsed_datetime):
+        return timezone.make_aware(parsed_datetime, timezone.get_current_timezone())
+    return parsed_datetime
+
+
 def _serialize_event(event):
     start_at = timezone.localtime(event.start_at)
     end_at = timezone.localtime(event.end_at)
+    raw_data = event.raw_data
     return {
         'id': event.id,
         'title': event.title,
@@ -55,4 +110,6 @@ def _serialize_event(event):
         'is_all_day': event.is_all_day,
         'event_type': event.event_type,
         'source_type': event.source_type,
+        'source_url': raw_data.source_url if raw_data else None,
+        'source_title': raw_data.title if raw_data else None,
     }

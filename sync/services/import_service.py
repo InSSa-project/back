@@ -28,10 +28,14 @@ class ImportSummary:
     skipped_count: int = 0
     notice_count: int = 0
     academic_rule_count: int = 0
+    collected_notice_count: int = 0
+    collected_academic_rule_count: int = 0
     no_schedule_count: int = 0
     image_count: int = 0
     ocr_processed_count: int = 0
     ocr_failed_count: int = 0
+    ocr_text_length: int = 0
+    parse_candidate_count: int = 0
     event_skipped_count: int = 0
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
@@ -78,6 +82,7 @@ def _import_raw_items(raw_items):
     summary = ImportSummary()
 
     for item in raw_items:
+        _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         if _find_existing_raw_data(item):
             summary.skipped_count += 1
             continue
@@ -94,6 +99,7 @@ def _import_raw_items(raw_items):
                 continue
 
             parsed_schedules = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
+            summary.parse_candidate_count += len(parsed_schedules)
             if not parsed_schedules:
                 _mark_no_schedule(raw_data, summary)
                 continue
@@ -135,6 +141,13 @@ def _increment_source_count(summary, source_type):
         summary.academic_rule_count += 1
 
 
+def _increment_collected_source_count(summary, source_type):
+    if source_type == 'notice':
+        summary.collected_notice_count += 1
+    elif source_type == 'academic_rule':
+        summary.collected_academic_rule_count += 1
+
+
 def _mark_no_schedule(raw_data, summary):
     summary.no_schedule_count += 1
     summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
@@ -145,11 +158,15 @@ def _mark_no_schedule(raw_data, summary):
 def _build_success_message(selected_mode, summary):
     message = (
         f'{SUCCESS_MESSAGE} mode={selected_mode}, '
+        f'collected_notice_count={summary.collected_notice_count}, '
+        f'collected_academic_rule_count={summary.collected_academic_rule_count}, '
         f'notice_count={summary.notice_count}, '
         f'academic_rule_count={summary.academic_rule_count}, '
         f'no_schedule_candidates={summary.no_schedule_count}, '
         f'image_count={summary.image_count}, '
         f'ocr_processed_count={summary.ocr_processed_count}, '
+        f'ocr_text_length={summary.ocr_text_length}, '
+        f'parse_candidate_count={summary.parse_candidate_count}, '
         f'ocr_failed_count={summary.ocr_failed_count}, '
         f'failed_count={summary.failed_count}, '
         f'skipped_count={summary.skipped_count}'
@@ -177,13 +194,14 @@ def _apply_ocr_pipeline(item, summary):
 
     ocr_result = _safe_extract_ocr_text(image_urls)
     if image_urls:
-        summary.ocr_processed_count += 1
+        summary.ocr_processed_count += len(image_urls)
     summary.ocr_failed_count += ocr_result.get(
         'ocr_failed_count',
         1 if ocr_result.get('ocr_status') == 'failed' else 0,
     )
 
     ocr_text = ocr_result.get('ocr_text', '')
+    summary.ocr_text_length += len(ocr_text)
     metadata.update(
         {
             'ocr_provider': ocr_result.get('ocr_provider', 'mock'),
