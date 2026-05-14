@@ -12,6 +12,16 @@ class RawSsafyDataAdmin(admin.ModelAdmin):
 
 @admin.register(CrawlJobLog)
 class CrawlJobLogAdmin(admin.ModelAdmin):
-    list_display = ('id', 'status', 'started_at', 'finished_at', 'raw_count', 'event_count', 'failed_count')
-    list_filter = ('status',)
+    list_display = (
+        'id',
+        'status',
+        'crawler_mode',
+        'started_at',
+        'finished_at',
+        'raw_count',
+        'event_count',
+        'failed_count',
+        'skipped_count',
+    )
+    list_filter = ('status', 'crawler_mode')
 
