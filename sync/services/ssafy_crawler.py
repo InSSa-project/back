@@ -61,7 +61,7 @@ def load_notices_by_mode(mode=None):
 def load_ssafy_notice_list(list_url=None):
     notice_list_url = list_url or os.getenv('SSAFY_NOTICE_LIST_URL')
     if not notice_list_url:
-        raise SsafyCrawlerError('SSAFY_NOTICE_LIST_URL is not configured.')
+        raise SsafyCrawlerError('Missing required SSAFY crawler environment variables: SSAFY_NOTICE_LIST_URL')
 
     return load_ssafy_authenticated_documents(notice_list_url=notice_list_url)
 
@@ -73,16 +73,14 @@ def load_ssafy_authenticated_documents(notice_list_url=None, rule_list_url=None)
     notice_url = notice_list_url or os.getenv('SSAFY_NOTICE_LIST_URL')
     academic_rule_url = rule_list_url or os.getenv('SSAFY_RULE_LIST_URL')
 
-    missing_names = [
-        name
-        for name, value in [
-            ('SSAFY_LOGIN_URL', login_url),
-            ('SSAFY_NOTICE_LIST_URL', notice_url),
-            ('SSAFY_ID', ssafy_id),
-            ('SSAFY_PASSWORD', ssafy_password),
-        ]
-        if not value
-    ]
+    missing_names = _missing_required_env_vars(
+        {
+            'SSAFY_LOGIN_URL': login_url,
+            'SSAFY_NOTICE_LIST_URL': notice_url,
+            'SSAFY_ID': ssafy_id,
+            'SSAFY_PASSWORD': ssafy_password,
+        }
+    )
     if missing_names:
         raise SsafyCrawlerError(f'Missing required SSAFY crawler environment variables: {", ".join(missing_names)}')
 
@@ -126,6 +124,10 @@ def load_ssafy_authenticated_documents(notice_list_url=None, rule_list_url=None)
     if not notices:
         raise SsafyCrawlerError('No SSAFY notice or academic rule documents were collected.')
     return notices
+
+
+def _missing_required_env_vars(env_values):
+    return [name for name, value in env_values.items() if not value]
 
 
 def _login_ssafy(page, login_url, ssafy_id, ssafy_password):
