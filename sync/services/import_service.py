@@ -170,8 +170,10 @@ def _apply_ocr_pipeline(item, summary):
     ocr_result = _safe_extract_ocr_text(image_urls)
     if image_urls:
         summary.ocr_processed_count += 1
-    if ocr_result['ocr_status'] == 'failed':
-        summary.ocr_failed_count += 1
+    summary.ocr_failed_count += ocr_result.get(
+        'ocr_failed_count',
+        1 if ocr_result.get('ocr_status') == 'failed' else 0,
+    )
 
     ocr_text = ocr_result.get('ocr_text', '')
     metadata.update(
@@ -180,6 +182,7 @@ def _apply_ocr_pipeline(item, summary):
             'ocr_status': ocr_result.get('ocr_status', 'skipped'),
             'ocr_error': ocr_result.get('ocr_error', ''),
             'ocr_text_length': len(ocr_text),
+            'ocr_failed_count': ocr_result.get('ocr_failed_count', 0),
         }
     )
     prepared['metadata_json'] = metadata
@@ -196,6 +199,7 @@ def _safe_extract_ocr_text(image_urls):
             'ocr_provider': 'mock',
             'ocr_status': 'failed',
             'ocr_error': str(exc),
+            'ocr_failed_count': 1,
         }
 
 
