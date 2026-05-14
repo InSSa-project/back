@@ -5,6 +5,9 @@ from datetime import date, datetime, time, timedelta
 from django.utils import timezone
 
 
+DEADLINE_KEYWORDS = ['\ub9c8\uac10', '\uc81c\ucd9c', '\uae4c\uc9c0', '?쒖텧', '留덇컧', '源뚯?']
+
+
 DATE_PATTERN = re.compile(
     r'(?<![\d:])'
     r'(?:(?P<year>\d{4})\s*(?:[.\-/]|년|\?+)\s*)?'
@@ -95,6 +98,8 @@ def _parse_datetimes(line, event_date):
     if single_match:
         start = time(int(single_match.group('hour')), int(single_match.group('minute')))
         start_at = _aware(event_date, start)
+        if _is_deadline_line(line):
+            return start_at, start_at + timedelta(minutes=1), False
         return start_at, start_at + timedelta(hours=1), False
 
     start_at = _aware(event_date, time.min)
@@ -124,3 +129,7 @@ def _parse_event_type(line):
     if any(keyword in line for keyword in ['특강', '강의', '멘토링']):
         return 'lecture'
     return 'notice'
+
+
+def _is_deadline_line(line):
+    return any(keyword in line for keyword in DEADLINE_KEYWORDS)
