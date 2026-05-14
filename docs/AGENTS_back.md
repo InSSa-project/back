@@ -22,6 +22,72 @@
 
 ---
 
+## 프로젝트 기본 기준
+- Django + Django REST Framework 기준을 유지한다.
+- 현재 앱 구조를 임의로 크게 바꾸지 않는다.
+- 기능 추가 전 기존 models, serializers, views, urls, services 구조를 먼저 확인한다.
+- MVP 단계에서는 빠른 구현과 팀원 이해도를 우선한다.
+- 새로운 추상화는 실제 중복이나 복잡도가 생겼을 때만 추가한다.
+- 프론트엔드와는 반드시 API로만 통신한다.
+- 프론트엔드가 DB, Supabase, Storage에 직접 접근하는 구조를 만들지 않는다.
+
+## 백엔드 역할
+- 사용자 인증 처리
+- 일정 API 제공
+- 공지/원본 데이터 API 제공
+- SSAFY 데이터 수집 결과 저장
+- OCR 결과 저장
+- 일정 데이터 변환
+- AI 요청/응답 로그 저장
+- 알림 데이터 생성
+- 프론트엔드에 필요한 JSON 응답 제공
+
+## 권장 앱 구조
+현재 구조가 있다면 기존 구조를 우선한다.
+새로 만들 때는 아래 기준을 참고한다.
+
+- accounts: 사용자, 인증, 프로필
+- schedules 또는 calendar: 일정, 사용자 일정
+- sync 또는 imports: SSAFY 데이터 가져오기, 크롤링 로그, 원본 데이터
+- ai: AI 문서, 챗봇 로그, 참조 문서
+- notifications: 알림
+- common: 공통 응답, 공통 유틸, 예외 처리
+
+## 파일 작성 원칙
+- models.py: DB 테이블 정의
+- serializers.py: API 입출력 데이터 변환
+- views.py 또는 viewsets.py: 요청 처리
+- urls.py: API 경로 연결
+- services/: 비즈니스 로직 분리
+- management/commands/: 수동 실행 또는 자동화 가능한 명령어
+- tests/: 주요 API와 서비스 테스트
+
+## 데이터 모델 원칙
+아래 개념을 기준으로 기존 모델을 확인하고, 없으면 최소 단위로 추가한다.
+
+- User
+- UserProfile
+- SsafyDataImportLog
+- RawSsafyData
+- ScheduleEvent
+- UserScheduleEvent
+- AiDocument
+- AiChatLog
+- AiChatReference
+- Notification
+
+관계 기준:
+- users → user_profiles: 1:1
+- users → ssafy_data_import_logs: 1:N
+- ssafy_data_import_logs → raw_ssafy_data: 1:N
+- raw_ssafy_data → schedule_events: 1:N, nullable
+- users ↔ schedule_events: N:N, user_schedule_events 중간 테이블 사용
+- raw_ssafy_data → ai_documents: 1:N
+- users → ai_chat_logs: 1:N
+- ai_chat_logs ↔ ai_documents: N:N, ai_chat_references 중간 테이블 사용
+- users → notifications: 1:N
+- schedule_events → notifications: 1:N, nullable
+
 ## ⚠️ 중요 규칙
 
 문서를 읽지 않은 상태에서 아래 작업을 수행하지 않습니다.
@@ -470,3 +536,26 @@ SSAFY 생활 자동화 AI 운영 엔진
 ```
 
 이다.
+
+## 금지 사항
+- 프론트엔드 파일 임의 수정
+- 프로젝트 구조 대규모 변경
+- SECRET_KEY/API KEY/비밀번호 하드코딩
+- SSAFY 계정 정보 저장
+- 세션/쿠키 저장
+- 인증 우회/보안 우회/탐지 회피
+- 불필요한 Celery/Redis/Docker/Kubernetes 도입
+- DB 직접 접근 API를 프론트에 노출
+- Supabase 클라이언트를 프론트에서 직접 사용하게 만드는 구조
+
+## 작업 완료 후 마지막 응답 원칙
+작업 완료 후 반드시 아래 내용을 요약한다.
+
+- 생성/수정한 파일 목록
+- 각 파일의 역할
+- 모델 변경 사항
+- API 변경 사항
+- 실행한 검증 명령과 결과
+- 남은 작업
+- 주의사항
+- commit 했다면 커밋 해시와 메시지

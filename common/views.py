@@ -1,4 +1,4 @@
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -6,6 +6,7 @@ from django.urls import reverse
 
 from .forms import SignUpForm
 from .models import CrawlData
+from apps.users.services import UserService
 
 
 def index(request):
@@ -25,9 +26,9 @@ def signup(request):
 
 def login_view(request):
     if request.method == 'POST':
-        username = request.POST.get('username')
+        identifier = request.POST.get('username')
         password = request.POST.get('password')
-        user = authenticate(request, username=username, password=password)
+        user = UserService().authenticate_by_identifier(request, identifier, password)
         if user is not None:
             login(request, user)
             return redirect('index')
