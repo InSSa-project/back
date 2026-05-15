@@ -395,6 +395,84 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(parse_schedule_candidates('2026.05.20 특강')[0].event_type, 'lecture')
         self.assertEqual(parse_schedule_candidates('2026.05.20 프로젝트')[0].event_type, 'project')
 
+    def test_parser_extracts_calendar_ocr_schedule_candidates(self):
+        raw_text = '''
+        [OCR_TEXT]
+        SAMSUNG
+        SW
+        AI ACADEMY
+        1월
+        15기 1학기 진행 일정
+        SUN
+        MON
+        TUE
+        WED
+        THU
+        FRI
+        SAT
+        1 신정
+        2
+        3
+        4
+        5
+        6
+        7
+        8
+        9
+        10
+        15기 SW. AI 스타트캠프
+        15기 SW-AI 스타트캠프
+        11
+        12
+        13
+        14
+        15
+        16
+        17
+        SW 역량테스트
+        18
+        19
+        20
+        21
+        22
+        23
+        24
+        15기 입학식
+        SSAFY DAY
+        25
+        26
+        27
+        28
+        29
+        30
+        31
+        과목평가1/ 월말평가1
+        5월
+        1 근로자의 날
+        5 어린이날
+        6 부처님 오신날
+        6월
+        3 2026 지방선거
+        6 현충일
+        29
+        30
+        월말평가6
+        월말평가6
+        관통PJT 경진대회
+        '''
+
+        schedules = parse_schedule_candidates(raw_text, default_title='[학습] 15기 1학기 전체 일정')
+        titles = [schedule.title for schedule in schedules]
+
+        self.assertGreater(len(schedules), 0)
+        self.assertIn('월말평가1', titles)
+        self.assertIn('월말평가6', titles)
+        self.assertIn('15기 입학식', titles)
+        self.assertIn('SW 역량테스트', titles)
+        self.assertIn('관통PJT 경진대회', titles)
+        self.assertTrue(any(schedule.event_type == 'holiday' for schedule in schedules))
+        self.assertEqual(titles.count('월말평가6'), 1)
+
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):
             with patch('sync.services.import_service.parse_schedule_candidates', side_effect=ValueError('bad date')):
