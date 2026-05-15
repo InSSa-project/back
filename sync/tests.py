@@ -720,6 +720,150 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(item['title'], '[학습] 15기 1학기 전체 일정')
 
+    def test_backfill_raw_ocr_extracts_images_from_raw_html_and_updates_text(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1',
+            title='OCR 대상',
+            raw_text='공지 본문',
+            raw_html='<main><img src="/upload/schedule.png"></main>',
+            metadata_json={},
+        )
+        output = StringIO()
+
+        with patch(
+            'sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls',
+            return_value={
+                'ocr_text': '월말평가 2026.05.20',
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'success',
+                'ocr_error': '',
+                'ocr_failed_count': 0,
+            },
+        ) as extract_mock:
+            call_command('backfill_raw_ocr', '--id', raw_data.id, stdout=output)
+
+        raw_data.refresh_from_db()
+        extract_mock.assert_called_once_with(['https://edu.ssafy.com/upload/schedule.png'])
+        self.assertIn('[OCR_TEXT]', raw_data.raw_text)
+        self.assertIn('월말평가 2026.05.20', raw_data.raw_text)
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'success')
+        self.assertEqual(raw_data.metadata_json['ocr_text_length'], len('월말평가 2026.05.20'))
+        self.assertIn('updated_count=1', output.getvalue())
+
+    def test_backfill_raw_ocr_replaces_existing_ocr_section(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/ocr-replace',
+            title='OCR 교체',
+            raw_text='공지 본문\n\n[OCR_TEXT]\n이전 OCR 2026.05.01',
+            raw_html='<main><img src="/new.png"></main>',
+        )
+
+        with patch(
+            'sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls',
+            return_value={
+                'ocr_text': '새 OCR 2026.05.20',
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'success',
+                'ocr_error': '',
+                'ocr_failed_count': 0,
+            },
+        ):
+            call_command('backfill_raw_ocr', '--id', raw_data.id)
+
+        raw_data.refresh_from_db()
+        self.assertIn('새 OCR 2026.05.20', raw_data.raw_text)
+        self.assertNotIn('이전 OCR 2026.05.01', raw_data.raw_text)
+        self.assertEqual(raw_data.raw_text.count('[OCR_TEXT]'), 1)
+
+    def test_backfill_raw_ocr_dry_run_does_not_update_raw_or_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/dry-run',
+            title='dry-run',
+            raw_text='공지 본문',
+            raw_html='<main><img src="/dry.png"></main>',
+            metadata_json={'ocr_status': 'skipped'},
+        )
+
+        with patch('sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls') as extract_mock:
+            call_command('backfill_raw_ocr', '--id', raw_data.id, '--dry-run')
+
+        raw_data.refresh_from_db()
+        extract_mock.assert_not_called()
+        self.assertEqual(raw_data.raw_text, '공지 본문')
+        self.assertEqual(raw_data.metadata_json, {'ocr_status': 'skipped'})
+
+    def test_backfill_raw_ocr_reparse_creates_schedule_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/reparse-ocr',
+            title='OCR reparse',
+            raw_text='공지 본문',
+            raw_html='<main><img src="/schedule.png"></main>',
+        )
+        output = StringIO()
+
+        with patch(
+            'sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls',
+            return_value={
+                'ocr_text': '월말평가 2026.05.20',
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'success',
+                'ocr_error': '',
+                'ocr_failed_count': 0,
+            },
+        ):
+            call_command('backfill_raw_ocr', '--id', raw_data.id, '--reparse', stdout=output)
+
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().raw_data, raw_data)
+        self.assertIn('reparse_created_count=1', output.getvalue())
+
+    def test_backfill_raw_ocr_no_image_increments_no_image_count(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/no-image',
+            title='이미지 없음',
+            raw_text='공지 본문',
+            raw_html='<main>image 없음</main>',
+        )
+        output = StringIO()
+
+        call_command('backfill_raw_ocr', '--id', raw_data.id, stdout=output)
+
+        raw_data.refresh_from_db()
+        self.assertIn('no_image_count=1', output.getvalue())
+        self.assertEqual(raw_data.metadata_json['image_urls'], [])
+
+    def test_backfill_raw_ocr_failure_does_not_fail_command(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/ocr-failed',
+            title='OCR 실패',
+            raw_text='공지 본문',
+            raw_html='<main><img src="/fail.png"></main>',
+        )
+        output = StringIO()
+
+        with patch(
+            'sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls',
+            return_value={
+                'ocr_text': '',
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'failed',
+                'ocr_error': 'Google Vision credentials are not configured.',
+                'ocr_failed_count': 1,
+            },
+        ):
+            call_command('backfill_raw_ocr', '--id', raw_data.id, stdout=output)
+
+        raw_data.refresh_from_db()
+        self.assertEqual(raw_data.raw_text, '공지 본문')
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
+        self.assertIn('ocr_failed_count=1', output.getvalue())
+
 
 def _notice_item(source_url, notice_id):
     return {
