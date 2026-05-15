@@ -14,6 +14,13 @@ DEFAULT_CRAWLER_MODE = 'sample'
 MODE_SAMPLE = 'sample'
 MODE_SSAFY_NOTICE = 'ssafy_notice'
 SUPPORTED_CRAWLER_MODES = {MODE_SAMPLE, MODE_SSAFY_NOTICE}
+IGNORED_OCR_IMAGE_KEYWORDS = (
+    'header-logo',
+    'header_logo',
+    'logo',
+    'icon',
+    'banner',
+)
 
 
 class SsafyCrawlerError(Exception):
@@ -241,11 +248,18 @@ def extract_image_urls_from_html(raw_html, source_url):
         if not src or src.startswith(('data:', 'javascript:', 'mailto:', '#')):
             continue
         absolute_url = urljoin(source_url, src)
+        if _is_ignored_ocr_image_url(absolute_url):
+            continue
         if absolute_url in seen:
             continue
         seen.add(absolute_url)
         image_urls.append(absolute_url)
     return image_urls
+
+
+def _is_ignored_ocr_image_url(image_url):
+    path = urlparse(image_url).path.lower()
+    return any(keyword in path for keyword in IGNORED_OCR_IMAGE_KEYWORDS)
 
 
 def _extract_links_by_keywords(soup, base_url, keywords, include_titles=False):

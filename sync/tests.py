@@ -461,6 +461,23 @@ class SampleNoticeImportTests(TestCase):
             ],
         )
 
+    def test_extract_image_urls_from_html_skips_non_notice_images(self):
+        html = '''
+        <article>
+            <img src="/assets/header-logo.jpg">
+            <img src="/assets/menu-icon.png">
+            <img src="/assets/top-banner.png">
+            <img src="/upload/notice/schedule.png">
+        </article>
+        '''
+
+        image_urls = extract_image_urls_from_html(
+            html,
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1',
+        )
+
+        self.assertEqual(image_urls, ['https://edu.ssafy.com/upload/notice/schedule.png'])
+
     def test_ocr_mock_result_is_saved_to_metadata(self):
         item = _notice_item('https://example.com/notices/ocr-metadata', 'notice-ocr-metadata')
         item['raw_html'] = '<main><img src="/notice.png">SSAFY ?쇱젙 2026.05.20</main>'
@@ -518,6 +535,112 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(result['ocr_status'], 'failed')
         self.assertIn('credentials are not configured', result['ocr_error'])
         self.assertNotIn('GOOGLE_APPLICATION_CREDENTIALS=', result['ocr_error'])
+
+    def test_clova_provider_extracts_infer_text_lines(self):
+        response_payload = {
+            'images': [
+                {
+                    'fields': [
+                        {'inferText': 'monthly exam'},
+                        {'inferText': '2026.05.20'},
+                    ]
+                }
+            ]
+        }
+
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'clova',
+                'CLOVA_OCR_INVOKE_URL': 'https://clova.example.com/ocr',
+                'CLOVA_OCR_SECRET_KEY': 'super-secret',
+            },
+        ):
+            with patch('sync.services.ocr_service.requests.get', return_value=_ImageResponse()):
+                with patch('sync.services.ocr_service.requests.post', return_value=_JsonResponse(response_payload)) as post_mock:
+                    result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_provider'], 'clova')
+        self.assertEqual(result['ocr_status'], 'success')
+        self.assertEqual(result['ocr_text'], 'monthly exam\n2026.05.20')
+        self.assertEqual(result['ocr_failed_count'], 0)
+        self.assertEqual(post_mock.call_args.kwargs['headers']['X-OCR-SECRET'], 'super-secret')
+
+    def test_clova_missing_configuration_fails_safely(self):
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'clova',
+                'CLOVA_OCR_INVOKE_URL': '',
+                'CLOVA_OCR_SECRET_KEY': '',
+            },
+        ):
+            result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_provider'], 'clova')
+        self.assertEqual(result['ocr_status'], 'failed')
+        self.assertEqual(result['ocr_failed_count'], 1)
+        self.assertIn('not configured', result['ocr_error'])
+        self.assertNotIn('CLOVA_OCR_SECRET_KEY', result['ocr_error'])
+
+    def test_clova_image_download_failure_does_not_stop_other_images(self):
+        response_payload = {
+            'images': [
+                {
+                    'fields': [
+                        {'inferText': 'project submission'},
+                        {'inferText': '2026.05.24'},
+                    ]
+                }
+            ]
+        }
+
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'clova',
+                'CLOVA_OCR_INVOKE_URL': 'https://clova.example.com/ocr',
+                'CLOVA_OCR_SECRET_KEY': 'super-secret',
+            },
+        ):
+            with patch(
+                'sync.services.ocr_service.requests.get',
+                side_effect=[RuntimeError('download down'), _ImageResponse()],
+            ):
+                with patch('sync.services.ocr_service.requests.post', return_value=_JsonResponse(response_payload)):
+                    result = extract_text_from_image_urls(
+                        [
+                            'https://example.com/broken.png',
+                            'https://example.com/schedule.png',
+                        ]
+                    )
+
+        self.assertEqual(result['ocr_provider'], 'clova')
+        self.assertEqual(result['ocr_status'], 'success')
+        self.assertEqual(result['ocr_text'], 'project submission\n2026.05.24')
+        self.assertEqual(result['ocr_failed_count'], 1)
+        self.assertIn('download down', result['ocr_error'])
+
+    def test_clova_error_redacts_secret_key(self):
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'clova',
+                'CLOVA_OCR_INVOKE_URL': 'https://clova.example.com/ocr',
+                'CLOVA_OCR_SECRET_KEY': 'super-secret',
+            },
+        ):
+            with patch('sync.services.ocr_service.requests.get', return_value=_ImageResponse()):
+                with patch(
+                    'sync.services.ocr_service.requests.post',
+                    side_effect=RuntimeError('bad secret super-secret'),
+                ):
+                    result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_provider'], 'clova')
+        self.assertEqual(result['ocr_status'], 'failed')
+        self.assertIn('[redacted]', result['ocr_error'])
+        self.assertNotIn('super-secret', result['ocr_error'])
 
     def test_ocr_failure_does_not_fail_crawl(self):
         item = _notice_item('https://example.com/notices/ocr-failure', 'notice-ocr-failure')
@@ -942,6 +1065,17 @@ class _ImageResponse:
 
     def raise_for_status(self):
         return None
+
+
+class _JsonResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
 
 
 def _google_vision_modules(ocr_text):
