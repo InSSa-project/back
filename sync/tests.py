@@ -3,6 +3,7 @@ import types
 from io import StringIO
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
@@ -986,6 +987,153 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.raw_text, '공지 본문')
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
         self.assertIn('ocr_failed_count=1', output.getvalue())
+
+    def test_admin_manual_ocr_api_updates_raw_text_and_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/manual-ocr',
+            title='manual OCR',
+            raw_text='notice body',
+            metadata_json={'notice_id': 'manual-ocr'},
+        )
+        admin_user = get_user_model().objects.create_user(
+            username='admin',
+            password='pass',
+            is_staff=True,
+        )
+        self.client.force_login(admin_user)
+
+        response = self.client.post(
+            reverse('sync-raw-data-manual-ocr', args=[raw_data.id]),
+            data=json.dumps({'ocr_text': 'manual schedule 2026.05.20'}),
+            content_type='application/json',
+        )
+
+        raw_data.refresh_from_db()
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload['status'], 'success')
+        self.assertEqual(payload['ocr_provider'], 'manual')
+        self.assertEqual(payload['ocr_text_length'], len('manual schedule 2026.05.20'))
+        self.assertIn('[OCR_TEXT]', raw_data.raw_text)
+        self.assertIn('manual schedule 2026.05.20', raw_data.raw_text)
+        self.assertEqual(raw_data.metadata_json['ocr_provider'], 'manual')
+        self.assertEqual(raw_data.metadata_json['ocr_status'], 'success')
+        self.assertEqual(raw_data.metadata_json['ocr_failed_count'], 0)
+
+    def test_manual_ocr_api_requires_staff_user(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/manual-forbidden',
+            title='manual OCR forbidden',
+            raw_text='notice body',
+        )
+        user = get_user_model().objects.create_user(username='member', password='pass')
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('sync-raw-data-manual-ocr', args=[raw_data.id]),
+            data=json.dumps({'ocr_text': 'manual schedule 2026.05.20'}),
+            content_type='application/json',
+        )
+
+        raw_data.refresh_from_db()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(raw_data.raw_text, 'notice body')
+
+    def test_manual_ocr_api_rejects_empty_text(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/manual-empty',
+            title='manual OCR empty',
+            raw_text='notice body',
+        )
+        admin_user = get_user_model().objects.create_user(
+            username='admin-empty',
+            password='pass',
+            is_staff=True,
+        )
+        self.client.force_login(admin_user)
+
+        response = self.client.post(
+            reverse('sync-raw-data-manual-ocr', args=[raw_data.id]),
+            data=json.dumps({'ocr_text': '   '}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('ocr_text is required', response.json()['detail'])
+
+    def test_set_raw_ocr_text_command_updates_raw_data(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/manual-command',
+            title='manual OCR command',
+            raw_text='notice body',
+        )
+        output = StringIO()
+
+        call_command(
+            'set_raw_ocr_text',
+            '--id',
+            raw_data.id,
+            '--text',
+            'command schedule 2026.05.20',
+            stdout=output,
+        )
+
+        raw_data.refresh_from_db()
+        self.assertIn('command schedule 2026.05.20', raw_data.raw_text)
+        self.assertEqual(raw_data.metadata_json['ocr_provider'], 'manual')
+        self.assertIn('updated=true', output.getvalue())
+
+    def test_set_raw_ocr_text_command_dry_run_does_not_update(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/manual-command-dry-run',
+            title='manual OCR command dry run',
+            raw_text='notice body',
+            metadata_json={'ocr_status': 'skipped'},
+        )
+        output = StringIO()
+
+        call_command(
+            'set_raw_ocr_text',
+            '--id',
+            raw_data.id,
+            '--text',
+            'command schedule 2026.05.20',
+            '--dry-run',
+            stdout=output,
+        )
+
+        raw_data.refresh_from_db()
+        self.assertEqual(raw_data.raw_text, 'notice body')
+        self.assertEqual(raw_data.metadata_json, {'ocr_status': 'skipped'})
+        self.assertIn('updated=false', output.getvalue())
+
+    def test_set_raw_ocr_text_command_reparse_creates_schedule_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/manual-command-reparse',
+            title='manual OCR command reparse',
+            raw_text='notice body',
+        )
+        output = StringIO()
+
+        call_command(
+            'set_raw_ocr_text',
+            '--id',
+            raw_data.id,
+            '--text',
+            'manual schedule 2026.05.20',
+            '--reparse',
+            stdout=output,
+        )
+
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().raw_data, raw_data)
+        self.assertIn('reparse_created_count=1', output.getvalue())
 
 
 def _notice_item(source_url, notice_id):
