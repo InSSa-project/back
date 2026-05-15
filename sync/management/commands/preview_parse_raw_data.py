@@ -16,11 +16,20 @@ class Command(BaseCommand):
             raise CommandError(f'RawSsafyData id={options["id"]} was not found.')
 
         candidates = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
+        metadata = raw_data.metadata_json or {}
+        image_urls = metadata.get('image_urls') or []
         preview_text = raw_data.raw_text[:500].replace('\r', '')
 
         self.stdout.write(f'raw_id={raw_data.id}')
         self.stdout.write(f'raw_title={raw_data.title}')
         self.stdout.write(f'source_url={raw_data.source_url}')
+        self.stdout.write(f'image_urls_count={len(image_urls)}')
+        for index, image_url in enumerate(image_urls[:5], start=1):
+            self.stdout.write(f'image_url_{index}={image_url}')
+        if len(image_urls) > 5:
+            self.stdout.write(f'image_urls_omitted_count={len(image_urls) - 5}')
+        self.stdout.write(f'ocr_status={metadata.get("ocr_status", "")}')
+        self.stdout.write(f'ocr_text_length={metadata.get("ocr_text_length", 0)}')
         self.stdout.write('raw_text_preview=')
         self.stdout.write(preview_text)
         self.stdout.write(f'candidate_count={len(candidates)}')
