@@ -11,6 +11,7 @@ from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.import_service import run_notice_import, run_sample_notice_import
 from sync.services.ocr_service import extract_text_from_image_urls
+from sync.services.reparse_service import reparse_raw_data_to_events
 from sync.services.schedule_parser import parse_schedule_candidates
 from bs4 import BeautifulSoup
 
@@ -239,6 +240,88 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('delete_count=1', dry_run_output.getvalue())
         self.assertIn('deleted_count=1', run_output.getvalue())
         self.assertEqual(ScheduleEvent.objects.count(), 3)
+
+    def test_reparse_existing_raw_data_creates_schedule_event(self):
+        raw_data = _raw_data('https://example.com/raw/reparse-1', 'Reparse schedule 2026.05.20')
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        self.assertEqual(summary.raw_checked, 1)
+        self.assertEqual(summary.candidate_count, 1)
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(summary.skipped_count, 0)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().raw_data, raw_data)
+
+    def test_reparse_dry_run_does_not_create_schedule_event(self):
+        _raw_data('https://example.com/raw/reparse-dry-run', 'Dry run schedule 2026.05.20')
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.all(), dry_run=True)
+
+        self.assertTrue(summary.dry_run)
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
+    def test_reparse_skips_existing_duplicate_schedule_event(self):
+        raw_data = _raw_data('https://example.com/raw/reparse-duplicate', 'Duplicate schedule 2026.05.20')
+
+        first_summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+        second_summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        self.assertEqual(first_summary.created_count, 1)
+        self.assertEqual(second_summary.created_count, 0)
+        self.assertEqual(second_summary.skipped_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_reparse_source_type_filter_limits_checked_rows(self):
+        _raw_data('https://example.com/raw/reparse-notice', 'Notice schedule 2026.05.20')
+        _raw_data(
+            'https://example.com/raw/reparse-rule',
+            'Rule schedule 2026.05.20',
+            source_type='academic_rule',
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(source_type='notice'))
+
+        self.assertEqual(summary.raw_checked, 1)
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_reparse_limit_option_limits_checked_rows(self):
+        _raw_data('https://example.com/raw/reparse-limit-1', 'Limit schedule one 2026.05.20')
+        _raw_data('https://example.com/raw/reparse-limit-2', 'Limit schedule two 2026.05.21')
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.all(), limit=1)
+
+        self.assertEqual(summary.raw_checked, 1)
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_reparse_skips_academic_rule_by_default(self):
+        _raw_data(
+            'https://example.com/raw/reparse-academic-rule',
+            'Academic rule schedule 2026.05.20',
+            source_type='academic_rule',
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.all())
+
+        self.assertEqual(summary.raw_checked, 1)
+        self.assertEqual(summary.created_count, 0)
+        self.assertEqual(summary.no_schedule_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
+    def test_reparse_command_outputs_summary(self):
+        _raw_data('https://example.com/raw/reparse-command', 'Command schedule 2026.05.20')
+        output = StringIO()
+
+        call_command('reparse_raw_ssafy_data', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('Reparse completed.', value)
+        self.assertIn('raw_checked=1', value)
+        self.assertIn('created_count=1', value)
+        self.assertIn('dry_run=true', value)
 
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
@@ -553,6 +636,17 @@ def _academic_rule_item(source_url, notice_id):
             'collected_from': 'ssafy_notice',
         },
     }
+
+
+def _raw_data(source_url, raw_text, source_type='notice'):
+    return RawSsafyData.objects.create(
+        source_type=source_type,
+        source_url=source_url,
+        title=f'{source_type} title',
+        raw_text=raw_text,
+        raw_html=f'<main>{raw_text}</main>',
+        metadata_json={'notice_id': source_url.rsplit('/', 1)[-1]},
+    )
 
 
 class _FailedLoginPage:
