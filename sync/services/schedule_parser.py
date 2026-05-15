@@ -6,25 +6,64 @@ from django.utils import timezone
 
 
 DEFAULT_YEAR = 2026
-GENERIC_TITLES = {'공지사항 상세', '게시물 상세', 'SSAFY document', 'SSAFY 일정'}
-DEADLINE_KEYWORDS = ['마감', '제출', '까지', 'due', 'deadline']
+GENERIC_TITLES = {
+    '공지사항 상세',
+    '게시물 상세',
+    'SSAFY document',
+    'SSAFY 일정',
+    '怨듭??ы빆 ?곸꽭',
+    '寃뚯떆臾??곸꽭',
+    'SSAFY ?쇱젙',
+}
+DEADLINE_KEYWORDS = ['마감', '제출', '까지', 'due', 'deadline', '留덇컧', '?쒖텧', '源뚯?']
+EVENT_KEYWORDS = [
+    '제출', '마감', '평가', '시험', '테스트', '특강', '프로젝트', '멘토링', '발표', '설명회',
+    '입과', '수료', '방학', '개강', '종강', '공통', '코딩', '월말', '과제',
+    '?쒖텧', '留덇컧', '?됯?', '?쒗뿕', '?뚯뒪??', '?밴컯', '?꾨줈?앺듃',
+]
+CONTEXT_KEYWORDS = ['15기', '1학기', '진행일정', '전체 일정', '일정', '15湲?', '1?숆린', '吏꾪뻾?쇱젙']
+META_LINE_KEYWORDS = ['운영팀', '목록', '공지사항 상세', '메뉴 네비게이션', 'HOME', 'Copyright']
+WEEKDAY_HEADERS = {'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'}
+CALENDAR_KEYWORDS = [
+    '신정',
+    '15기 SW. AI 스타트캠프',
+    '15기 SW-AI 스타트캠프',
+    '15기 SW - AI 스타트캠프',
+    '15기 입학식',
+    '15기본학습 시작',
+    'SSAFY DAY',
+    '과목평가',
+    '월말평가',
+    'SW 역량테스트',
+    'AI 강의',
+    'AI 챌린지',
+    '상반기 밋업',
+    '어린이날',
+    '근로자의 날',
+    '부처님 오신날',
+    '현충일',
+    '온라인 위크',
+    '관통 프로젝트 집중기간',
+    '관통PJT 경진대회',
+    '지방선거',
+]
 
 DATE_PATTERN = re.compile(
     r'(?<![\d:])'
-    r'(?:(?P<year>\d{4})\s*(?:[.\-/]|년|\?+)\s*)?'
-    r'(?P<month>\d{1,2})\s*(?:[.\-/]|월|\?+)\s*'
-    r'(?P<day>\d{1,2})\s*(?:일|\?+)?'
+    r'(?:(?P<year>\d{4})\s*(?:[.\-/]|년)\s*)?'
+    r'(?P<month>\d{1,2})\s*(?:[.\-/]|월)\s*'
+    r'(?P<day>\d{1,2})\s*(?:일)?'
     r'(?![\d:])'
 )
 DATE_RANGE_PATTERN = re.compile(
     r'(?<![\d:])'
-    r'(?:(?P<start_year>\d{4})\s*(?:[.\-/]|년|\?+)\s*)?'
-    r'(?P<start_month>\d{1,2})\s*(?:[.\-/]|월|\?+)\s*'
-    r'(?P<start_day>\d{1,2})\s*(?:일|\?+)?'
-    r'\s*(?:~|-|부터|至|～)\s*'
-    r'(?:(?P<end_year>\d{4})\s*(?:[.\-/]|년|\?+)\s*)?'
-    r'(?:(?P<end_month>\d{1,2})\s*(?:[.\-/]|월|\?+)\s*)?'
-    r'(?P<end_day>\d{1,2})\s*(?:일|\?+)?'
+    r'(?:(?P<start_year>\d{4})\s*(?:[.\-/]|년)\s*)?'
+    r'(?P<start_month>\d{1,2})\s*(?:[.\-/]|월)\s*'
+    r'(?P<start_day>\d{1,2})\s*(?:일)?'
+    r'\s*(?:~|-|부터)\s*'
+    r'(?:(?P<end_year>\d{4})\s*(?:[.\-/]|년)\s*)?'
+    r'(?:(?P<end_month>\d{1,2})\s*(?:[.\-/]|월)\s*)?'
+    r'(?P<end_day>\d{1,2})\s*(?:일)?'
     r'(?![\d:])'
 )
 TIME_RANGE_PATTERN = re.compile(
@@ -35,12 +74,9 @@ TIME_RANGE_PATTERN = re.compile(
     r'(?!\d)'
 )
 SINGLE_TIME_PATTERN = re.compile(r'(?<!\d)(?P<hour>\d{1,2}):(?P<minute>\d{2})(?:\s*까지)?(?!\d)')
-EVENT_KEYWORDS = [
-    '제출', '마감', '평가', '시험', '테스트', '특강', '프로젝트', '멘토링', '발표', '설명회',
-    '입과', '수료', '방학', '개강', '종강', '공통', '코딩', '월말', '관통', '해커톤',
-]
-CONTEXT_KEYWORDS = ['15기', '1학기', '진행일정', '전체 일정', '일정']
-META_LINE_KEYWORDS = ['운영자', '목록', '공지사항 상세', '메뉴 네비게이션', 'HOME', 'Copyright']
+CALENDAR_MONTH_PATTERN = re.compile(r'^(?P<month>[1-9]|1[0-2])\s*월$')
+CALENDAR_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
+CALENDAR_INLINE_EVENT_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
 
 
 @dataclass
@@ -81,7 +117,108 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정'):
             )
         )
 
+    schedules.extend(_parse_calendar_ocr_candidates(raw_text))
+    return _dedupe_schedules(schedules)
+
+
+def _parse_calendar_ocr_candidates(raw_text):
+    schedules = []
+    current_month = None
+    current_day = None
+
+    for raw_line in raw_text.splitlines():
+        line = _normalize_line(raw_line)
+        if not line or _is_calendar_noise_line(line):
+            continue
+
+        month_match = CALENDAR_MONTH_PATTERN.match(line)
+        if month_match:
+            current_month = int(month_match.group('month'))
+            current_day = None
+            continue
+
+        if current_month is None:
+            continue
+
+        inline_match = CALENDAR_INLINE_EVENT_PATTERN.match(line)
+        if inline_match:
+            day = int(inline_match.group('day'))
+            title_text = inline_match.group('title').strip()
+            if _is_valid_calendar_day(current_month, day):
+                current_day = day
+                schedules.extend(_build_calendar_schedules(current_month, day, title_text, inferred=False))
+                continue
+
+        day_match = CALENDAR_DAY_PATTERN.match(line)
+        if day_match:
+            day = int(day_match.group('day'))
+            if _is_valid_calendar_day(current_month, day):
+                current_day = day
+            continue
+
+        if _has_calendar_keyword(line) and current_day is not None:
+            schedules.extend(_build_calendar_schedules(current_month, current_day, line, inferred=True))
+
     return schedules
+
+
+def _build_calendar_schedules(month, day, line, inferred):
+    schedules = []
+    event_date = date(DEFAULT_YEAR, month, day)
+    description = 'SSAFY OCR 달력형 일정표에서 추출한 일정'
+    if inferred:
+        description = f'{description} - OCR 날짜 추론 필요'
+
+    for title in _extract_calendar_titles(line):
+        schedules.append(
+            ParsedSchedule(
+                title=title,
+                description=description,
+                start_at=_aware(event_date, time.min),
+                end_at=_aware(event_date, time.min) + timedelta(days=1),
+                is_all_day=True,
+                event_type=_parse_event_type(title),
+            )
+        )
+    return schedules
+
+
+def _extract_calendar_titles(line):
+    titles = []
+    for part in re.split(r'\s*/\s*', line):
+        title = _canonical_calendar_title(part.strip(' :-|[]()~'))
+        if title and _has_calendar_keyword(title):
+            titles.append(title[:255])
+    return _dedupe(titles)
+
+
+def _canonical_calendar_title(title):
+    title = re.sub(r'\s+', ' ', title)
+    if '스타트캠프' in title and '15기' in title:
+        return '15기 SW. AI 스타트캠프'
+    return title
+
+
+def _has_calendar_keyword(line):
+    return any(keyword in line for keyword in CALENDAR_KEYWORDS) or (
+        '스타트캠프' in line and '15기' in line
+    )
+
+
+def _is_calendar_noise_line(line):
+    if line.upper() in WEEKDAY_HEADERS:
+        return True
+    return line in {'[OCR_TEXT]', 'SAMSUNG', 'SW', 'AI ACADEMY', 'FOR', 'YOUTH', '기타'}
+
+
+def _is_valid_calendar_day(month, day):
+    if day < 1 or day > 31:
+        return False
+    try:
+        date(DEFAULT_YEAR, month, day)
+    except ValueError:
+        return False
+    return True
 
 
 def _candidate_lines(raw_text):
@@ -130,6 +267,18 @@ def _dedupe(lines):
             continue
         seen.add(line)
         deduped.append(line)
+    return deduped
+
+
+def _dedupe_schedules(schedules):
+    seen = set()
+    deduped = []
+    for schedule in schedules:
+        key = (schedule.title, schedule.start_at, schedule.event_type, 'notice')
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(schedule)
     return deduped
 
 
@@ -206,14 +355,18 @@ def _parse_title(line, default_title):
 
 
 def _parse_event_type(line):
-    if any(keyword in line for keyword in ['평가', '시험', '테스트', '월말']):
+    if any(keyword in line for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트', '?됯?', '?쒗뿕', '?뚯뒪??']):
         return 'exam'
-    if any(keyword in line for keyword in ['제출', '마감', '과제']):
+    if any(keyword in line for keyword in ['제출', '마감', '과제', '?쒖텧', '留덇컧']):
         return 'assignment'
-    if '프로젝트' in line or '관통' in line:
+    if any(keyword in line for keyword in ['프로젝트', 'PJT', '경진대회', '?꾨줈?앺듃']):
         return 'project'
-    if any(keyword in line for keyword in ['특강', '강의', '멘토링', '설명회']):
+    if any(keyword in line for keyword in ['강의', '특강', '캠프', '?밴컯']):
         return 'lecture'
+    if any(keyword in line for keyword in ['공휴일', '신정', '어린이날', '근로자의 날', '부처님', '현충일', '지방선거']):
+        return 'holiday'
+    if any(keyword in line for keyword in ['SSAFY DAY', '입학식', '밋업']):
+        return 'event'
     return 'notice'
 
 
