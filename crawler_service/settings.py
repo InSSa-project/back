@@ -142,6 +142,9 @@ KAKAO_OAUTH_REDIRECT_URI = env(
     default='http://localhost:8000/api/v1/users/oauth/kakao/callback',
 )
 
+AI_SERVER_ENABLED = env('AI_SERVER_ENABLED', default='false').lower() == 'true'
+AI_SERVER_BASE_URL = env('AI_SERVER_BASE_URL', default='http://localhost:8001')
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

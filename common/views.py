@@ -42,6 +42,11 @@ def logout_view(request):
 
 
 @login_required
+def chat_view(request):
+    return render(request, 'core/chat.html')
+
+
+@login_required
 def crawl_data_list(request):
     items = CrawlData.objects.all()
     return render(request, 'core/data_list.html', {'items': items})
