@@ -105,7 +105,7 @@ def _import_raw_items(raw_items):
                 continue
 
             for schedule in parsed_schedules:
-                if _find_existing_schedule_event(schedule, raw_data):
+                if find_existing_schedule_event(schedule, raw_data):
                     summary.skipped_count += 1
                     summary.event_skipped_count += 1
                     continue
@@ -250,7 +250,7 @@ def _create_raw_data(item):
     )
 
 
-def _find_existing_schedule_event(schedule, raw_data):
+def find_existing_schedule_event(schedule, raw_data):
     event_filter = {
         'title': schedule.title,
         'start_at': schedule.start_at,
