@@ -105,7 +105,7 @@ def load_ssafy_authenticated_documents(notice_list_url=None, rule_list_url=None)
                     page=page,
                     list_url=notice_url,
                     source_type='notice',
-                    link_extractor=_extract_notice_links,
+                    link_extractor=_extract_notice_link_items,
                 )
             )
             if academic_rule_url:
@@ -149,21 +149,30 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor):
         if source_type == 'academic_rule':
             return [_parse_detail_soup(soup, list_url, source_type=source_type)]
         raise SsafyCrawlerError(f'No {source_type} detail links were found: {list_url}')
-    return [fetch_authenticated_detail(page, detail_url, source_type=source_type) for detail_url in links]
+    details = []
+    for link in links:
+        if isinstance(link, dict):
+            detail_url = link['url']
+            list_title = link.get('title', '')
+        else:
+            detail_url = link
+            list_title = ''
+        details.append(fetch_authenticated_detail(page, detail_url, source_type=source_type, list_title=list_title))
+    return details
 
 
-def fetch_authenticated_detail(page, detail_url, source_type='notice'):
+def fetch_authenticated_detail(page, detail_url, source_type='notice', list_title=''):
     page.goto(detail_url, wait_until='networkidle')
     soup = BeautifulSoup(page.content(), 'html.parser')
-    return _parse_detail_soup(soup, detail_url, source_type=source_type)
+    return _parse_detail_soup(soup, detail_url, source_type=source_type, list_title=list_title)
 
 
-def fetch_notice_detail(detail_url):
+def fetch_notice_detail(detail_url, list_title=''):
     soup = _request_soup(detail_url)
-    return _parse_detail_soup(soup, detail_url, source_type='notice')
+    return _parse_detail_soup(soup, detail_url, source_type='notice', list_title=list_title)
 
 
-def _parse_detail_soup(soup, detail_url, source_type):
+def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
     content_node = soup.select_one('article, main, .notice-view, .board-view, .view, body')
     if content_node is None:
         raise SsafyCrawlerError(f'SSAFY content area was not found: {detail_url}')
@@ -172,6 +181,8 @@ def _parse_detail_soup(soup, detail_url, source_type):
     title = _clean_text(title_node.get_text(' ', strip=True) if title_node else '')
     if not title and soup.title:
         title = _clean_text(soup.title.get_text(' ', strip=True))
+    if _is_generic_detail_title(title) and list_title:
+        title = _clean_text(list_title)
     if not title:
         title = 'SSAFY document'
 
@@ -210,6 +221,10 @@ def _extract_notice_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['notice', 'board', 'bbs', '\uacf5\uc9c0'])
 
 
+def _extract_notice_link_items(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['notice', 'board', 'bbs', '\uacf5\uc9c0'], include_titles=True)
+
+
 def _extract_academic_rule_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['rule', 'policy', 'academic', 'board', 'bbs', '\uaddc\uc815', '\ud559\uc0ac'])
 
@@ -233,7 +248,7 @@ def extract_image_urls_from_html(raw_html, source_url):
     return image_urls
 
 
-def _extract_links_by_keywords(soup, base_url, keywords):
+def _extract_links_by_keywords(soup, base_url, keywords, include_titles=False):
     links = []
     seen = set()
     for anchor in soup.select('a[href]'):
@@ -254,7 +269,10 @@ def _extract_links_by_keywords(soup, base_url, keywords):
         if absolute_url in seen:
             continue
         seen.add(absolute_url)
-        links.append(absolute_url)
+        if include_titles:
+            links.append({'url': absolute_url, 'title': text})
+        else:
+            links.append(absolute_url)
     return links
 
 
@@ -304,4 +322,9 @@ def _extract_published_at(soup):
 
 def _clean_text(value):
     return '\n'.join(line.strip() for line in value.splitlines() if line.strip())
+
+
+def _is_generic_detail_title(title):
+    cleaned = _clean_text(title)
+    return cleaned in {'공지사항 상세', '게시물 상세', '상세', 'SSAFY'} or cleaned.endswith('상세')
 

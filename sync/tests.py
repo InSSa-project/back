@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
@@ -19,6 +20,7 @@ from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
     extract_image_urls_from_html,
     _extract_notice_links,
+    _parse_detail_soup,
     _login_ssafy,
     _collect_authenticated_list,
     load_ssafy_authenticated_documents,
@@ -606,6 +608,117 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['ocr_provider'], 'google_vision')
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'success')
         self.assertIn('[OCR_TEXT]', raw_data.raw_text)
+
+    def test_link_schedule_events_to_raw_data_dry_run_reports_linkable_rows(self):
+        raw_data = _raw_data('https://edu.ssafy.com/notices/link', '월말평가 2026.05.20')
+        ScheduleEvent.objects.create(
+            title='월말평가',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+        )
+        output = StringIO()
+
+        call_command('link_schedule_events_to_raw_data', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('checked_count=1', value)
+        self.assertIn('linked_count=1', value)
+        self.assertIn(f'raw_data_id={raw_data.id}', value)
+        self.assertIsNone(ScheduleEvent.objects.get().raw_data)
+
+    def test_delete_sample_data_dry_run_reports_sample_targets(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://sample.ssafy.local/notices/sample',
+            title='5월 월말평가 안내',
+            raw_text='월말평가 2026.05.20',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말평가',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+        )
+        output = StringIO()
+
+        call_command('delete_sample_data', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('raw_delete_count=1', value)
+        self.assertIn('event_delete_count=1', value)
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_delete_sample_data_preserves_edu_ssafy_data(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1',
+            title='실제 공지',
+            raw_text='월말평가 2026.05.20',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말평가',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+        )
+
+        call_command('delete_sample_data')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_preview_parse_raw_data_command_outputs_candidates(self):
+        raw_data = _raw_data('https://example.com/raw/preview', '월말평가 2026.05.20')
+        output = StringIO()
+
+        call_command('preview_parse_raw_data', '--id', raw_data.id, stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('raw_title=', value)
+        self.assertIn('candidate_count=1', value)
+        self.assertIn('title=월말평가', value)
+
+    def test_parser_extracts_multiple_ocr_table_schedule_rows(self):
+        raw_text = '''
+        [학습] 15기 1학기 전체 일정
+        입과 및 OT 1월 7일
+        1학기 프로젝트 3월 2일 ~ 3월 6일
+        월말평가
+        5월 20일
+        프로젝트 제출 마감 05/24 23:59까지
+        '''
+
+        schedules = parse_schedule_candidates(raw_text, default_title='공지사항 상세')
+
+        self.assertGreaterEqual(len(schedules), 4)
+        self.assertTrue(all(schedule.title != '공지사항 상세' for schedule in schedules))
+        self.assertIn('project', {schedule.event_type for schedule in schedules})
+
+    def test_generic_detail_title_uses_list_title(self):
+        soup = BeautifulSoup(
+            '<main><h1>공지사항 상세</h1><p>[학습] 15기 1학기 전체 일정</p></main>'
+            '<title>공지사항 상세</title>',
+            'html.parser',
+        )
+
+        item = _parse_detail_soup(
+            soup,
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=115458',
+            source_type='notice',
+            list_title='[학습] 15기 1학기 전체 일정',
+        )
+
+        self.assertEqual(item['title'], '[학습] 15기 1학기 전체 일정')
 
 
 def _notice_item(source_url, notice_id):
