@@ -5,8 +5,16 @@ open ai api 연동 채팅 사용법 :
 
 
 .env 이 값들 맞아야함
-AI_SERVER_ENABLED=true
-AI_SERVER_BASE_URL=http://localhost:8010
 
+- 구글 오오스
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_REDIRECT_URI=example env파일 기본값(수정 안해도됨)
+
+- LLM api 
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=실제_Gemini_API_KEY
+
+- 기타
+AI_SERVER_ENABLED=true
+AI_SERVER_BASE_URL=http://localhost:8010
