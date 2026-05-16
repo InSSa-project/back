@@ -54,6 +54,8 @@ class Command(BaseCommand):
         for index, candidate in enumerate(grid_debug.candidates or [], start=1):
             self.stdout.write(
                 f'{index}. inferred_date={candidate["inferred_date"]} '
+                f'start_date={candidate.get("start_date", candidate["inferred_date"])} '
+                f'end_date={candidate.get("end_date", candidate["inferred_date"])} '
                 f'title={candidate["title"]} '
                 f'event_type={candidate["event_type"]} '
                 f'source_box_count={candidate["source_box_count"]} '

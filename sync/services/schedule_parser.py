@@ -97,12 +97,13 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정', ocr_boxes=
     grid_candidates, _debug = parse_grid_schedule_candidates(ocr_boxes or [])
     for candidate in grid_candidates:
         start_at = _aware(candidate.event_date, time.min)
+        end_date = getattr(candidate, 'end_date', None) or candidate.event_date
         schedules.append(
             ParsedSchedule(
                 title=candidate.title,
                 description=candidate.description,
                 start_at=start_at,
-                end_at=start_at + timedelta(days=1),
+                end_at=_aware(end_date, time.min) + timedelta(days=1),
                 is_all_day=True,
                 event_type=candidate.event_type,
             )
