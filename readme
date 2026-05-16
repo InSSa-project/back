@@ -2,8 +2,6 @@ open ai api 연동 채팅 사용법 :
 1. ai_server 폴더 안의 requirements 패키지 설치
 2. .env 파일 > 구글 오오스 클라이언트 아이디, 비번, GOOGLE_REDIRECT_URI, 제미나이 api키 작성
 3. 터미널 분리하여 fast api, 장고 서버 실행
-
-
     .env 이 값들 맞아야함
 
     - 구글 오오스
@@ -60,7 +58,7 @@ open ai api 연동 채팅 사용법 :
     코덱스 자체생성 rule-based로 직접 구성한 키워드 분류
     따라서 새로운 표현이나 도메인이 생기면 수동 업데이트 필요
 3. retrieval 전략 수립
-    문제 : retrieval이 semantic similarity 중심이라 문맥상 비슷한 문서답변 생성
+    문제 : retrieval(검색)이 semantic similarity 중심이라 문맥상 비슷한 문서답변 생성
     개선 : 
         일반질문 : semantic retrieval
         일정질문 : structured retrieval + metadata filter
