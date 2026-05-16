@@ -1,4 +1,5 @@
 import json
+import tempfile
 import types
 from io import StringIO
 from unittest.mock import patch
@@ -979,7 +980,38 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('ocr_box_count=', value)
         self.assertIn('grid_date_cell_count=', value)
         self.assertIn('grid_candidate_count=1', value)
-        self.assertIn('date=2026-01-20', value)
+        self.assertIn('inferred_date=2026-01-20', value)
+        self.assertIn('source_box_count=', value)
+        self.assertIn('row_index=', value)
+        self.assertIn('grid_unmatched_texts=', value)
+
+    def test_preview_parse_raw_data_exports_grid_debug_json(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/preview-grid-json',
+            title='[학습] 15기 1학기 전체 일정',
+            raw_text='[OCR_TEXT]\n1월\n20\nSW 역량테스트',
+            ocr_boxes=_calendar_ocr_boxes(),
+        )
+        output = StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_path = f'{temp_dir}/grid_candidates.json'
+            call_command(
+                'preview_parse_raw_data',
+                '--id',
+                raw_data.id,
+                '--export-json',
+                export_path,
+                stdout=output,
+            )
+            with open(export_path, encoding='utf-8') as export_file:
+                payload = json.load(export_file)
+
+        self.assertEqual(payload['raw_id'], raw_data.id)
+        self.assertEqual(payload['grid_debug']['candidate_count'], 1)
+        self.assertEqual(payload['grid_debug']['candidates'][0]['inferred_date'], '2026-01-20')
+        self.assertIn('export_json=', output.getvalue())
 
     def test_parser_extracts_multiple_ocr_table_schedule_rows(self):
         raw_text = '''

@@ -42,6 +42,11 @@ class GridScheduleCandidate:
     event_date: date
     event_type: str
     description: str
+    source_box_count: int = 0
+    row_index: int = None
+    col_index: int = None
+    confidence: float = None
+    reason: str = ''
 
 
 @dataclass
@@ -53,6 +58,7 @@ class GridParseDebug:
     used_grid_parser: bool = False
     reason: str = ''
     candidates: list = None
+    unmatched_texts: list = None
 
     def as_dict(self):
         return {
@@ -63,6 +69,7 @@ class GridParseDebug:
             'used_grid_parser': self.used_grid_parser,
             'reason': self.reason,
             'candidates': self.candidates or [],
+            'unmatched_texts': self.unmatched_texts or [],
         }
 
 
@@ -70,6 +77,7 @@ def parse_grid_schedule_candidates(ocr_boxes):
     debug = GridParseDebug(
         ocr_box_count=len(ocr_boxes or []),
         candidates=[],
+        unmatched_texts=[],
     )
     boxes = normalize_ocr_boxes(ocr_boxes)
     debug.normalized_box_count = len(boxes)
@@ -83,8 +91,12 @@ def parse_grid_schedule_candidates(ocr_boxes):
         return [], debug
 
     candidates = []
+    all_cells = []
+    all_section_boxes = []
     for month, section_boxes in month_sections:
         cells = _build_date_cells(month, section_boxes)
+        all_cells.extend(cells)
+        all_section_boxes.extend(section_boxes)
         debug.date_cell_count += len(cells)
         candidates.extend(_assign_events_to_cells(section_boxes, cells))
 
@@ -95,11 +107,17 @@ def parse_grid_schedule_candidates(ocr_boxes):
     debug.candidates = [
         {
             'title': candidate.title,
-            'date': candidate.event_date.isoformat(),
+            'inferred_date': candidate.event_date.isoformat(),
             'event_type': candidate.event_type,
+            'source_box_count': candidate.source_box_count,
+            'row_index': candidate.row_index,
+            'col_index': candidate.col_index,
+            'confidence': candidate.confidence,
+            'reason': candidate.reason,
         }
-        for candidate in candidates
+        for candidate in sorted(candidates, key=lambda item: (item.event_date, item.title))
     ]
+    debug.unmatched_texts = _collect_unmatched_texts(all_section_boxes, all_cells, candidates)
     return candidates, debug
 
 
@@ -243,16 +261,26 @@ def _assign_events_to_cells(boxes, cells):
                 event_date=cell['date'],
                 event_type=_event_type(title),
                 description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                source_box_count=1,
+                row_index=cell.get('row_index'),
+                col_index=cell.get('col_index'),
+                confidence=box.get('confidence'),
+                reason='single_box_keyword',
             )
         )
     for cell in cells:
-        for title in _event_titles_from_cell(boxes, cell):
+        for title, row_boxes in _event_titles_from_cell(boxes, cell):
             candidates.append(
                 GridScheduleCandidate(
                     title=title,
                     event_date=cell['date'],
                     event_type=_event_type(title),
                     description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                    source_box_count=len(row_boxes),
+                    row_index=cell.get('row_index'),
+                    col_index=cell.get('col_index'),
+                    confidence=_average_confidence(row_boxes),
+                    reason='cell_row_group',
                 )
             )
     return candidates
@@ -270,8 +298,62 @@ def _event_titles_from_cell(boxes, cell):
         phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
         title = _event_title_from_box(phrase)
         if title:
-            titles.append(title)
+            titles.append((title, row))
     return titles
+
+
+def _collect_unmatched_texts(boxes, cells, candidates):
+    matched = {(candidate.title, candidate.event_date) for candidate in candidates}
+    unmatched = []
+    for cell in cells:
+        cell_boxes = [
+            box for box in boxes
+            if cell['x1'] <= box['cx'] <= cell['x2']
+            and cell['y1'] <= box['cy'] <= cell['y2']
+            and not _is_structural_box(box)
+        ]
+        for row in _group_rows(cell_boxes):
+            phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1'])).strip()
+            if not _is_debug_worthy_text(phrase):
+                continue
+            title = _event_title_from_box(phrase)
+            if title and (title, cell['date']) in matched:
+                continue
+            unmatched.append(
+                {
+                    'text': phrase,
+                    'inferred_date': cell['date'].isoformat(),
+                    'row_index': cell.get('row_index'),
+                    'col_index': cell.get('col_index'),
+                    'source_box_count': len(row),
+                    'confidence': _average_confidence(row),
+                    'reason': 'no_event_keyword_match' if not title else 'deduped_or_filtered',
+                }
+            )
+    return sorted(unmatched, key=lambda item: (item['inferred_date'], item['text']))[:200]
+
+
+def _is_debug_worthy_text(text):
+    if not text or len(text) < 2:
+        return False
+    if text.upper() in WEEKDAY_HEADERS or text in MONTH_TOKENS:
+        return False
+    return any(char.isalpha() for char in text) or any(ord(char) > 127 for char in text)
+
+
+def _average_confidence(boxes):
+    values = []
+    for box in boxes:
+        confidence = box.get('confidence')
+        if confidence is None:
+            continue
+        try:
+            values.append(float(confidence))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return None
+    return round(sum(values) / len(values), 4)
 
 
 def _group_rows(boxes):
