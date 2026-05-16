@@ -5,6 +5,7 @@ from datetime import date
 
 DEFAULT_YEAR = 2026
 WEEKDAY_HEADERS = {'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'}
+MONTH_TOKENS = {'월', '¿ù'}
 MONTH_PATTERN = re.compile(r'^(?P<month>[1-9]|1[0-2])\s*월$')
 DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
 INLINE_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
@@ -17,7 +18,9 @@ EVENT_KEYWORDS = [
     '과목평가',
     '월말평가',
     'SW 역량테스트',
+    '역량',
     '역량테스트',
+    '테스트',
     'AI 강의',
     'AI 챌린지',
     '밋업',
@@ -139,7 +142,12 @@ def _month_sections(boxes):
         match = MONTH_PATTERN.match(box['text'])
         if match:
             month_headers.append((int(match.group('month')), box))
+            continue
+        month = _month_from_split_boxes(box, boxes)
+        if month:
+            month_headers.append((month, box))
 
+    month_headers = _dedupe_month_headers(month_headers)
     sections = []
     for index, (month, month_box) in enumerate(month_headers):
         start_y = month_box['y1']
@@ -147,6 +155,38 @@ def _month_sections(boxes):
         section_boxes = [box for box in boxes if start_y <= box['cy'] < end_y]
         sections.append((month, section_boxes))
     return sections
+
+
+def _month_from_split_boxes(number_box, boxes):
+    try:
+        month = int(number_box['text'])
+    except (TypeError, ValueError):
+        return None
+    if month < 1 or month > 12:
+        return None
+
+    for box in boxes:
+        if box is number_box:
+            continue
+        if box['text'] not in MONTH_TOKENS:
+            continue
+        same_line = abs(box['cy'] - number_box['cy']) <= max(18, number_box['y2'] - number_box['y1'])
+        nearby = -8 <= box['x1'] - number_box['x2'] <= 30
+        if same_line and nearby:
+            return month
+    return None
+
+
+def _dedupe_month_headers(month_headers):
+    seen = set()
+    deduped = []
+    for month, box in sorted(month_headers, key=lambda item: (item[1]['y1'], item[1]['x1'])):
+        key = (month, round(box['y1'] / 30))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((month, box))
+    return deduped
 
 
 def _build_date_cells(month, boxes):
@@ -205,7 +245,56 @@ def _assign_events_to_cells(boxes, cells):
                 description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
             )
         )
+    for cell in cells:
+        for title in _event_titles_from_cell(boxes, cell):
+            candidates.append(
+                GridScheduleCandidate(
+                    title=title,
+                    event_date=cell['date'],
+                    event_type=_event_type(title),
+                    description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                )
+            )
     return candidates
+
+
+def _event_titles_from_cell(boxes, cell):
+    cell_boxes = [
+        box for box in boxes
+        if cell['x1'] <= box['cx'] <= cell['x2']
+        and cell['y1'] <= box['cy'] <= cell['y2']
+        and not _is_structural_box(box)
+    ]
+    titles = []
+    for row in _group_rows(cell_boxes):
+        phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
+        title = _event_title_from_box(phrase)
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _group_rows(boxes):
+    rows = []
+    for box in sorted(boxes, key=lambda item: (item['cy'], item['x1'])):
+        if not rows or abs(_row_center(rows[-1]) - box['cy']) > 16:
+            rows.append([box])
+        else:
+            rows[-1].append(box)
+    return rows
+
+
+def _row_center(row):
+    return sum(box['cy'] for box in row) / len(row)
+
+
+def _is_structural_box(box):
+    text = box['text']
+    if text.upper() in WEEKDAY_HEADERS or text in MONTH_TOKENS:
+        return True
+    if DAY_PATTERN.match(text):
+        return True
+    return False
 
 
 def _event_title_from_box(text):
@@ -221,6 +310,8 @@ def _event_title_from_box(text):
 def _canonical_title(title):
     if '스타트캠프' in title and '15기' in title:
         return '15기 SW. AI 스타트캠프'
+    if 'SW' in title and '역량' in title and '테스트' in title:
+        return 'SW 역량테스트'
     return title[:255]
 
 
@@ -319,7 +410,7 @@ def _safe_int(value, default):
 
 
 def _event_type(title):
-    if any(keyword in title for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트']):
+    if any(keyword in title for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트', '역량', '테스트']):
         return 'exam'
     if any(keyword in title for keyword in ['프로젝트', 'PJT', '경진대회']):
         return 'project'
