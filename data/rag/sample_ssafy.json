@@ -1,0 +1,104 @@
+{
+  "type": "JSON_UPLOAD",
+  "items": [
+    {
+      "source_type": "EXAM",
+      "event_type": "MONTHLY_TEST",
+      "start_date": "2026-05-24",
+      "end_date": "2026-05-24",
+      "title": "5월 월말평가 일정 안내",
+      "content": "5월 월말평가는 2026년 5월 24일 금요일 09:00부터 12:00까지 진행됩니다.\n\n응시 대상은 해당 월 교육 과정 참여 교육생이며, 세부 고사실과 준비물은 캠퍼스별 공지를 확인해야 합니다.\n\n시험 일정은 운영 상황에 따라 변경될 수 있으므로 최종 공지를 반드시 확인하세요."
+    },
+    {
+      "source_type": "NOTICE",
+      "event_type": "PROJECT",
+      "start_date": "2026-05-28",
+      "end_date": "2026-05-28",
+      "title": "프로젝트 발표 준비 안내",
+      "content": "프로젝트 발표 전날까지 발표 자료를 팀 저장소에 업로드해야 합니다.\n\n발표 순서와 세부 시간은 반별 공지에 따르며, 변경 사항은 담임 컨설턴트 공지를 우선 확인하세요."
+    }
+  ],
+  "type": "JSON_UPLOAD",
+  "items": [
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 18일 JS Basic Syntax1 라이브 방송",
+      "content": "5월 18일 09:00~10:00 JS Basic Syntax1 라이브 방송 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 18일 실습 및 Q&A",
+      "content": "5월 18일 10:00~11:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 18일 오후 실습 및 Q&A",
+      "content": "5월 18일 15:00~17:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 19일 JS Controlling Event 라이브 방송",
+      "content": "5월 19일 09:00~10:00 JS Controlling Event 라이브 방송 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 19일 실습 및 Q&A",
+      "content": "5월 19일 10:00~11:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 19일 오후 실습 및 Q&A",
+      "content": "5월 19일 15:00~17:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 20일 JS AJAX 라이브 방송",
+      "content": "5월 20일 09:00~10:00 JS AJAX 라이브 방송 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 20일 실습 및 Q&A",
+      "content": "5월 20일 10:00~11:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 20일 오후 실습 및 Q&A",
+      "content": "5월 20일 15:00~17:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 21일 비동기 JS with Django 라이브 방송",
+      "content": "5월 21일 09:00~10:00 비동기 JS with Django 라이브 방송 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 21일 실습 및 Q&A",
+      "content": "5월 21일 10:00~11:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 21일 오후 실습 및 Q&A",
+      "content": "5월 21일 15:00~17:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "PROJECT",
+      "title": "5월 22일 DOM 조작 프로젝트",
+      "content": "5월 22일 09:00~10:00 관통 PJT DOM 조작 프로젝트 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 22일 실습 및 Q&A",
+      "content": "5월 22일 10:00~11:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "CURRICULUM",
+      "title": "5월 22일 오후 실습 및 Q&A",
+      "content": "5월 22일 14:00~16:00 실습 및 Q&A 진행"
+    },
+    {
+      "source_type": "SPECIAL_LECTURE",
+      "title": "5월 22일 DAsP 특강",
+      "content": "5월 22일 17:00~18:00 DAsP 특강 진행"
+    }
+  ]
+}
