@@ -473,6 +473,17 @@ class SampleNoticeImportTests(TestCase):
         self.assertTrue(any(schedule.event_type == 'holiday' for schedule in schedules))
         self.assertEqual(titles.count('월말평가6'), 1)
 
+    def test_parser_prefers_ocr_grid_boxes_when_available(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n1월\n15\n16\n17\n20\nSW 역량테스트',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_calendar_ocr_boxes(),
+        )
+
+        event = next(schedule for schedule in schedules if schedule.title == 'SW 역량테스트')
+        self.assertEqual(event.start_at.date().isoformat(), '2026-01-20')
+        self.assertEqual(event.event_type, 'exam')
+
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):
             with patch('sync.services.import_service.parse_schedule_candidates', side_effect=ValueError('bad date')):
@@ -644,6 +655,46 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(result['ocr_text'], 'monthly exam\n2026.05.20')
         self.assertEqual(result['ocr_failed_count'], 0)
         self.assertEqual(post_mock.call_args.kwargs['headers']['X-OCR-SECRET'], 'super-secret')
+
+    def test_clova_provider_extracts_ocr_boxes(self):
+        response_payload = {
+            'images': [
+                {
+                    'fields': [
+                        {
+                            'inferText': '월말평가',
+                            'inferConfidence': 0.98,
+                            'boundingPoly': {
+                                'vertices': [
+                                    {'x': 100, 'y': 200},
+                                    {'x': 180, 'y': 200},
+                                    {'x': 180, 'y': 220},
+                                    {'x': 100, 'y': 220},
+                                ]
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'clova',
+                'CLOVA_OCR_INVOKE_URL': 'https://clova.example.com/ocr',
+                'CLOVA_OCR_SECRET_KEY': 'super-secret',
+            },
+        ):
+            with patch('sync.services.ocr_service.requests.get', return_value=_ImageResponse()):
+                with patch('sync.services.ocr_service.requests.post', return_value=_JsonResponse(response_payload)):
+                    result = extract_text_from_image_urls(['https://example.com/notice.png'])
+
+        self.assertEqual(result['ocr_status'], 'success')
+        self.assertEqual(result['ocr_boxes'][0]['text'], '월말평가')
+        self.assertEqual(result['ocr_boxes'][0]['x1'], 100.0)
+        self.assertEqual(result['ocr_boxes'][0]['y2'], 220.0)
+        self.assertEqual(result['ocr_boxes'][0]['confidence'], 0.98)
 
     def test_clova_missing_configuration_fails_safely(self):
         with patch.dict(
@@ -889,6 +940,24 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('raw_title=', value)
         self.assertIn('candidate_count=1', value)
         self.assertIn('title=월말평가', value)
+
+    def test_preview_parse_raw_data_outputs_ocr_grid_debug(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/preview-grid',
+            title='[학습] 15기 1학기 전체 일정',
+            raw_text='[OCR_TEXT]\n1월\n20\nSW 역량테스트',
+            ocr_boxes=_calendar_ocr_boxes(),
+        )
+        output = StringIO()
+
+        call_command('preview_parse_raw_data', '--id', raw_data.id, stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('ocr_box_count=', value)
+        self.assertIn('grid_date_cell_count=', value)
+        self.assertIn('grid_candidate_count=1', value)
+        self.assertIn('date=2026-01-20', value)
 
     def test_parser_extracts_multiple_ocr_table_schedule_rows(self):
         raw_text = '''
@@ -1253,6 +1322,27 @@ def _raw_data(source_url, raw_text, source_type='notice'):
         raw_html=f'<main>{raw_text}</main>',
         metadata_json={'notice_id': source_url.rsplit('/', 1)[-1]},
     )
+
+
+def _calendar_ocr_boxes():
+    return [
+        {'text': '1월', 'x1': 20, 'y1': 20, 'x2': 50, 'y2': 40},
+        {'text': 'SUN', 'x1': 10, 'y1': 60, 'x2': 40, 'y2': 80},
+        {'text': 'MON', 'x1': 110, 'y1': 60, 'x2': 140, 'y2': 80},
+        {'text': 'TUE', 'x1': 210, 'y1': 60, 'x2': 240, 'y2': 80},
+        {'text': 'WED', 'x1': 310, 'y1': 60, 'x2': 340, 'y2': 80},
+        {'text': 'THU', 'x1': 410, 'y1': 60, 'x2': 440, 'y2': 80},
+        {'text': 'FRI', 'x1': 510, 'y1': 60, 'x2': 540, 'y2': 80},
+        {'text': 'SAT', 'x1': 610, 'y1': 60, 'x2': 640, 'y2': 80},
+        {'text': '15', 'x1': 10, 'y1': 180, 'x2': 24, 'y2': 200},
+        {'text': '16', 'x1': 110, 'y1': 180, 'x2': 124, 'y2': 200},
+        {'text': '17', 'x1': 210, 'y1': 180, 'x2': 224, 'y2': 200},
+        {'text': '18', 'x1': 310, 'y1': 180, 'x2': 324, 'y2': 200},
+        {'text': '19', 'x1': 410, 'y1': 180, 'x2': 424, 'y2': 200},
+        {'text': '20', 'x1': 510, 'y1': 180, 'x2': 524, 'y2': 200},
+        {'text': '21', 'x1': 610, 'y1': 180, 'x2': 624, 'y2': 200},
+        {'text': 'SW 역량테스트', 'x1': 505, 'y1': 212, 'x2': 590, 'y2': 232, 'confidence': 0.96},
+    ]
 
 
 class _FailedLoginPage:

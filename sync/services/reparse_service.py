@@ -33,7 +33,11 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None):
             continue
 
         try:
-            parsed_schedules = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
+            parsed_schedules = parse_schedule_candidates(
+                raw_data.raw_text,
+                default_title=raw_data.title,
+                ocr_boxes=raw_data.ocr_boxes,
+            )
         except Exception:
             summary.failed_count += 1
             continue

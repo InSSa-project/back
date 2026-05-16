@@ -18,6 +18,7 @@ class RawSsafyData(models.Model):
     title = models.CharField(max_length=255)
     raw_text = models.TextField(blank=True)
     raw_html = models.TextField(blank=True)
+    ocr_boxes = models.JSONField(default=list, blank=True)
     collected_at = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_COLLECTED)
     metadata_json = models.JSONField(default=dict, blank=True)

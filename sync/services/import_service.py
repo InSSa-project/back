@@ -98,7 +98,11 @@ def _import_raw_items(raw_items):
                 _mark_no_schedule(raw_data, summary)
                 continue
 
-            parsed_schedules = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
+            parsed_schedules = parse_schedule_candidates(
+                raw_data.raw_text,
+                default_title=raw_data.title,
+                ocr_boxes=raw_data.ocr_boxes,
+            )
             summary.parse_candidate_count += len(parsed_schedules)
             if not parsed_schedules:
                 _mark_no_schedule(raw_data, summary)
@@ -209,9 +213,11 @@ def _apply_ocr_pipeline(item, summary):
             'ocr_error': ocr_result.get('ocr_error', ''),
             'ocr_text_length': len(ocr_text),
             'ocr_failed_count': ocr_result.get('ocr_failed_count', 0),
+            'ocr_box_count': len(ocr_result.get('ocr_boxes') or []),
         }
     )
     prepared['metadata_json'] = metadata
+    prepared['ocr_boxes'] = ocr_result.get('ocr_boxes') or []
     prepared['raw_text'] = _merge_ocr_text(prepared.get('raw_text', ''), ocr_text)
     return prepared
 
@@ -226,6 +232,7 @@ def _safe_extract_ocr_text(image_urls):
             'ocr_status': 'failed',
             'ocr_error': str(exc),
             'ocr_failed_count': 1,
+            'ocr_boxes': [],
         }
 
 
@@ -244,6 +251,7 @@ def _create_raw_data(item):
         title=item.get('title', ''),
         raw_text=item.get('raw_text', ''),
         raw_html=item.get('raw_html', ''),
+        ocr_boxes=item.get('ocr_boxes') or [],
         status=RawSsafyData.STATUS_COLLECTED,
         metadata_json=item.get('metadata_json', {}),
         collected_at=timezone.now(),

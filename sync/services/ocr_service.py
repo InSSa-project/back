@@ -50,6 +50,7 @@ def _extract_with_clova(image_urls):
         )
 
     ocr_texts = []
+    ocr_boxes = []
     errors = []
     for image_url in image_urls:
         image_bytes = _download_image(image_url, errors)
@@ -59,9 +60,11 @@ def _extract_with_clova(image_urls):
         try:
             response = _post_clova_ocr(invoke_url, secret_key, image_url, image_bytes)
             response.raise_for_status()
-            ocr_text = _parse_clova_ocr_text(response.json())
+            payload = response.json()
+            ocr_text = _parse_clova_ocr_text(payload)
             if ocr_text:
                 ocr_texts.append(ocr_text)
+            ocr_boxes.extend(_parse_clova_ocr_boxes(payload, image_url=image_url, image_index=len(ocr_texts)))
         except Exception as exc:
             errors.append(_summarize_error(exc, secret_values=[secret_key]))
 
@@ -73,6 +76,7 @@ def _extract_with_clova(image_urls):
             text=ocr_text,
             error='; '.join(errors[:3]),
             failed_count=len(errors),
+            boxes=ocr_boxes,
         )
     if errors:
         return _result(
@@ -118,6 +122,22 @@ def _parse_clova_ocr_text(payload):
             if text:
                 lines.append(text)
     return '\n'.join(lines)
+
+
+def _parse_clova_ocr_boxes(payload, image_url='', image_index=0):
+    boxes = []
+    for image in payload.get('images') or []:
+        fields = image.get('fields') or []
+        for field in fields:
+            text = (field.get('inferText') or '').strip()
+            vertices = ((field.get('boundingPoly') or {}).get('vertices')) or []
+            box = _box_from_vertices(text, vertices)
+            if box:
+                box['confidence'] = field.get('inferConfidence')
+                box['image_url'] = image_url
+                box['image_index'] = image_index
+                boxes.append(box)
+    return boxes
 
 
 def _guess_image_format(image_url):
@@ -167,6 +187,7 @@ def _extract_with_google_vision(image_urls):
         )
 
     ocr_texts = []
+    ocr_boxes = []
     errors = []
     for image_url in image_urls:
         image_bytes = _download_image(image_url, errors)
@@ -181,6 +202,7 @@ def _extract_with_google_vision(image_urls):
             annotations = getattr(response, 'text_annotations', None) or []
             if annotations:
                 ocr_texts.append(annotations[0].description.strip())
+                ocr_boxes.extend(_parse_google_vision_ocr_boxes(annotations[1:], image_url, len(ocr_texts)))
         except Exception as exc:
             errors.append(_summarize_error(exc))
 
@@ -192,6 +214,7 @@ def _extract_with_google_vision(image_urls):
             text=ocr_text,
             error='; '.join(errors[:3]),
             failed_count=len(errors),
+            boxes=ocr_boxes,
         )
     if errors:
         return _result(
@@ -201,6 +224,56 @@ def _extract_with_google_vision(image_urls):
             failed_count=len(errors),
         )
     return _result(provider=OCR_PROVIDER_GOOGLE_VISION, status='skipped')
+
+
+def _parse_google_vision_ocr_boxes(annotations, image_url='', image_index=0):
+    boxes = []
+    for annotation in annotations:
+        text = (getattr(annotation, 'description', '') or '').strip()
+        vertices = getattr(getattr(annotation, 'bounding_poly', None), 'vertices', None) or []
+        box = _box_from_vertices(text, vertices)
+        if box:
+            box['confidence'] = getattr(annotation, 'confidence', None)
+            box['image_url'] = image_url
+            box['image_index'] = image_index
+            boxes.append(box)
+    return boxes
+
+
+def _box_from_vertices(text, vertices):
+    if not text or not vertices:
+        return None
+    xs = []
+    ys = []
+    for vertex in vertices:
+        x = _vertex_value(vertex, 'x')
+        y = _vertex_value(vertex, 'y')
+        if x is not None:
+            xs.append(x)
+        if y is not None:
+            ys.append(y)
+    if not xs or not ys:
+        return None
+    return {
+        'text': text,
+        'x1': min(xs),
+        'y1': min(ys),
+        'x2': max(xs),
+        'y2': max(ys),
+    }
+
+
+def _vertex_value(vertex, name):
+    if isinstance(vertex, dict):
+        value = vertex.get(name)
+    else:
+        value = getattr(vertex, name, None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _download_image(image_url, errors):
@@ -217,9 +290,10 @@ def _is_google_vision_enabled():
     return os.getenv('GOOGLE_VISION_ENABLED', '').strip().lower() in TRUE_VALUES
 
 
-def _result(provider, status, text='', error='', failed_count=0):
+def _result(provider, status, text='', error='', failed_count=0, boxes=None):
     return {
         'ocr_text': text,
+        'ocr_boxes': boxes or [],
         'ocr_provider': provider,
         'ocr_status': status,
         'ocr_error': error,
