@@ -87,7 +87,7 @@ def _backfill_queryset(queryset, dry_run=False, reparse=False):
                 summary.no_image_count += 1
                 if not dry_run:
                     _update_metadata(raw_data, image_urls=image_urls, ocr_result=None)
-                    raw_data.save(update_fields=['metadata_json'])
+                    raw_data.save(update_fields=['metadata_json', 'ocr_boxes'])
                 continue
 
             if dry_run:
@@ -106,11 +106,11 @@ def _backfill_queryset(queryset, dry_run=False, reparse=False):
             _update_metadata(raw_data, image_urls=image_urls, ocr_result=ocr_result)
             if ocr_text:
                 raw_data.raw_text = _replace_ocr_text(raw_data.raw_text, ocr_text)
-                raw_data.save(update_fields=['raw_text', 'metadata_json'])
+                raw_data.save(update_fields=['raw_text', 'metadata_json', 'ocr_boxes'])
                 summary.updated_count += 1
                 updated_raw_ids.append(raw_data.id)
             else:
-                raw_data.save(update_fields=['metadata_json'])
+                raw_data.save(update_fields=['metadata_json', 'ocr_boxes'])
 
         if dry_run:
             transaction.set_rollback(True)
@@ -144,6 +144,7 @@ def _safe_extract_text(image_urls):
             'ocr_status': 'failed',
             'ocr_error': str(exc)[:300],
             'ocr_failed_count': len(image_urls),
+            'ocr_boxes': [],
         }
 
 
@@ -153,10 +154,13 @@ def _update_metadata(raw_data, image_urls, ocr_result):
     if ocr_result is None:
         metadata.setdefault('ocr_status', 'skipped')
         metadata['ocr_text_length'] = 0
+        metadata['ocr_box_count'] = 0
+        raw_data.ocr_boxes = []
         raw_data.metadata_json = metadata
         return
 
     ocr_text = ocr_result.get('ocr_text', '')
+    ocr_boxes = ocr_result.get('ocr_boxes') or []
     metadata.update(
         {
             'ocr_provider': ocr_result.get('ocr_provider', 'mock'),
@@ -164,8 +168,10 @@ def _update_metadata(raw_data, image_urls, ocr_result):
             'ocr_error': ocr_result.get('ocr_error', ''),
             'ocr_text_length': len(ocr_text),
             'ocr_failed_count': ocr_result.get('ocr_failed_count', 0),
+            'ocr_box_count': len(ocr_boxes),
         }
     )
+    raw_data.ocr_boxes = ocr_boxes
     raw_data.metadata_json = metadata
 
 

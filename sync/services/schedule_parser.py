@@ -4,6 +4,8 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
+from sync.services.ocr_grid_parser import parse_grid_schedule_candidates
+
 
 DEFAULT_YEAR = 2026
 GENERIC_TITLES = {
@@ -89,9 +91,22 @@ class ParsedSchedule:
     event_type: str
 
 
-def parse_schedule_candidates(raw_text, default_title='SSAFY 일정'):
+def parse_schedule_candidates(raw_text, default_title='SSAFY 일정', ocr_boxes=None):
     schedules = []
     context_title = _context_title(raw_text, default_title)
+    grid_candidates, _debug = parse_grid_schedule_candidates(ocr_boxes or [])
+    for candidate in grid_candidates:
+        start_at = _aware(candidate.event_date, time.min)
+        schedules.append(
+            ParsedSchedule(
+                title=candidate.title,
+                description=candidate.description,
+                start_at=start_at,
+                end_at=start_at + timedelta(days=1),
+                is_all_day=True,
+                event_type=candidate.event_type,
+            )
+        )
 
     for line in _candidate_lines(raw_text):
         date_match = DATE_RANGE_PATTERN.search(line) or DATE_PATTERN.search(line)
@@ -117,7 +132,8 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정'):
             )
         )
 
-    schedules.extend(_parse_calendar_ocr_candidates(raw_text))
+    if not grid_candidates:
+        schedules.extend(_parse_calendar_ocr_candidates(raw_text))
     return _dedupe_schedules(schedules)
 
 

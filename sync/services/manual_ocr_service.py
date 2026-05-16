@@ -30,8 +30,9 @@ def apply_manual_ocr_text(raw_data, ocr_text, reparse=False, dry_run=False):
         metadata = _build_manual_ocr_metadata(raw_data, normalized_text)
         if not dry_run:
             raw_data.raw_text = replace_ocr_text(raw_data.raw_text, normalized_text)
+            raw_data.ocr_boxes = []
             raw_data.metadata_json = metadata
-            raw_data.save(update_fields=['raw_text', 'metadata_json'])
+            raw_data.save(update_fields=['raw_text', 'metadata_json', 'ocr_boxes'])
         else:
             transaction.set_rollback(True)
 
@@ -70,6 +71,7 @@ def _build_manual_ocr_metadata(raw_data, ocr_text):
             'ocr_error': '',
             'ocr_text_length': len(ocr_text),
             'ocr_failed_count': 0,
+            'ocr_box_count': 0,
         }
     )
     return metadata
