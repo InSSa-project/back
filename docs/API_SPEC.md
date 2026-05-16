@@ -1,0 +1,495 @@
+# API_SPEC.md
+
+# INSSA API SPECIFICATION
+
+---
+
+# 1. 개요
+
+INSSA API는 다음 기능을 중심으로 구성된다.
+
+```text
+사용자 관리
+→ 일정 관리
+→ OCR 처리
+→ AI 질의응답
+→ 알림 시스템
+→ 위험 분석
+```
+
+---
+
+# 2. 기본 규칙
+
+## 2-1. Base URL
+
+```text
+/api/v1/
+```
+
+---
+
+## 2-2. Response Format
+
+### 성공
+
+```json
+{
+  "status": "success",
+  "data": {},
+  "message": "OK"
+}
+```
+
+---
+
+### 실패
+
+```json
+{
+  "status": "error",
+  "message": "error description",
+  "code": 400
+}
+```
+
+---
+
+## 2-3. 인증 방식
+
+```text
+JWT Token (Bearer)
+```
+
+---
+
+# 3. USER API
+
+---
+
+## 3-1. 회원가입
+
+```http
+POST /api/v1/users/signup
+```
+
+### Request
+
+```json
+{
+  "email": "test@test.com",
+  "password": "1234",
+  "name": "홍길동"
+}
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "user_id": 1
+  }
+}
+```
+
+---
+
+## 3-2. 로그인
+
+```http
+POST /api/v1/users/login
+```
+
+---
+
+### Request
+
+```json
+{
+  "email": "test@test.com",
+  "password": "1234"
+}
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "access_token": "jwt.token.here",
+    "refresh_token": "jwt.refresh.here"
+  }
+}
+```
+
+---
+
+## 3-3. 내 정보 조회
+
+```http
+GET /api/v1/users/me
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "email": "test@test.com",
+    "name": "홍길동",
+    "campus": "서울",
+    "class_number": "A1",
+    "track": "Java"
+  }
+}
+```
+
+---
+
+# 4. CALENDAR API
+
+---
+
+## 4-1. 일정 생성
+
+```http
+POST /api/v1/calendar/events
+```
+
+---
+
+### Request
+
+```json
+{
+  "title": "월말평가",
+  "description": "Java 시험",
+  "start_at": "2026-05-28T10:00:00",
+  "end_at": "2026-05-28T12:00:00",
+  "event_type": "MONTHLY_TEST",
+  "is_global": false
+}
+```
+
+---
+
+## 4-2. 일정 조회
+
+```http
+GET /api/v1/calendar/events?start=2026-05-01&end=2026-05-31
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "title": "월말평가",
+      "start_at": "2026-05-28T10:00:00"
+    }
+  ]
+}
+```
+
+---
+
+## 4-3. 일정 수정
+
+```http
+PUT /api/v1/calendar/events/{id}
+```
+
+---
+
+## 4-4. 일정 삭제
+
+```http
+DELETE /api/v1/calendar/events/{id}
+```
+
+---
+
+# 5. OCR API
+
+---
+
+## 5-1. 이미지 업로드 (OCR)
+
+```http
+POST /api/v1/ocr/upload
+```
+
+---
+
+### Request (multipart)
+
+```text
+image: file
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "raw_text": "...",
+    "extracted_events": [
+      {
+        "title": "월말평가",
+        "date": "2026-05-28"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 5-2. OCR 결과 수정
+
+```http
+PUT /api/v1/ocr/result/{id}
+```
+
+---
+
+# 6. AI CHAT API
+
+---
+
+## 6-1. 질문 보내기
+
+```http
+POST /api/v1/ai/chat
+```
+
+---
+
+### Request
+
+```json
+{
+  "message": "이번 주 시험 일정 알려줘"
+}
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "answer": "이번 주 시험은 5월 28일 월말평가입니다.",
+    "references": [
+      {
+        "title": "5월 공지",
+        "score": 0.92
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 6-2. 채팅 기록 조회
+
+```http
+GET /api/v1/ai/chat/sessions
+```
+
+---
+
+## 6-3. 특정 세션 메시지 조회
+
+```http
+GET /api/v1/ai/chat/sessions/{id}
+```
+
+---
+
+# 7. NOTIFICATION API
+
+---
+
+## 7-1. 알림 조회
+
+```http
+GET /api/v1/notifications
+```
+
+---
+
+## 7-2. 알림 읽음 처리
+
+```http
+PATCH /api/v1/notifications/{id}/read
+```
+
+---
+
+# 8. RISK API
+
+---
+
+## 8-1. 위험 상태 조회
+
+```http
+GET /api/v1/risk/status
+```
+
+---
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "risk_level": "CAUTION",
+    "absent_count": 2,
+    "fail_count": 1,
+    "message": "월말평가 준비가 필요합니다."
+  }
+}
+```
+
+---
+
+## 8-2. 위험 상태 재계산
+
+```http
+POST /api/v1/risk/recalculate
+```
+
+---
+
+# 9. SSAFY DATA API
+
+---
+
+## 9-1. 데이터 동기화 시작
+
+```http
+POST /api/v1/ssafy/sync
+```
+
+---
+
+### Request
+
+```json
+{
+  "type": "CHROME_EXTENSION"
+}
+```
+
+---
+
+## 9-2. 동기화 로그 조회
+
+```http
+GET /api/v1/ssafy/sync/logs
+```
+
+---
+
+# 10. ERROR CODES
+
+| Code | Meaning |
+|---|---|
+| 400 | Bad Request |
+| 401 | Unauthorized |
+| 403 | Forbidden |
+| 404 | Not Found |
+| 500 | Server Error |
+
+---
+
+# 11. API 설계 원칙
+
+## 11-1. REST 원칙 준수
+
+- GET: 조회
+- POST: 생성
+- PUT: 전체 수정
+- PATCH: 부분 수정
+- DELETE: 삭제
+
+---
+
+## 11-2. 일관된 Response
+
+모든 API는:
+
+```json
+status + data + message
+```
+
+형태 유지
+
+---
+
+## 11-3. 비동기 고려
+
+다음 API는 비동기 처리 고려:
+
+- OCR upload
+- AI chat
+- SSAFY sync
+
+---
+
+# 12. 인증 필요 API
+
+## 보호 API
+
+- /calendar/*
+- /ai/*
+- /notifications/*
+- /risk/*
+- /users/me
+
+---
+
+# 13. 확장 가능 API
+
+향후 추가:
+
+- /ai/recommend
+- /calendar/share
+- /analytics/*
+- /chrome-extension/sync
+
+---
+
+# 14. 최종 구조 목표
+
+INSSA API는 단순 CRUD가 아니라:
+
+```text
+AI + OCR + 일정 자동화 + 위험 관리
+```
+
+를 통합한 서비스 API 구조이다.

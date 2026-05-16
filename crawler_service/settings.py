@@ -6,9 +6,34 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
+
+def load_local_env():
+    env_path = BASE_DIR / '.env'
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def env(*keys, default=''):
+    for key in keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+    return default
+
+
+load_local_env()
+
 SECRET_KEY = 'django-insecure-change-me-in-production'
 DEBUG = True
 ALLOWED_HOSTS = []
+if DEBUG:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -17,10 +42,24 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'core',
-    'sync',
-    'schedules',
+    'rest_framework',
+    'apps.users',
+    'apps.calendar',
+    'apps.ai',
+    'apps.notices',
+    'apps.ocr',
+    'apps.notifications',
+    'apps.risk',
+    'common',
+
 ]
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'apps.users.authentication.JwtAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -32,6 +71,9 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+SESSION_COOKIE_SAMESITE = env('SESSION_COOKIE_SAMESITE', default='Lax')
+SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE', default='false').lower() == 'true'
 
 ROOT_URLCONF = 'crawler_service.urls'
 
@@ -86,7 +128,43 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-]
+AUTH_USER_MODEL = 'users.User'
+
+JWT_ACCESS_LIFETIME_SECONDS = int(env('JWT_ACCESS_LIFETIME_SECONDS', default=60 * 15))
+JWT_REFRESH_LIFETIME_SECONDS = int(env('JWT_REFRESH_LIFETIME_SECONDS', default=60 * 60 * 24 * 14))
+
+GOOGLE_OAUTH_CLIENT_ID = env('GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_CLIENT_ID')
+GOOGLE_OAUTH_CLIENT_SECRET = env('GOOGLE_OAUTH_CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET')
+GOOGLE_OAUTH_REDIRECT_URI = env(
+    'GOOGLE_OAUTH_REDIRECT_URI',
+    'GOOGLE_REDIRECT_URI',
+    default='http://localhost:8000/api/v1/users/oauth/google/callback',
+)
+KAKAO_REST_API_KEY = env('KAKAO_REST_API_KEY', 'KAKAO_CLIENT_ID')
+KAKAO_CLIENT_SECRET = env('KAKAO_CLIENT_SECRET')
+KAKAO_OAUTH_REDIRECT_URI = env(
+    'KAKAO_OAUTH_REDIRECT_URI',
+    'KAKAO_REDIRECT_URI',
+    default='http://localhost:8000/api/v1/users/oauth/kakao/callback',
+)
+
+AI_SERVER_ENABLED = env('AI_SERVER_ENABLED', default='false').lower() == 'true'
+AI_SERVER_BASE_URL = env('AI_SERVER_BASE_URL', default='http://localhost:8001')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'apps.users': {
+            'handlers': ['console'],
+            'level': env('OAUTH_LOG_LEVEL', default='INFO'),
+            'propagate': False,
+        },
+    },
+}
+

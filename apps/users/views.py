@@ -1,0 +1,109 @@
+from rest_framework import status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.views import APIView
+from django.contrib.auth import login
+from django.conf import settings
+from django.http import JsonResponse
+from django.shortcuts import redirect
+from urllib.parse import parse_qs, urlparse
+
+from common.utils.api_response import error_response, success_response
+
+from .oauth.exceptions import OAuthError
+from .oauth.registry import OAuthProviderRegistry
+from .serializers import OAuthLoginSerializer, UserSerializer
+from .services import OAuthLoginService, UserService
+
+
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+    service_class = UserService
+
+    def get(self, request):
+        user = self.service_class().get_profile(request.user)
+        return success_response(UserSerializer(user).data)
+
+
+class OAuthLoginView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = OAuthLoginSerializer
+    service_class = OAuthLoginService
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        current_user = request.user if request.user.is_authenticated else None
+        try:
+            result = self.service_class().login(
+                provider_name=serializer.validated_data['provider'],
+                provider_access_token=serializer.validated_data['access_token'],
+                current_user=current_user,
+            )
+        except OAuthError as exc:
+            return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
+
+        return success_response({
+            'access_token': result['access_token'],
+            'refresh_token': result['refresh_token'],
+            'is_created': result['is_created'],
+            'user': UserSerializer(result['user']).data,
+        })
+
+
+class OAuthAuthorizeView(APIView):
+    permission_classes = [AllowAny]
+    service_class = OAuthLoginService
+
+    def get(self, request, provider):
+        try:
+            authorization_url = self.service_class().build_authorization_url(request, provider)
+        except OAuthError as exc:
+            return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
+        return redirect(authorization_url)
+
+
+class OAuthCallbackView(APIView):
+    permission_classes = [AllowAny]
+    service_class = OAuthLoginService
+
+    def get(self, request, provider):
+        code = request.query_params.get('code')
+        state = request.query_params.get('state')
+        if not code or not state:
+            return error_response('OAuth callback requires code and state.', code=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = self.service_class().login_with_authorization_code(request, provider, code, state)
+        except OAuthError as exc:
+            return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
+
+        login(request, result['user'])
+        return redirect('index')
+
+
+class OAuthDebugView(APIView):
+    permission_classes = [AllowAny]
+    provider_registry_class = OAuthProviderRegistry
+
+    def get(self, request, provider):
+        try:
+            provider_instance = self.provider_registry_class().get_provider(provider)
+            redirect_uri = getattr(settings, f'{provider.upper()}_OAUTH_REDIRECT_URI', '')
+            authorization_url = provider_instance.get_authorization_url('debug-state', redirect_uri=redirect_uri)
+        except OAuthError as exc:
+            return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
+
+        parsed_url = urlparse(authorization_url)
+        query = parse_qs(parsed_url.query)
+        client_id = query.get('client_id', [''])[0]
+        return JsonResponse({
+            'provider': provider,
+            'request_host': request.get_host(),
+            'settings_redirect_uri_repr': repr(redirect_uri),
+            'generated_redirect_uri_repr': repr(query.get('redirect_uri', [''])[0]),
+            'redirect_uri_equal': redirect_uri == query.get('redirect_uri', [''])[0],
+            'client_id_repr': repr(client_id),
+            'client_id_valid_shape': client_id.endswith('.apps.googleusercontent.com'),
+            'authorization_url': authorization_url,
+        }, json_dumps_params={'ensure_ascii': False, 'indent': 2})
