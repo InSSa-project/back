@@ -16,11 +16,12 @@ class ReparseSummary:
     skipped_count: int = 0
     no_schedule_count: int = 0
     failed_count: int = 0
+    replaced_event_count: int = 0
     dry_run: bool = False
 
 
 @transaction.atomic
-def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None):
+def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, replace_events=False):
     summary = ReparseSummary(dry_run=dry_run)
     queryset = raw_data_queryset.order_by('id')
     if limit is not None:
@@ -47,8 +48,15 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None):
             summary.no_schedule_count += 1
             continue
 
+        if replace_events:
+            existing_events = ScheduleEvent.objects.filter(raw_data=raw_data)
+            replace_count = existing_events.count()
+            summary.replaced_event_count += replace_count
+            if not dry_run and replace_count:
+                existing_events.delete()
+
         for schedule in parsed_schedules:
-            if find_existing_schedule_event(schedule, raw_data):
+            if not replace_events and find_existing_schedule_event(schedule, raw_data):
                 summary.skipped_count += 1
                 continue
 

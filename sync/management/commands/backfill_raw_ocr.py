@@ -19,6 +19,8 @@ class BackfillSummary:
     ocr_processed_count: int = 0
     ocr_failed_count: int = 0
     updated_count: int = 0
+    skipped_existing_ocr_count: int = 0
+    forced_count: int = 0
     no_image_count: int = 0
     reparse_created_count: int = 0
     dry_run: bool = False
@@ -39,6 +41,11 @@ class Command(BaseCommand):
         parser.add_argument('--dry-run', action='store_true', help='Inspect rows without OCR calls or DB writes.')
         parser.add_argument('--limit', type=int, help='Maximum number of RawSsafyData rows to inspect.')
         parser.add_argument('--reparse', action='store_true', help='Reparse updated RawSsafyData rows into ScheduleEvent rows.')
+        parser.add_argument(
+            '--force',
+            action='store_true',
+            help='Run OCR again even when successful OCR text and boxes are already stored.',
+        )
 
     def handle(self, *args, **options):
         queryset = RawSsafyData.objects.all().order_by('id')
@@ -54,6 +61,7 @@ class Command(BaseCommand):
             queryset=queryset,
             dry_run=options['dry_run'],
             reparse=options['reparse'],
+            force=options['force'],
         )
 
         message = (
@@ -63,6 +71,8 @@ class Command(BaseCommand):
             f'ocr_processed_count={summary.ocr_processed_count}\n'
             f'ocr_failed_count={summary.ocr_failed_count}\n'
             f'updated_count={summary.updated_count}\n'
+            f'skipped_existing_ocr_count={summary.skipped_existing_ocr_count}\n'
+            f'forced_count={summary.forced_count}\n'
             f'no_image_count={summary.no_image_count}\n'
             f'reparse_created_count={summary.reparse_created_count}\n'
             f'dry_run={str(summary.dry_run).lower()}'
@@ -72,7 +82,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(message))
 
 
-def _backfill_queryset(queryset, dry_run=False, reparse=False):
+def _backfill_queryset(queryset, dry_run=False, reparse=False, force=False):
     summary = BackfillSummary(dry_run=dry_run)
     summary.ocr_errors = []
     updated_raw_ids = []
@@ -89,6 +99,12 @@ def _backfill_queryset(queryset, dry_run=False, reparse=False):
                     _update_metadata(raw_data, image_urls=image_urls, ocr_result=None)
                     raw_data.save(update_fields=['metadata_json', 'ocr_boxes'])
                 continue
+
+            if _has_existing_ocr_boxes(raw_data) and not force:
+                summary.skipped_existing_ocr_count += 1
+                continue
+            if force:
+                summary.forced_count += 1
 
             if dry_run:
                 continue
@@ -120,6 +136,14 @@ def _backfill_queryset(queryset, dry_run=False, reparse=False):
         summary.reparse_created_count = reparse_summary.created_count
 
     return summary
+
+
+def _has_existing_ocr_boxes(raw_data):
+    metadata = raw_data.metadata_json or {}
+    return (
+        metadata.get('ocr_status') == 'success'
+        and bool(raw_data.ocr_boxes)
+    )
 
 
 def _collect_image_urls(raw_data):

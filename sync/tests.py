@@ -326,6 +326,28 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('created_count=1', value)
         self.assertIn('dry_run=true', value)
 
+    def test_reparse_command_can_target_id_and_replace_existing_events(self):
+        raw_data = _raw_data('https://example.com/raw/reparse-replace', '월말평가 2026.05.20')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Old generated event',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 19, 0, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 0, 0)),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            source_id=str(raw_data.pk),
+        )
+        output = StringIO()
+
+        call_command('reparse_raw_ssafy_data', '--id', raw_data.id, '--replace-events', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('WARNING: --replace-events will delete existing ScheduleEvent rows', value)
+        self.assertIn('replaced_event_count=1', value)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().title, '월말평가')
+
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
             _notice_item('https://example.com/notices/3', 'notice-3'),
@@ -1022,6 +1044,57 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['ocr_text_length'], len('월말평가 2026.05.20'))
         self.assertIn('updated_count=1', output.getvalue())
 
+    def test_backfill_raw_ocr_force_refills_existing_text_and_boxes(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=force',
+            title='OCR force',
+            raw_text='공지 본문\n\n[OCR_TEXT]\n기존 OCR',
+            raw_html='<main><img src="/upload/schedule.png"></main>',
+            metadata_json={'ocr_status': 'success', 'ocr_text_length': 6, 'ocr_box_count': 0},
+            ocr_boxes=[],
+        )
+        output = StringIO()
+
+        with patch(
+            'sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls',
+            return_value={
+                'ocr_text': '월말평가 2026.05.20',
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'success',
+                'ocr_error': '',
+                'ocr_failed_count': 0,
+                'ocr_boxes': _calendar_ocr_boxes(),
+            },
+        ):
+            call_command('backfill_raw_ocr', '--id', raw_data.id, '--force', stdout=output)
+
+        raw_data.refresh_from_db()
+        self.assertEqual(len(raw_data.ocr_boxes), len(_calendar_ocr_boxes()))
+        self.assertEqual(raw_data.metadata_json['ocr_box_count'], len(_calendar_ocr_boxes()))
+        self.assertIn('월말평가 2026.05.20', raw_data.raw_text)
+        self.assertIn('forced_count=1', output.getvalue())
+
+    def test_backfill_raw_ocr_skips_existing_boxes_without_force(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=skip',
+            title='OCR skip',
+            raw_text='공지 본문\n\n[OCR_TEXT]\n기존 OCR',
+            raw_html='<main><img src="/upload/schedule.png"></main>',
+            metadata_json={'ocr_status': 'success', 'ocr_text_length': 6, 'ocr_box_count': 1},
+            ocr_boxes=[{'text': '기존', 'x1': 1, 'y1': 1, 'x2': 2, 'y2': 2}],
+        )
+        output = StringIO()
+
+        with patch('sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls') as extract_mock:
+            call_command('backfill_raw_ocr', '--id', raw_data.id, stdout=output)
+
+        raw_data.refresh_from_db()
+        extract_mock.assert_not_called()
+        self.assertEqual(raw_data.ocr_boxes[0]['text'], '기존')
+        self.assertIn('skipped_existing_ocr_count=1', output.getvalue())
+
     def test_backfill_raw_ocr_replaces_existing_ocr_section(self):
         raw_data = RawSsafyData.objects.create(
             source_type='notice',
@@ -1326,7 +1399,8 @@ def _raw_data(source_url, raw_text, source_type='notice'):
 
 def _calendar_ocr_boxes():
     return [
-        {'text': '1월', 'x1': 20, 'y1': 20, 'x2': 50, 'y2': 40},
+        {'text': '1', 'x1': 20, 'y1': 20, 'x2': 32, 'y2': 40},
+        {'text': '월', 'x1': 31, 'y1': 20, 'x2': 50, 'y2': 40},
         {'text': 'SUN', 'x1': 10, 'y1': 60, 'x2': 40, 'y2': 80},
         {'text': 'MON', 'x1': 110, 'y1': 60, 'x2': 140, 'y2': 80},
         {'text': 'TUE', 'x1': 210, 'y1': 60, 'x2': 240, 'y2': 80},
