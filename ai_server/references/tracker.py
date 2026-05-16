@@ -8,8 +8,10 @@ class ReferenceTracker:
                 ai_document_id=chunk.ai_document_id,
                 raw_data_id=chunk.raw_data_id,
                 title=chunk.title,
+                source_type=chunk.document_type,
                 score=chunk.score,
                 chunk_id=chunk.chunk_id,
+                snippet=chunk.content[:240],
                 metadata=chunk.metadata,
             )
             for chunk in chunks

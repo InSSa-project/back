@@ -14,5 +14,6 @@ class AiChatView(APIView):
         result = self.service_class().answer(
             user=request.user,
             message=request.data.get('message', ''),
+            session_id=request.data.get('session_id'),
         )
         return success_response(result)
