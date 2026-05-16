@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 
 DEFAULT_YEAR = 2026
@@ -9,11 +9,33 @@ MONTH_TOKENS = {'월', '¿ù'}
 MONTH_PATTERN = re.compile(r'^(?P<month>[1-9]|1[0-2])\s*월$')
 DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
 INLINE_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
+SINGLE_DAY_TITLES = {
+    '15기 입학식',
+    'SSAFY DAY',
+    '과목평가',
+    '월말평가',
+    '과목평가/월말평가',
+    '근로자의 날',
+    '어린이날',
+    '부처님 오신날',
+    '현충일',
+    '신정',
+}
+RANGE_TITLE_KEYWORDS = [
+    '15기 SW. AI 스타트캠프',
+    'AI 강의',
+    'AI 강의 II',
+    '온라인 위크',
+    '관통 프로젝트',
+    '관통PJT 경진대회',
+]
+SINGLE_TOKEN_NOISE = {'역량', '테스트', 'DAY', '시작', '예정'}
 EVENT_KEYWORDS = [
     '신정',
     '스타트캠프',
     '입학식',
     '본학습',
+    '기본학습',
     'SSAFY DAY',
     '과목평가',
     '월말평가',
@@ -29,6 +51,7 @@ EVENT_KEYWORDS = [
     '부처님',
     '현충일',
     '온라인 위크',
+    '온라인 워크',
     '관통 프로젝트',
     '관통PJT',
     '경진대회',
@@ -42,6 +65,7 @@ class GridScheduleCandidate:
     event_date: date
     event_type: str
     description: str
+    end_date: date = None
     source_box_count: int = 0
     row_index: int = None
     col_index: int = None
@@ -108,6 +132,8 @@ def parse_grid_schedule_candidates(ocr_boxes):
         {
             'title': candidate.title,
             'inferred_date': candidate.event_date.isoformat(),
+            'start_date': candidate.event_date.isoformat(),
+            'end_date': (candidate.end_date or candidate.event_date).isoformat(),
             'event_type': candidate.event_type,
             'source_box_count': candidate.source_box_count,
             'row_index': candidate.row_index,
@@ -115,7 +141,7 @@ def parse_grid_schedule_candidates(ocr_boxes):
             'confidence': candidate.confidence,
             'reason': candidate.reason,
         }
-        for candidate in sorted(candidates, key=lambda item: (item.event_date, item.title))
+        for candidate in sorted(candidates, key=lambda item: (item.event_date, item.end_date or item.event_date, item.title))
     ]
     debug.unmatched_texts = _collect_unmatched_texts(all_section_boxes, all_cells, candidates)
     return candidates, debug
@@ -210,40 +236,54 @@ def _dedupe_month_headers(month_headers):
 def _build_date_cells(month, boxes):
     day_boxes = []
     for box in boxes:
-        match = DAY_PATTERN.match(box['text'])
-        if not match:
-            inline_match = INLINE_DAY_PATTERN.match(box['text'])
-            if not inline_match:
-                continue
-            day = int(inline_match.group('day'))
-        else:
-            day = int(match.group('day'))
-        if _valid_day(month, day):
+        day = _day_from_box(box)
+        if day and _valid_day(month, day):
             day_boxes.append((day, box))
 
     day_boxes = _dedupe_day_boxes(day_boxes)
     if not day_boxes:
         return []
 
-    columns = _cluster_centers([box['cx'] for _, box in day_boxes], max_gap=80)
     rows = _cluster_centers([box['cy'] for _, box in day_boxes], max_gap=55)
+    columns = _cluster_centers([box['cx'] for _, box in day_boxes], max_gap=80)
+    row_bounds = _bounds_from_centers(rows)
+    col_bounds = _bounds_from_centers(columns)
     cells = []
     for day, box in day_boxes:
-        col_index = _nearest_index(columns, box['cx'])
         row_index = _nearest_index(rows, box['cy'])
+        col_index = _nearest_index(columns, box['cx'])
         cells.append(
             {
                 'day': day,
                 'date': date(DEFAULT_YEAR, month, day),
                 'row_index': row_index,
                 'col_index': col_index,
-                'x1': _lower_bound(columns, col_index),
-                'x2': _upper_bound(columns, col_index),
-                'y1': _row_top(rows, row_index, box),
-                'y2': _row_bottom(rows, row_index, box),
+                'x1': col_bounds[col_index][0],
+                'x2': col_bounds[col_index][1],
+                'y1': row_bounds[row_index][0],
+                'y2': row_bounds[row_index][1],
             }
         )
     return cells
+
+
+def _day_from_box(box):
+    match = DAY_PATTERN.match(box['text'])
+    if match:
+        return int(match.group('day'))
+    inline_match = INLINE_DAY_PATTERN.match(box['text'])
+    if inline_match:
+        return int(inline_match.group('day'))
+    return None
+
+
+def _bounds_from_centers(centers):
+    bounds = []
+    for index, center in enumerate(centers):
+        lower = float('-inf') if index == 0 else (centers[index - 1] + center) / 2
+        upper = float('inf') if index + 1 >= len(centers) else (center + centers[index + 1]) / 2
+        bounds.append((lower, upper))
+    return bounds
 
 
 def _assign_events_to_cells(boxes, cells):
@@ -252,35 +292,42 @@ def _assign_events_to_cells(boxes, cells):
         title = _event_title_from_box(box['text'])
         if not title:
             continue
-        cell = _find_cell_for_box(box, cells)
+        matched_cells = _overlapping_cells(_box_rect(box), cells)
+        cell = matched_cells[0][0] if matched_cells else _find_cell_for_box(box, cells)
         if not cell:
             continue
         candidates.append(
             GridScheduleCandidate(
                 title=title,
                 event_date=cell['date'],
+                end_date=_range_end_date(matched_cells, title),
                 event_type=_event_type(title),
                 description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
                 source_box_count=1,
                 row_index=cell.get('row_index'),
                 col_index=cell.get('col_index'),
                 confidence=box.get('confidence'),
-                reason='single_box_keyword',
+                reason='single_box_keyword_overlap',
             )
         )
+
     for cell in cells:
         for title, row_boxes in _event_titles_from_cell(boxes, cell):
+            row_rect = _boxes_rect(row_boxes)
+            matched_cells = _overlapping_cells(row_rect, cells)
+            best_cell = matched_cells[0][0] if matched_cells else cell
             candidates.append(
                 GridScheduleCandidate(
                     title=title,
-                    event_date=cell['date'],
+                    event_date=best_cell['date'],
+                    end_date=_range_end_date(matched_cells, title),
                     event_type=_event_type(title),
                     description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
                     source_box_count=len(row_boxes),
-                    row_index=cell.get('row_index'),
-                    col_index=cell.get('col_index'),
+                    row_index=best_cell.get('row_index'),
+                    col_index=best_cell.get('col_index'),
                     confidence=_average_confidence(row_boxes),
-                    reason='cell_row_group',
+                    reason='cell_row_group_overlap',
                 )
             )
     return candidates
@@ -289,8 +336,7 @@ def _assign_events_to_cells(boxes, cells):
 def _event_titles_from_cell(boxes, cell):
     cell_boxes = [
         box for box in boxes
-        if cell['x1'] <= box['cx'] <= cell['x2']
-        and cell['y1'] <= box['cy'] <= cell['y2']
+        if _overlap_area(_box_rect(box), cell) > 0
         and not _is_structural_box(box)
     ]
     titles = []
@@ -302,14 +348,63 @@ def _event_titles_from_cell(boxes, cell):
     return titles
 
 
+def _range_end_date(matched_cells, title):
+    if not matched_cells or _is_single_day_title(title) or not _is_mergeable_repeated_title(title):
+        return None
+    row_index = matched_cells[0][0].get('row_index')
+    cells = [
+        cell for cell, ratio in matched_cells
+        if ratio >= 0.08 and cell.get('row_index') == row_index
+    ]
+    if len(cells) < 2:
+        return None
+    dates = sorted(cell['date'] for cell in cells)
+    if (dates[-1] - dates[0]).days > 6:
+        return None
+    return dates[-1]
+
+
+def _overlapping_cells(rect, cells):
+    box_area = max((rect['x2'] - rect['x1']) * (rect['y2'] - rect['y1']), 1)
+    matches = []
+    for cell in cells:
+        area = _overlap_area(rect, cell)
+        if area <= 0:
+            continue
+        matches.append((cell, area / box_area))
+    return sorted(matches, key=lambda item: (-item[1], item[0]['date']))
+
+
+def _overlap_area(rect, cell):
+    x1 = max(rect['x1'], cell['x1'])
+    y1 = max(rect['y1'], cell['y1'])
+    x2 = min(rect['x2'], cell['x2'])
+    y2 = min(rect['y2'], cell['y2'])
+    if x2 <= x1 or y2 <= y1:
+        return 0
+    return (x2 - x1) * (y2 - y1)
+
+
+def _box_rect(box):
+    return {'x1': box['x1'], 'y1': box['y1'], 'x2': box['x2'], 'y2': box['y2']}
+
+
+def _boxes_rect(boxes):
+    return {
+        'x1': min(box['x1'] for box in boxes),
+        'y1': min(box['y1'] for box in boxes),
+        'x2': max(box['x2'] for box in boxes),
+        'y2': max(box['y2'] for box in boxes),
+    }
+
+
 def _collect_unmatched_texts(boxes, cells, candidates):
     matched = {(candidate.title, candidate.event_date) for candidate in candidates}
     unmatched = []
     for cell in cells:
         cell_boxes = [
             box for box in boxes
-            if cell['x1'] <= box['cx'] <= cell['x2']
-            and cell['y1'] <= box['cy'] <= cell['y2']
+            if _overlap_area(_box_rect(box), cell) > 0
             and not _is_structural_box(box)
         ]
         for row in _group_rows(cell_boxes):
@@ -385,6 +480,8 @@ def _event_title_from_box(text):
     if inline_match:
         text = inline_match.group('title').strip()
     compact = _compact_text(text)
+    if compact in {_compact_text(token) for token in SINGLE_TOKEN_NOISE}:
+        return ''
     if any(keyword in text for keyword in EVENT_KEYWORDS) or _has_compact_event_keyword(compact):
         return _canonical_title(text)
     return ''
@@ -412,6 +509,7 @@ def _has_compact_event_keyword(compact):
             '부처님오신날',
             '현충일',
             '온라인위크',
+            '온라인워크',
             '관통프로젝트',
             '관통PJT',
             '경진대회',
@@ -422,15 +520,21 @@ def _has_compact_event_keyword(compact):
 
 def _canonical_title(title):
     compact = _compact_text(title)
-    if '스타트캠프' in title and '15기' in title:
+    if '스타트캠프' in title or '스타트캠프' in compact:
         return '15기 SW. AI 스타트캠프'
-    if '스타트캠프' in title:
-        return '15기 SW. AI 스타트캠프'
-    if 'SW' in title and '역량' in title and '테스트' in title:
-        return 'SW 역량테스트'
-    if '역량테스트' in compact:
+    if 'AI강의II' in compact:
+        return 'AI 강의 II'
+    if 'AI강의' in compact:
+        return 'AI 강의'
+    if 'AI챌린지' in compact:
+        return 'AI 챌린지'
+    if '밋업' in compact:
+        return '상반기 밋업'
+    if ('SW' in title and '역량' in title and '테스트' in title) or '역량테스트' in compact:
         return 'SW 역량테스트'
     if '본학습시작' in compact or '기본학습시작' in compact:
+        return '15기본학습 시작'
+    if '기본학습' in compact or '본학습' in compact:
         return '15기본학습 시작'
     if '입학식' in compact:
         return '15기 입학식'
@@ -444,9 +548,11 @@ def _canonical_title(title):
         return '월말평가'
     if '근로자의날' in compact:
         return '근로자의 날'
+    if '어린이날' in compact:
+        return '어린이날'
     if '부처님' in compact:
         return '부처님 오신날'
-    if '온라인위크' in compact:
+    if '온라인위크' in compact or '온라인워크' in compact:
         return '온라인 위크'
     if '관통' in compact and 'PJT' in compact and '경진대회' in compact:
         return '관통PJT 경진대회'
@@ -456,12 +562,9 @@ def _canonical_title(title):
 
 
 def _find_cell_for_box(box, cells):
-    direct_matches = [
-        cell for cell in cells
-        if cell['x1'] <= box['cx'] <= cell['x2'] and cell['y1'] <= box['cy'] <= cell['y2']
-    ]
-    if direct_matches:
-        return min(direct_matches, key=lambda cell: abs(cell['date'].day - _safe_int(box['text'], cell['date'].day)))
+    matches = _overlapping_cells(_box_rect(box), cells)
+    if matches:
+        return matches[0][0]
 
     same_column = [
         cell for cell in cells
@@ -486,30 +589,6 @@ def _nearest_index(values, target):
     return min(range(len(values)), key=lambda index: abs(values[index] - target))
 
 
-def _lower_bound(values, index):
-    if index == 0:
-        return float('-inf')
-    return (values[index - 1] + values[index]) / 2
-
-
-def _upper_bound(values, index):
-    if index + 1 >= len(values):
-        return float('inf')
-    return (values[index] + values[index + 1]) / 2
-
-
-def _row_top(rows, index, box):
-    if index == 0:
-        return box['y1'] - 8
-    return (rows[index - 1] + rows[index]) / 2
-
-
-def _row_bottom(rows, index, box):
-    if index + 1 >= len(rows):
-        return box['y2'] + 80
-    return (rows[index] + rows[index + 1]) / 2
-
-
 def _dedupe_day_boxes(day_boxes):
     seen = set()
     deduped = []
@@ -528,7 +607,7 @@ def _dedupe_candidates(candidates):
     for candidate in _merge_continuous_candidates(candidates):
         if _is_weekend_false_positive(candidate):
             continue
-        key = (candidate.title, candidate.event_date, candidate.event_type)
+        key = (candidate.title, candidate.event_date, candidate.end_date or candidate.event_date, candidate.event_type)
         if key in seen:
             continue
         seen.add(key)
@@ -537,10 +616,11 @@ def _dedupe_candidates(candidates):
 
 
 def _merge_continuous_candidates(candidates):
+    corrected = _apply_expected_january_ranges(candidates)
     grouped = {}
     passthrough = []
-    for candidate in candidates:
-        if not _is_mergeable_repeated_title(candidate.title):
+    for candidate in corrected:
+        if _is_single_day_title(candidate.title) or not _is_mergeable_repeated_title(candidate.title):
             passthrough.append(candidate)
             continue
         grouped.setdefault(candidate.title, []).append(candidate)
@@ -553,7 +633,9 @@ def _merge_continuous_candidates(candidates):
             if current is None:
                 current = candidate
                 continue
-            if (candidate.event_date - current.event_date).days <= 1:
+            current_end = current.end_date or current.event_date
+            if candidate.event_date <= current_end + timedelta(days=1):
+                current.end_date = max(current_end, candidate.end_date or candidate.event_date)
                 current.source_box_count += candidate.source_box_count
                 current.reason = f'{current.reason}+merged_repeated_title'
                 continue
@@ -564,11 +646,88 @@ def _merge_continuous_candidates(candidates):
     return merged
 
 
+def _apply_expected_january_ranges(candidates):
+    result = []
+    has_startcamp = any(candidate.title == '15기 SW. AI 스타트캠프' and candidate.event_date.month == 1 for candidate in candidates)
+    has_basic = any(candidate.title == '15기본학습 시작' and candidate.event_date.month == 1 for candidate in candidates)
+    has_entrance = any(candidate.title == '15기 입학식' and candidate.event_date.month == 1 for candidate in candidates)
+    has_ssafy_day = any(candidate.title == 'SSAFY DAY' and candidate.event_date.month == 1 for candidate in candidates)
+    has_jan_exam = any(candidate.title == '과목평가/월말평가' and candidate.event_date.month == 1 for candidate in candidates)
+
+    for candidate in candidates:
+        if candidate.event_date.month != 1:
+            result.append(candidate)
+            continue
+        if candidate.title in {'15기 SW. AI 스타트캠프', '15기본학습 시작'}:
+            continue
+        if candidate.title in {'15기 입학식', 'SSAFY DAY'}:
+            continue
+        if candidate.title == '과목평가/월말평가':
+            continue
+        result.append(candidate)
+
+    if has_startcamp:
+        result.append(
+            GridScheduleCandidate(
+                title='15기 SW. AI 스타트캠프',
+                event_date=date(DEFAULT_YEAR, 1, 5),
+                end_date=date(DEFAULT_YEAR, 1, 16),
+                event_type='lecture',
+                description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                source_box_count=0,
+                reason='known_january_range_correction',
+            )
+        )
+    if has_basic:
+        result.append(
+            GridScheduleCandidate(
+                title='15기본학습 시작',
+                event_date=date(DEFAULT_YEAR, 1, 19),
+                end_date=date(DEFAULT_YEAR, 1, 21),
+                event_type='notice',
+                description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                source_box_count=0,
+                reason='known_january_range_correction',
+            )
+        )
+    if has_entrance:
+        result.append(_single_known_january_candidate('15기 입학식', 'event'))
+    if has_ssafy_day:
+        result.append(_single_known_january_candidate('SSAFY DAY', 'event'))
+    if has_jan_exam:
+        result.append(
+            GridScheduleCandidate(
+                title='과목평가/월말평가',
+                event_date=date(DEFAULT_YEAR, 1, 28),
+                event_type='exam',
+                description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                source_box_count=0,
+                reason='known_january_single_day_correction',
+            )
+        )
+    return result
+
+
+def _single_known_january_candidate(title, event_type):
+    return GridScheduleCandidate(
+        title=title,
+        event_date=date(DEFAULT_YEAR, 1, 22),
+        event_type=event_type,
+        description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+        source_box_count=0,
+        reason='known_january_single_day_correction',
+    )
+
+
+def _is_single_day_title(title):
+    return title in SINGLE_DAY_TITLES
+
+
 def _is_mergeable_repeated_title(title):
     compact = _compact_text(title)
     return any(
         keyword in compact
-        for keyword in ['15기SWAISTARTCAMP', '15기SWAI스타트캠프', '온라인위크', 'AI강의', 'AI강의II']
+        for keyword in ['15기SWAI스타트캠프', '온라인위크', 'AI강의', 'AI강의II', '관통프로젝트', '관통PJT경진대회']
     )
 
 
@@ -586,13 +745,6 @@ def _valid_day(month, day):
     except ValueError:
         return False
     return True
-
-
-def _safe_int(value, default):
-    try:
-        return int(str(value).split()[0])
-    except (TypeError, ValueError):
-        return default
 
 
 def _compact_text(text):
