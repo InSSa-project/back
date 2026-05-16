@@ -45,6 +45,7 @@ class Command(BaseCommand):
         self.stdout.write(f'grid_parser_used={str(grid_debug.used_grid_parser).lower()}')
         self.stdout.write(f'grid_date_cell_count={grid_debug.date_cell_count}')
         self.stdout.write(f'grid_candidate_count={grid_debug.candidate_count}')
+        self.stdout.write(f'grid_filtered_candidate_count={grid_debug.filtered_candidate_count}')
         self.stdout.write(f'text_candidate_count={len(text_candidates)}')
         self.stdout.write(f'grid_parser_reason={grid_debug.reason}')
         self.stdout.write('raw_text_preview=')
@@ -62,7 +63,21 @@ class Command(BaseCommand):
                 f'row_index={candidate["row_index"]} '
                 f'col_index={candidate["col_index"]} '
                 f'confidence={candidate["confidence"]} '
+                f'overlap_ratio={candidate.get("overlap_ratio")} '
                 f'reason={candidate["reason"]}'
+            )
+        self.stdout.write('grid_filtered_candidates=')
+        for index, candidate in enumerate(grid_debug.filtered_candidates or [], start=1):
+            self.stdout.write(
+                f'{index}. inferred_date={candidate["inferred_date"]} '
+                f'title={candidate["title"]} '
+                f'event_type={candidate["event_type"]} '
+                f'source_box_count={candidate["source_box_count"]} '
+                f'row_index={candidate["row_index"]} '
+                f'col_index={candidate["col_index"]} '
+                f'confidence={candidate["confidence"]} '
+                f'overlap_ratio={candidate.get("overlap_ratio")} '
+                f'filtered_reason={candidate["filtered_reason"]}'
             )
         self.stdout.write('grid_unmatched_texts=')
         for index, unmatched in enumerate((grid_debug.unmatched_texts or [])[:80], start=1):

@@ -36,6 +36,21 @@ EVENT_KEYWORDS = [
     '경진대회',
     '지방선거',
 ]
+HOLIDAY_COMPACT_KEYWORDS = {
+    '신정',
+    '어린이날',
+    '근로자의날',
+    '부처님오신날',
+    '현충일',
+    '지방선거',
+}
+EXAM_COMPACT_KEYWORDS = {
+    '과목평가',
+    '월말평가',
+    'SW역량테스트',
+    '역량테스트',
+}
+MIN_EXAM_OVERLAP_RATIO = 0.18
 
 
 @dataclass
@@ -49,6 +64,7 @@ class GridScheduleCandidate:
     row_index: int = None
     col_index: int = None
     confidence: float = None
+    overlap_ratio: float = None
     reason: str = ''
 
 
@@ -62,6 +78,8 @@ class GridParseDebug:
     reason: str = ''
     candidates: list = None
     unmatched_texts: list = None
+    filtered_candidate_count: int = 0
+    filtered_candidates: list = None
 
     def as_dict(self):
         return {
@@ -73,6 +91,8 @@ class GridParseDebug:
             'reason': self.reason,
             'candidates': self.candidates or [],
             'unmatched_texts': self.unmatched_texts or [],
+            'filtered_candidate_count': self.filtered_candidate_count,
+            'filtered_candidates': self.filtered_candidates or [],
         }
 
 
@@ -81,6 +101,7 @@ def parse_grid_schedule_candidates(ocr_boxes):
         ocr_box_count=len(ocr_boxes or []),
         candidates=[],
         unmatched_texts=[],
+        filtered_candidates=[],
     )
     boxes = normalize_ocr_boxes(ocr_boxes)
     debug.normalized_box_count = len(boxes)
@@ -104,8 +125,10 @@ def parse_grid_schedule_candidates(ocr_boxes):
         candidates.extend(_assign_events_to_cells(section_boxes, cells))
 
     candidates = _dedupe_candidates(candidates)
+    candidates, filtered_candidates = _filter_exam_false_positives(candidates)
     debug.used_grid_parser = bool(candidates)
     debug.candidate_count = len(candidates)
+    debug.filtered_candidate_count = len(filtered_candidates)
     debug.reason = 'ok' if candidates else 'no_event_boxes_matched'
     debug.candidates = [
         {
@@ -118,9 +141,24 @@ def parse_grid_schedule_candidates(ocr_boxes):
             'row_index': candidate.row_index,
             'col_index': candidate.col_index,
             'confidence': candidate.confidence,
+            'overlap_ratio': candidate.overlap_ratio,
             'reason': candidate.reason,
         }
         for candidate in sorted(candidates, key=lambda item: (item.event_date, item.end_date or item.event_date, item.title))
+    ]
+    debug.filtered_candidates = [
+        {
+            'title': candidate.title,
+            'inferred_date': candidate.event_date.isoformat(),
+            'event_type': candidate.event_type,
+            'source_box_count': candidate.source_box_count,
+            'row_index': candidate.row_index,
+            'col_index': candidate.col_index,
+            'confidence': candidate.confidence,
+            'overlap_ratio': candidate.overlap_ratio,
+            'filtered_reason': candidate.reason,
+        }
+        for candidate in sorted(filtered_candidates, key=lambda item: (item.event_date, item.title, item.reason))
     ]
     debug.unmatched_texts = _collect_unmatched_texts(all_section_boxes, all_cells, candidates)
     return candidates, debug
@@ -272,7 +310,7 @@ def _assign_events_to_cells(boxes, cells):
         if not title:
             continue
         matched_cells = _overlapping_cells(_box_rect(box), cells)
-        cell = matched_cells[0][0] if matched_cells else _find_cell_for_box(box, cells)
+        cell, overlap_ratio = (matched_cells[0] if matched_cells else (_find_cell_for_box(box, cells), None))
         if not cell:
             continue
         candidates.append(
@@ -285,6 +323,7 @@ def _assign_events_to_cells(boxes, cells):
                 row_index=cell.get('row_index'),
                 col_index=cell.get('col_index'),
                 confidence=box.get('confidence'),
+                overlap_ratio=overlap_ratio,
                 reason='single_box_keyword_overlap',
             )
         )
@@ -293,6 +332,8 @@ def _assign_events_to_cells(boxes, cells):
         for title, row_boxes in _event_titles_from_cell(boxes, cell):
             if len(row_boxes) == 1 and _event_title_from_box(row_boxes[0]['text']) == title:
                 continue
+            row_rect = _boxes_rect(row_boxes)
+            overlap_ratio = _overlap_ratio(row_rect, cell)
             candidates.append(
                 GridScheduleCandidate(
                     title=title,
@@ -303,6 +344,7 @@ def _assign_events_to_cells(boxes, cells):
                     row_index=cell.get('row_index'),
                     col_index=cell.get('col_index'),
                     confidence=_average_confidence(row_boxes),
+                    overlap_ratio=overlap_ratio,
                     reason='cell_row_group_overlap',
                 )
             )
@@ -333,6 +375,11 @@ def _overlapping_cells(rect, cells):
             continue
         matches.append((cell, area / box_area))
     return sorted(matches, key=lambda item: (-item[1], item[0]['date']))
+
+
+def _overlap_ratio(rect, cell):
+    rect_area = max((rect['x2'] - rect['x1']) * (rect['y2'] - rect['y1']), 1)
+    return _overlap_area(rect, cell) / rect_area
 
 
 def _overlap_area(rect, cell):
@@ -563,6 +610,99 @@ def _dedupe_candidates(candidates):
         seen.add(key)
         deduped.append(candidate)
     return deduped
+
+
+def _filter_exam_false_positives(candidates):
+    filtered = []
+    kept = []
+    holiday_dates = {
+        candidate.event_date
+        for candidate in candidates
+        if candidate.event_type == 'holiday' or _is_holiday_title(candidate.title)
+    }
+
+    for candidate in candidates:
+        if _is_exam_candidate(candidate) and candidate.event_date in holiday_dates:
+            filtered.append(_with_filtered_reason(candidate, 'holiday_exam_conflict'))
+            continue
+        if _is_exam_candidate(candidate) and candidate.overlap_ratio is not None and candidate.overlap_ratio < MIN_EXAM_OVERLAP_RATIO:
+            filtered.append(_with_filtered_reason(candidate, 'low_overlap_exam'))
+            continue
+        kept.append(candidate)
+
+    return _filter_consecutive_exam_runs(kept, filtered)
+
+
+def _filter_consecutive_exam_runs(candidates, filtered):
+    by_title = {}
+    for candidate in candidates:
+        if _is_exam_candidate(candidate):
+            by_title.setdefault(_compact_text(candidate.title), []).append(candidate)
+
+    remove_ids = set()
+    for title, title_candidates in by_title.items():
+        if not _is_exam_title_compact(title):
+            continue
+        unique_by_date = {}
+        for candidate in title_candidates:
+            unique_by_date.setdefault(candidate.event_date, []).append(candidate)
+
+        dates = sorted(unique_by_date)
+        run = []
+        previous = None
+        for event_date in dates:
+            if previous is None or (event_date - previous).days == 1:
+                run.append(event_date)
+            else:
+                _mark_long_exam_run(run, unique_by_date, remove_ids)
+                run = [event_date]
+            previous = event_date
+        _mark_long_exam_run(run, unique_by_date, remove_ids)
+
+    kept = []
+    for candidate in candidates:
+        if id(candidate) in remove_ids:
+            filtered.append(_with_filtered_reason(candidate, 'exam_too_many_consecutive_days'))
+        else:
+            kept.append(candidate)
+    return kept, filtered
+
+
+def _mark_long_exam_run(run, unique_by_date, remove_ids):
+    if len(run) < 3:
+        return
+    for event_date in run[1:]:
+        for candidate in unique_by_date[event_date]:
+            remove_ids.add(id(candidate))
+
+
+def _with_filtered_reason(candidate, reason):
+    return GridScheduleCandidate(
+        title=candidate.title,
+        event_date=candidate.event_date,
+        event_type=candidate.event_type,
+        description=candidate.description,
+        end_date=candidate.end_date,
+        source_box_count=candidate.source_box_count,
+        row_index=candidate.row_index,
+        col_index=candidate.col_index,
+        confidence=candidate.confidence,
+        overlap_ratio=candidate.overlap_ratio,
+        reason=reason,
+    )
+
+
+def _is_exam_candidate(candidate):
+    return candidate.event_type == 'exam' or _is_exam_title_compact(_compact_text(candidate.title))
+
+
+def _is_exam_title_compact(compact):
+    return any(keyword in compact for keyword in EXAM_COMPACT_KEYWORDS)
+
+
+def _is_holiday_title(title):
+    compact = _compact_text(title)
+    return any(keyword in compact for keyword in HOLIDAY_COMPACT_KEYWORDS)
 
 
 def _is_weekend_false_positive(candidate):
