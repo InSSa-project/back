@@ -384,16 +384,74 @@ def _event_title_from_box(text):
     inline_match = INLINE_DAY_PATTERN.match(text)
     if inline_match:
         text = inline_match.group('title').strip()
-    if any(keyword in text for keyword in EVENT_KEYWORDS):
+    compact = _compact_text(text)
+    if any(keyword in text for keyword in EVENT_KEYWORDS) or _has_compact_event_keyword(compact):
         return _canonical_title(text)
     return ''
 
 
+def _has_compact_event_keyword(compact):
+    return any(
+        keyword in compact
+        for keyword in [
+            '신정',
+            '스타트캠프',
+            '입학식',
+            '본학습',
+            '기본학습',
+            'SSAFYDAY',
+            '과목평가',
+            '월말평가',
+            'SW역량테스트',
+            '역량테스트',
+            'AI강의',
+            'AI챌린지',
+            '밋업',
+            '어린이날',
+            '근로자의날',
+            '부처님오신날',
+            '현충일',
+            '온라인위크',
+            '관통프로젝트',
+            '관통PJT',
+            '경진대회',
+            '지방선거',
+        ]
+    )
+
+
 def _canonical_title(title):
+    compact = _compact_text(title)
     if '스타트캠프' in title and '15기' in title:
+        return '15기 SW. AI 스타트캠프'
+    if '스타트캠프' in title:
         return '15기 SW. AI 스타트캠프'
     if 'SW' in title and '역량' in title and '테스트' in title:
         return 'SW 역량테스트'
+    if '역량테스트' in compact:
+        return 'SW 역량테스트'
+    if '본학습시작' in compact or '기본학습시작' in compact:
+        return '15기본학습 시작'
+    if '입학식' in compact:
+        return '15기 입학식'
+    if 'SSAFYDAY' in compact:
+        return 'SSAFY DAY'
+    if '과목평가' in compact and '월말평가' in compact:
+        return '과목평가/월말평가'
+    if '과목평가' in compact:
+        return '과목평가'
+    if '월말평가' in compact:
+        return '월말평가'
+    if '근로자의날' in compact:
+        return '근로자의 날'
+    if '부처님' in compact:
+        return '부처님 오신날'
+    if '온라인위크' in compact:
+        return '온라인 위크'
+    if '관통' in compact and 'PJT' in compact and '경진대회' in compact:
+        return '관통PJT 경진대회'
+    if '관통프로젝트' in compact:
+        return '관통 프로젝트'
     return title[:255]
 
 
@@ -467,13 +525,59 @@ def _dedupe_day_boxes(day_boxes):
 def _dedupe_candidates(candidates):
     seen = set()
     deduped = []
-    for candidate in candidates:
+    for candidate in _merge_continuous_candidates(candidates):
+        if _is_weekend_false_positive(candidate):
+            continue
         key = (candidate.title, candidate.event_date, candidate.event_type)
         if key in seen:
             continue
         seen.add(key)
         deduped.append(candidate)
     return deduped
+
+
+def _merge_continuous_candidates(candidates):
+    grouped = {}
+    passthrough = []
+    for candidate in candidates:
+        if not _is_mergeable_repeated_title(candidate.title):
+            passthrough.append(candidate)
+            continue
+        grouped.setdefault(candidate.title, []).append(candidate)
+
+    merged = list(passthrough)
+    for title, title_candidates in grouped.items():
+        sorted_candidates = sorted(title_candidates, key=lambda item: item.event_date)
+        current = None
+        for candidate in sorted_candidates:
+            if current is None:
+                current = candidate
+                continue
+            if (candidate.event_date - current.event_date).days <= 1:
+                current.source_box_count += candidate.source_box_count
+                current.reason = f'{current.reason}+merged_repeated_title'
+                continue
+            merged.append(current)
+            current = candidate
+        if current is not None:
+            merged.append(current)
+    return merged
+
+
+def _is_mergeable_repeated_title(title):
+    compact = _compact_text(title)
+    return any(
+        keyword in compact
+        for keyword in ['15기SWAISTARTCAMP', '15기SWAI스타트캠프', '온라인위크', 'AI강의', 'AI강의II']
+    )
+
+
+def _is_weekend_false_positive(candidate):
+    if candidate.event_date.weekday() < 5:
+        return False
+    if candidate.event_type == 'holiday':
+        return False
+    return True
 
 
 def _valid_day(month, day):
@@ -491,15 +595,30 @@ def _safe_int(value, default):
         return default
 
 
+def _compact_text(text):
+    return re.sub(r'[\s.()\-_/\]]+', '', str(text or '')).upper()
+
+
 def _event_type(title):
-    if any(keyword in title for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트', '역량', '테스트']):
+    compact = _compact_text(title)
+    if any(keyword in title for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트', '역량', '테스트']) or any(
+        keyword in compact for keyword in ['평가', '월말평가', '과목평가', 'SW역량테스트', '역량테스트']
+    ):
         return 'exam'
-    if any(keyword in title for keyword in ['프로젝트', 'PJT', '경진대회']):
+    if any(keyword in title for keyword in ['프로젝트', 'PJT', '경진대회']) or any(
+        keyword in compact for keyword in ['프로젝트', 'PJT', '경진대회']
+    ):
         return 'project'
-    if any(keyword in title for keyword in ['강의', '특강', '캠프']):
+    if any(keyword in title for keyword in ['강의', '특강', '캠프']) or any(
+        keyword in compact for keyword in ['강의', '특강', '캠프']
+    ):
         return 'lecture'
-    if any(keyword in title for keyword in ['신정', '어린이날', '근로자의 날', '부처님', '현충일', '지방선거']):
+    if any(keyword in title for keyword in ['신정', '어린이날', '근로자의 날', '부처님', '현충일', '지방선거']) or any(
+        keyword in compact for keyword in ['신정', '어린이날', '근로자의날', '부처님', '현충일', '지방선거']
+    ):
         return 'holiday'
-    if any(keyword in title for keyword in ['SSAFY DAY', '입학식', '밋업']):
+    if any(keyword in title for keyword in ['SSAFY DAY', '입학식', '밋업']) or any(
+        keyword in compact for keyword in ['SSAFYDAY', '입학식', '밋업']
+    ):
         return 'event'
     return 'notice'
