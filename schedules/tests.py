@@ -147,3 +147,17 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Access-Control-Allow-Origin'], 'http://localhost:5173')
+        self.assertIn('GET', response['Access-Control-Allow-Methods'])
+
+    def test_event_detail_preflight_allows_patch_from_local_frontend(self):
+        response = self.client.options(
+            reverse('schedule-event-detail', args=[1]),
+            HTTP_ORIGIN='http://localhost:5173',
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD='PATCH',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Access-Control-Allow-Origin'], 'http://localhost:5173')
+        self.assertIn('PATCH', response['Access-Control-Allow-Methods'])
+        self.assertIn('PUT', response['Access-Control-Allow-Methods'])
+        self.assertIn('DELETE', response['Access-Control-Allow-Methods'])
