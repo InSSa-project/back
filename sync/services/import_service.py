@@ -11,6 +11,7 @@ from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
+    SsafySessionExpiredError,
     extract_image_urls_from_html,
     get_crawler_mode,
     get_last_collection_debug,
@@ -74,6 +75,14 @@ def run_notice_import(mode=None):
         job_log.finished_at = timezone.now()
         job_log.save()
         return job_log
+    except SsafySessionExpiredError as exc:
+        crawler_debug = get_last_collection_debug()
+        partial_summary = _import_raw_items(exc.collected_items) if exc.collected_items else None
+        debug_message = _format_crawler_debug(crawler_debug)
+        message = f'{CRAWL_FAILED_MESSAGE} session_expired {exc}'
+        if debug_message:
+            message = f'{message}, crawler_debug={debug_message}'
+        return _mark_job_failed(job_log, message, summary=partial_summary)
     except (SsafyCrawlerError, ValueError) as exc:
         crawler_debug = get_last_collection_debug()
         debug_message = _format_crawler_debug(crawler_debug)
@@ -315,25 +324,28 @@ def _find_existing_raw_data(item):
         if existing:
             return existing
 
+    if source_url or notice_id:
+        return None
+
     return RawSsafyData.objects.filter(
         source_type=item.get('source_type', 'notice'),
         title=item.get('title', ''),
     ).first()
 
 
-def _mark_job_failed(job_log, message):
+def _mark_job_failed(job_log, message, summary=None):
     job_log.status = CrawlJobLog.STATUS_FAILED
     job_log.message = message
-    job_log.raw_count = 0
-    job_log.event_count = 0
-    job_log.failed_count = 1
-    job_log.skipped_count = 0
-    job_log.notice_count = 0
-    job_log.academic_rule_count = 0
-    job_log.no_schedule_count = 0
-    job_log.image_count = 0
-    job_log.ocr_processed_count = 0
-    job_log.ocr_failed_count = 0
+    job_log.raw_count = summary.raw_count if summary else 0
+    job_log.event_count = summary.event_count if summary else 0
+    job_log.failed_count = (summary.failed_count if summary else 0) + 1
+    job_log.skipped_count = summary.skipped_count if summary else 0
+    job_log.notice_count = summary.notice_count if summary else 0
+    job_log.academic_rule_count = summary.academic_rule_count if summary else 0
+    job_log.no_schedule_count = summary.no_schedule_count if summary else 0
+    job_log.image_count = summary.image_count if summary else 0
+    job_log.ocr_processed_count = summary.ocr_processed_count if summary else 0
+    job_log.ocr_failed_count = summary.ocr_failed_count if summary else 0
     job_log.finished_at = timezone.now()
     job_log.save()
     return job_log
