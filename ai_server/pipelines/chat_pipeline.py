@@ -4,7 +4,6 @@ from ai_server.classification.query_classifier import QueryClassifier
 from ai_server.core.config import get_settings
 from ai_server.llm.router import LlmRouter
 from ai_server.memory.conversation_memory import ConversationMemory
-from ai_server.optimization.token_budget import TokenBudgetManager
 from ai_server.policies.answer_policy import AnswerPolicyRouter, official_no_context_answer
 from ai_server.prompts.builder import PromptBuilder
 from ai_server.references.tracker import ReferenceTracker
@@ -32,13 +31,12 @@ class ChatPipeline:
         self.prompt_builder = PromptBuilder()
         self.llm = LlmRouter().get_provider(self.settings.llm_provider)
         self.reference_tracker = ReferenceTracker()
-        self.token_budget = TokenBudgetManager()
 
     def run(self, request: ChatRequest) -> ChatResponse:
         parsed_query = self.schedule_query_parser.parse(request.message)
         query_type = self._resolve_query_type(request.message, parsed_query)
         intent = self._intent_from_query_type(query_type)
-        filters = self._build_filters(request, intent)
+        filters = self._build_filters(request)
         retrieval_policy = self.retrieval_policy_router.decide(parsed_query)
         retrieved = self._retrieve(request.message, parsed_query, retrieval_policy, filters)
         reranked = self.reranker.rerank(request.message, retrieved)
@@ -62,7 +60,7 @@ class ChatPipeline:
             )
 
         chunks_for_prompt = [] if retrieval_evaluation.insufficient_context else reranked
-        messages = self._build_messages(
+        prompt_result = self._build_prompt(
             request=request,
             intent=intent,
             query_type=query_type,
@@ -71,9 +69,8 @@ class ChatPipeline:
             answer_policy=policy.answer_policy,
             fallback_prefix=policy.fallback_prefix,
             parsed_query=parsed_query,
-            retrieval_status=retrieval_evaluation.reason,
         )
-        llm_response = self.llm.complete(messages)
+        llm_response = self.llm.complete(prompt_result.messages)
         return ChatResponse(
             answer=llm_response['answer'],
             intent=intent,
@@ -84,6 +81,7 @@ class ChatPipeline:
                 **llm_response.get('usage', {}),
                 'retrieval': retrieval_evaluation.__dict__,
                 'extracted_date': self._format_extracted_date(parsed_query),
+                'prompt': prompt_result.metadata,
             },
         )
 
@@ -94,19 +92,21 @@ class ChatPipeline:
         retrieval_policy = self.retrieval_policy_router.decide(parsed_query)
         retrieved = self.reranker.rerank(
             request.message,
-            self._retrieve(request.message, parsed_query, retrieval_policy, self._build_filters(request, intent)),
+            self._retrieve(request.message, parsed_query, retrieval_policy, self._build_filters(request)),
         )
         retrieval_evaluation = self.retrieval_evaluator.evaluate(retrieved)
         if retrieval_policy.use_schedule_metadata and not retrieved:
             yield f'data: {json.dumps({"type": "delta", "content": self._schedule_no_context_answer(parsed_query)}, ensure_ascii=False)}\n\n'
             yield 'data: {"type": "done"}\n\n'
             return
+
         policy = self.answer_policy_router.decide(query_type, retrieval_evaluation)
         if not policy.use_llm:
             yield f'data: {json.dumps({"type": "delta", "content": official_no_context_answer()}, ensure_ascii=False)}\n\n'
             yield 'data: {"type": "done"}\n\n'
             return
-        messages = self._build_messages(
+
+        prompt_result = self._build_prompt(
             request=request,
             intent=intent,
             query_type=query_type,
@@ -115,13 +115,12 @@ class ChatPipeline:
             answer_policy=policy.answer_policy,
             fallback_prefix=policy.fallback_prefix,
             parsed_query=parsed_query,
-            retrieval_status=retrieval_evaluation.reason,
         )
-        for delta in self.llm.stream(messages):
+        for delta in self.llm.stream(prompt_result.messages):
             yield f'data: {json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)}\n\n'
         yield 'data: {"type": "done"}\n\n'
 
-    def _build_messages(
+    def _build_prompt(
         self,
         request: ChatRequest,
         intent: str,
@@ -131,12 +130,9 @@ class ChatPipeline:
         answer_policy: str,
         fallback_prefix: str = '',
         parsed_query=None,
-        retrieval_status: str = '',
-    ) -> list[dict]:
-        retrieved_context = self.token_budget.trim_context('\n\n'.join(chunk.content for chunk in chunks))
+    ):
         user_context = request.user_context.model_dump_json()
         memory_context = self.memory.build_context(request.session_id)
-        few_shot_examples = self._select_few_shot(intent)
         return self.prompt_builder.build_messages(
             question=request.message,
             intent=intent,
@@ -144,34 +140,19 @@ class ChatPipeline:
             answer_policy=answer_policy,
             insufficient_context=retrieval_evaluation.insufficient_context,
             extracted_date=self._format_extracted_date(parsed_query),
-            retrieval_status=retrieval_status,
+            retrieval_status=retrieval_evaluation.reason,
             exact_match=bool(parsed_query and parsed_query.start_date and not retrieval_evaluation.insufficient_context),
-            retrieved_context=retrieved_context,
+            chunks=chunks,
             user_context=user_context,
             memory_context=memory_context,
-            few_shot_examples=few_shot_examples,
             fallback_prefix=fallback_prefix,
         )
 
-    def _build_filters(self, request: ChatRequest, intent: str) -> dict:
+    def _build_filters(self, request: ChatRequest) -> dict:
         return {
             'campus': request.user_context.campus,
             'generation': request.user_context.generation,
-            'intent': intent,
         }
-
-    def _select_few_shot(self, intent: str) -> str:
-        if intent == 'schedule_exact_date':
-            return 'Answer only for the exact requested date. Do not mention nearby dates.'
-        if intent == 'schedule_month':
-            return 'Summarize schedules in the requested month as a concise dated list.'
-        if intent == 'schedule_range':
-            return 'Summarize schedules only inside the requested date range.'
-        if intent == 'general_tech':
-            return 'Explain with practical engineering examples and do not label it as SSAFY policy.'
-        if intent == 'general_advice':
-            return 'Give realistic steps and clearly mark advice as non-official guidance.'
-        return 'Use concise, cautious INSSA style examples.'
 
     def _intent_from_query_type(self, query_type: str) -> str:
         return query_type.lower()
