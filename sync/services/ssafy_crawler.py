@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -21,6 +22,8 @@ IGNORED_OCR_IMAGE_KEYWORDS = (
     'icon',
     'banner',
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SsafyCrawlerError(Exception):
@@ -74,17 +77,29 @@ def load_ssafy_notice_list(list_url=None):
     return load_ssafy_authenticated_documents(notice_list_url=notice_list_url)
 
 
-def load_ssafy_authenticated_documents(notice_list_url=None, rule_list_url=None):
+def load_ssafy_authenticated_documents(
+    notice_list_url=None,
+    rule_list_url=None,
+    faq_list_url=None,
+    quest_list_url=None,
+    mentoring_notice_list_url=None,
+    curriculum_list_url=None,
+    learning_material_list_url=None,
+):
     login_url = os.getenv('SSAFY_LOGIN_URL')
     ssafy_id = os.getenv('SSAFY_ID')
     ssafy_password = os.getenv('SSAFY_PASSWORD')
     notice_url = notice_list_url or os.getenv('SSAFY_NOTICE_LIST_URL')
     academic_rule_url = rule_list_url or os.getenv('SSAFY_RULE_LIST_URL')
+    faq_url = faq_list_url or os.getenv('SSAFY_FAQ_LIST_URL')
+    quest_url = quest_list_url or os.getenv('SSAFY_QUEST_LIST_URL')
+    mentoring_notice_url = mentoring_notice_list_url or os.getenv('SSAFY_MENTORING_NOTICE_LIST_URL')
+    curriculum_url = curriculum_list_url or os.getenv('SSAFY_CURRICULUM_LIST_URL')
+    learning_material_url = learning_material_list_url or os.getenv('SSAFY_LEARNING_MATERIAL_LIST_URL')
 
     missing_names = _missing_required_env_vars(
         {
             'SSAFY_LOGIN_URL': login_url,
-            'SSAFY_NOTICE_LIST_URL': notice_url,
             'SSAFY_ID': ssafy_id,
             'SSAFY_PASSWORD': ssafy_password,
         }
@@ -107,30 +122,35 @@ def load_ssafy_authenticated_documents(notice_list_url=None, rule_list_url=None)
             page.set_default_timeout(15000)
             _login_ssafy(page, login_url, ssafy_id, ssafy_password)
 
-            notices.extend(
-                _collect_authenticated_list(
-                    page=page,
-                    list_url=notice_url,
-                    source_type='notice',
-                    link_extractor=_extract_notice_link_items,
-                )
-            )
-            if academic_rule_url:
-                notices.extend(
-                    _collect_authenticated_list(
-                        page=page,
-                        list_url=academic_rule_url,
-                        source_type='academic_rule',
-                        link_extractor=_extract_academic_rule_links,
+            for source_type, list_url, link_extractor in _source_collection_specs(
+                notice_url=notice_url,
+                academic_rule_url=academic_rule_url,
+                faq_url=faq_url,
+                quest_url=quest_url,
+                mentoring_notice_url=mentoring_notice_url,
+                curriculum_url=curriculum_url,
+                learning_material_url=learning_material_url,
+            ):
+                if not list_url:
+                    continue
+                try:
+                    notices.extend(
+                        _collect_authenticated_list(
+                            page=page,
+                            list_url=list_url,
+                            source_type=source_type,
+                            link_extractor=link_extractor,
+                        )
                     )
-                )
+                except Exception as exc:
+                    _LOGGER.warning('Failed to collect SSAFY %s from %s: %s', source_type, list_url, exc)
             context.close()
             browser.close()
     except PlaywrightTimeoutError as exc:
         raise SsafyCrawlerError('Timed out while logging in to or collecting SSAFY pages.') from exc
 
     if not notices:
-        raise SsafyCrawlerError('No SSAFY notice or academic rule documents were collected.')
+        raise SsafyCrawlerError('No SSAFY documents were collected.')
     return notices
 
 
@@ -164,7 +184,10 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor):
         else:
             detail_url = link
             list_title = ''
-        details.append(fetch_authenticated_detail(page, detail_url, source_type=source_type, list_title=list_title))
+        try:
+            details.append(fetch_authenticated_detail(page, detail_url, source_type=source_type, list_title=list_title))
+        except Exception as exc:
+            _LOGGER.warning('Failed to collect SSAFY %s detail from %s: %s', source_type, detail_url, exc)
     return details
 
 
@@ -234,6 +257,46 @@ def _extract_notice_link_items(soup, base_url):
 
 def _extract_academic_rule_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['rule', 'policy', 'academic', 'board', 'bbs', '\uaddc\uc815', '\ud559\uc0ac'])
+
+
+def _extract_faq_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['faq', 'qna', 'question', 'answer', 'help', '\uc790\uc8fc', '\ubb38\uc758', '\ub2f5\ubcc0'])
+
+
+def _extract_quest_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['quest', 'evaluate', 'evaluation', 'exam', 'test', '\ud3c9\uac00', '\ucd5c\uc885'])
+
+
+def _extract_mentoring_notice_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'])
+
+
+def _extract_curriculum_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['curriculum', 'course', '\ucee4\ub9ac\ud058\ub7fc', '\uac15\uc758\uacc4\ud68d', '\uad50\uc218'])
+
+
+def _extract_learning_material_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['learning', 'material', 'study', '\ud559\uc2b5\uc790\ub8cc', '\uc790\ub8cc', '\uad50\uc7ac'])
+
+
+def _source_collection_specs(
+    notice_url,
+    academic_rule_url,
+    faq_url,
+    quest_url,
+    mentoring_notice_url,
+    curriculum_url,
+    learning_material_url,
+):
+    return [
+        ('notice', notice_url, _extract_notice_link_items),
+        ('academic_rule', academic_rule_url, _extract_academic_rule_links),
+        ('faq', faq_url, _extract_faq_links),
+        ('quest', quest_url, _extract_quest_links),
+        ('mentoring_notice', mentoring_notice_url, _extract_mentoring_notice_links),
+        ('curriculum', curriculum_url, _extract_curriculum_links),
+        ('learning_material', learning_material_url, _extract_learning_material_links),
+    ]
 
 
 def extract_image_urls_from_html(raw_html, source_url):
