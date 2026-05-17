@@ -50,11 +50,9 @@ EXAM_COMPACT_KEYWORDS = {
     'SW역량테스트',
     '역량테스트',
 }
-MIN_EXAM_CONFIDENCE = 0.85
 MIN_EXAM_OVERLAP_RATIO = 0.35
 REVIEW_REQUIRED_EXAM_FILTER_REASONS = {
     'review_required_exam_title',
-    'low_confidence_exam',
     'low_overlap_exam',
 }
 
@@ -663,12 +661,8 @@ def _filter_exam_false_positives(candidates):
             filtered.append(_with_filtered_reason(candidate, 'review_required_exam_title'))
             continue
         if _is_exam_candidate(candidate) and (
-            candidate.confidence is None or candidate.confidence < MIN_EXAM_CONFIDENCE
-        ):
-            filtered.append(_with_filtered_reason(candidate, 'low_confidence_exam'))
-            continue
-        if _is_exam_candidate(candidate) and (
-            candidate.overlap_ratio is None or candidate.overlap_ratio < MIN_EXAM_OVERLAP_RATIO
+            not _has_clear_cell_assignment(candidate)
+            and (candidate.overlap_ratio is None or candidate.overlap_ratio < MIN_EXAM_OVERLAP_RATIO)
         ):
             filtered.append(_with_filtered_reason(candidate, 'low_overlap_exam'))
             continue
@@ -750,10 +744,19 @@ def _collect_review_required_candidates(filtered_candidates):
 
 
 def _is_clear_exam_title(title):
-    return _is_exam_title_compact(_compact_text(title))
+    compact = _normalize_exam_compact(_compact_text(title))
+    if _is_exam_title_compact(compact):
+        return True
+
+    remaining = compact
+    for keyword in sorted(EXAM_COMPACT_KEYWORDS, key=len, reverse=True):
+        remaining = remaining.replace(keyword, '')
+    remaining = re.sub(r'\d+', '', remaining)
+    return not remaining and compact != ''
 
 
 def _is_exam_title_compact(compact):
+    compact = _normalize_exam_compact(compact)
     if not compact:
         return False
     if compact in EXAM_COMPACT_KEYWORDS:
@@ -762,6 +765,19 @@ def _is_exam_title_compact(compact):
         if compact.startswith(keyword) and compact[len(keyword):].isdigit():
             return True
     return False
+
+
+def _has_clear_cell_assignment(candidate):
+    return candidate.row_index is not None and candidate.col_index is not None
+
+
+def _normalize_exam_compact(compact):
+    return (
+        compact
+        .replace('평가과목', '과목평가')
+        .replace('평가월말', '월말평가')
+        .replace('테스트역량', '역량테스트')
+    )
 
 
 def _is_holiday_title(title):

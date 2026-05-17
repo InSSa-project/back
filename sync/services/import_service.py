@@ -4,6 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from schedules.services import build_event_metadata_from_raw_data
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
@@ -132,6 +133,7 @@ def _import_raw_items(raw_items):
                     event_type=schedule.event_type,
                     source_type=raw_data.source_type,
                     source_id=str(raw_data.pk),
+                    metadata_json=build_event_metadata_from_raw_data(raw_data),
                 )
                 summary.event_count += 1
 

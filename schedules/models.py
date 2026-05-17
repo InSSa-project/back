@@ -17,6 +17,7 @@ class ScheduleEvent(models.Model):
     event_type = models.CharField(max_length=50, default='notice')
     source_type = models.CharField(max_length=50, default='notice')
     source_id = models.CharField(max_length=100, blank=True)
+    metadata_json = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
