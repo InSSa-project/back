@@ -368,6 +368,81 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.filter(source_type='academic_rule').count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
+    def test_collect_authenticated_list_skips_failed_detail_pages(self):
+        page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a></main>')
+
+        with patch(
+            'sync.services.ssafy_crawler.fetch_authenticated_detail',
+            side_effect=[
+                _source_item('notice', 'https://example.com/detail/1', 'First notice', 'detail-1'),
+                SsafyCrawlerError('detail failed'),
+                _source_item('notice', 'https://example.com/detail/3', 'Third notice', 'detail-3'),
+            ],
+        ):
+            items = _collect_authenticated_list(
+                page=page,
+                list_url='https://example.com/list',
+                source_type='notice',
+                link_extractor=lambda soup, base_url: [
+                    'https://example.com/detail/1',
+                    'https://example.com/detail/2',
+                    'https://example.com/detail/3',
+                ],
+            )
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual([item['source_url'] for item in items], [
+            'https://example.com/detail/1',
+            'https://example.com/detail/3',
+        ])
+
+    def test_authenticated_documents_continue_after_source_page_failure(self):
+        fake_env = {
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_ID': 'tester',
+            'SSAFY_PASSWORD': 'secret',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/list/notice',
+            'SSAFY_FAQ_LIST_URL': 'https://example.com/list/faq',
+            'SSAFY_QUEST_LIST_URL': 'https://example.com/list/quest',
+        }
+
+        with patch.dict('os.environ', fake_env, clear=True):
+            with patch.dict('sys.modules', _fake_playwright_modules()):
+                with patch(
+                    'sync.services.ssafy_crawler._collect_authenticated_list',
+                    side_effect=[
+                        [_source_item('notice', 'https://example.com/notice/1', 'Notice 1', 'notice-1')],
+                        SsafyCrawlerError('faq page failed'),
+                        [_source_item('quest', 'https://example.com/quest/1', 'Quest 1', 'quest-1')],
+                    ],
+                ):
+                    items = load_ssafy_authenticated_documents()
+
+        self.assertEqual([item['source_type'] for item in items], ['notice', 'quest'])
+        self.assertEqual([item['source_url'] for item in items], [
+            'https://example.com/notice/1',
+            'https://example.com/quest/1',
+        ])
+
+    def test_new_source_types_are_saved_to_raw_data(self):
+        items = [
+            _source_item('notice', 'https://example.com/notices/1', 'Notice 1', 'notice-1', 'SSAFY 일정 2026.05.20'),
+            _source_item('faq', 'https://example.com/faqs/1', 'FAQ 1', 'faq-1', '자주 묻는 질문'),
+            _source_item('mentoring_notice', 'https://example.com/mentor/1', 'Mentoring 1', 'mentor-1', '멘토링 공지'),
+            _source_item('learning_material', 'https://example.com/material/1', 'Material 1', 'material-1', '학습자료 안내'),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 4)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(RawSsafyData.objects.filter(source_type='notice').count(), 1)
+        self.assertEqual(RawSsafyData.objects.filter(source_type='faq').count(), 1)
+        self.assertEqual(RawSsafyData.objects.filter(source_type='mentoring_notice').count(), 1)
+        self.assertEqual(RawSsafyData.objects.filter(source_type='learning_material').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):
             with self.assertRaises(SsafyCrawlerError) as error:
@@ -1448,6 +1523,21 @@ def _academic_rule_item(source_url, notice_id):
     }
 
 
+def _source_item(source_type, source_url, title, notice_id, raw_text=''):
+    return {
+        'source_type': source_type,
+        'source_url': source_url,
+        'title': title,
+        'raw_text': raw_text,
+        'raw_html': f'<main>{raw_text or title}</main>',
+        'metadata_json': {
+            'notice_id': notice_id,
+            'published_at': '2026-05-14',
+            'collected_from': 'ssafy_notice',
+        },
+    }
+
+
 def _raw_data(source_url, raw_text, source_type='notice'):
     return RawSsafyData.objects.create(
         source_type=source_type,
@@ -1560,4 +1650,70 @@ def _google_vision_modules(ocr_text):
         'google': google_module,
         'google.cloud': cloud_module,
         'google.cloud.vision': vision_module,
+    }
+
+
+def _fake_playwright_modules():
+    class _FakeLocator:
+        def count(self):
+            return 0
+
+    class _FakePage:
+        def goto(self, *args, **kwargs):
+            return None
+
+        def fill(self, *args, **kwargs):
+            return None
+
+        def click(self, *args, **kwargs):
+            return None
+
+        def wait_for_load_state(self, *args, **kwargs):
+            return None
+
+        def locator(self, *args, **kwargs):
+            return _FakeLocator()
+
+        def set_default_timeout(self, *args, **kwargs):
+            return None
+
+        def content(self):
+            return '<main></main>'
+
+    class _FakeContext:
+        def new_page(self):
+            return _FakePage()
+
+        def close(self):
+            return None
+
+    class _FakeBrowser:
+        def new_context(self):
+            return _FakeContext()
+
+        def close(self):
+            return None
+
+    class _FakeChromium:
+        def launch(self, headless=True):
+            return _FakeBrowser()
+
+    class _FakePlaywright:
+        chromium = _FakeChromium()
+
+    class _FakePlaywrightContextManager:
+        def __enter__(self):
+            return _FakePlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    sync_api_module = types.ModuleType('playwright.sync_api')
+    sync_api_module.TimeoutError = TimeoutError
+    sync_api_module.sync_playwright = lambda: _FakePlaywrightContextManager()
+    playwright_module = types.ModuleType('playwright')
+    playwright_module.sync_api = sync_api_module
+    return {
+        'playwright': playwright_module,
+        'playwright.sync_api': sync_api_module,
     }
