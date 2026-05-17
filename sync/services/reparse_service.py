@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from django.db import transaction
 
 from schedules.models import ScheduleEvent
+from schedules.services import build_event_metadata_from_raw_data
 from sync.models import RawSsafyData
 from sync.services.import_service import find_existing_schedule_event
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
@@ -77,6 +78,7 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 event_type=schedule.event_type,
                 source_type=raw_data.source_type,
                 source_id=str(raw_data.pk),
+                metadata_json=build_event_metadata_from_raw_data(raw_data),
             )
 
         if not dry_run:

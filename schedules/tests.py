@@ -6,6 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from schedules.services import filter_events_for_user_profile
 from sync.models import RawSsafyData
 from sync.services.import_service import run_sample_notice_import
 from sync.services.schedule_parser import parse_schedule_candidates
@@ -27,6 +28,7 @@ class ScheduleEventApiTests(TestCase):
         self.assertIn('+09:00', payload[0]['start_at'])
         self.assertIn('source_url', payload[0])
         self.assertIn('source_title', payload[0])
+        self.assertIn('audience', payload[0])
         self.assertTrue(payload[0]['source_url'])
         self.assertTrue(payload[0]['source_title'])
 
@@ -138,6 +140,49 @@ class ScheduleEventApiTests(TestCase):
         payload = response.json()[0]
         self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/1')
         self.assertEqual(payload['source_title'], 'Source notice')
+
+    def test_imported_events_store_audience_metadata_from_raw_data(self):
+        run_sample_notice_import()
+
+        event = ScheduleEvent.objects.first()
+
+        self.assertIn('audience', event.metadata_json)
+        self.assertIn('generation', event.metadata_json['audience'])
+        self.assertIn('track', event.metadata_json['audience'])
+        self.assertIn('class_number', event.metadata_json['audience'])
+        self.assertIn('campus', event.metadata_json['audience'])
+
+    def test_profile_filter_keeps_unrestricted_events_and_matching_audience(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        unrestricted = ScheduleEvent.objects.create(
+            title='Common event',
+            description='all',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            metadata_json={'audience': {'track': None, 'generation': None, 'class_number': None, 'campus': None}},
+        )
+        matching = ScheduleEvent.objects.create(
+            title='15기 SW event',
+            description='match',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            metadata_json={'audience': {'track': 'SW', 'generation': 15, 'class_number': None, 'campus': None}},
+        )
+        other_track = ScheduleEvent.objects.create(
+            title='AI event',
+            description='other',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            metadata_json={'audience': {'track': 'AI', 'generation': 15, 'class_number': None, 'campus': None}},
+        )
+        profile = type('Profile', (), {'track': 'SW', 'generation': 15, 'class_number': None, 'campus': None})()
+
+        filtered = filter_events_for_user_profile([unrestricted, matching, other_track], profile)
+
+        self.assertEqual(filtered, [unrestricted, matching])
 
     def test_event_list_allows_local_frontend_origin(self):
         response = self.client.get(
