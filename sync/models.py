@@ -18,6 +18,7 @@ class RawSsafyData(models.Model):
     title = models.CharField(max_length=255)
     raw_text = models.TextField(blank=True)
     raw_html = models.TextField(blank=True)
+    ocr_boxes = models.JSONField(default=list, blank=True)
     collected_at = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_COLLECTED)
     metadata_json = models.JSONField(default=dict, blank=True)
@@ -55,6 +56,9 @@ class CrawlJobLog(models.Model):
     notice_count = models.PositiveIntegerField(default=0)
     academic_rule_count = models.PositiveIntegerField(default=0)
     no_schedule_count = models.PositiveIntegerField(default=0)
+    image_count = models.PositiveIntegerField(default=0)
+    ocr_processed_count = models.PositiveIntegerField(default=0)
+    ocr_failed_count = models.PositiveIntegerField(default=0)
     crawler_mode = models.CharField(max_length=50, blank=True)
 
     class Meta:
