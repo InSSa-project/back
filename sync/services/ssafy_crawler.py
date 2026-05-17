@@ -33,14 +33,27 @@ SOURCE_LIST_URL_ENV_NAMES = {
     'academic_rule': 'SSAFY_RULE_LIST_URL',
     'faq': 'SSAFY_FAQ_LIST_URL',
     'quest': 'SSAFY_QUEST_LIST_URL',
-    'mentoring_notice': 'SSAFY_MENTORING_NOTICE_LIST_URL',
+    'mentoring_notice': 'SSAFY_MENTORING_LIST_URL',
     'curriculum': 'SSAFY_CURRICULUM_LIST_URL',
     'learning_material': 'SSAFY_LEARNING_MATERIAL_LIST_URL',
 }
+SESSION_EXPIRED_KEYWORDS = (
+    '\ub85c\uadf8\uc778',
+    '\uc138\uc158',
+    '\ub9cc\ub8cc',
+    'login',
+    'session expired',
+)
 
 
 class SsafyCrawlerError(Exception):
     pass
+
+
+class SsafySessionExpiredError(SsafyCrawlerError):
+    def __init__(self, message, collected_items=None):
+        super().__init__(message)
+        self.collected_items = collected_items or []
 
 
 def load_sample_notices(sample_path=None):
@@ -123,7 +136,11 @@ def load_ssafy_authenticated_documents(
     academic_rule_url = rule_list_url or os.getenv('SSAFY_RULE_LIST_URL')
     faq_url = faq_list_url or os.getenv('SSAFY_FAQ_LIST_URL')
     quest_url = quest_list_url or os.getenv('SSAFY_QUEST_LIST_URL')
-    mentoring_notice_url = mentoring_notice_list_url or os.getenv('SSAFY_MENTORING_NOTICE_LIST_URL')
+    mentoring_notice_url = (
+        mentoring_notice_list_url
+        or os.getenv('SSAFY_MENTORING_LIST_URL')
+        or os.getenv('SSAFY_MENTORING_NOTICE_LIST_URL')
+    )
     curriculum_url = curriculum_list_url or os.getenv('SSAFY_CURRICULUM_LIST_URL')
     learning_material_url = learning_material_list_url or os.getenv('SSAFY_LEARNING_MATERIAL_LIST_URL')
 
@@ -175,9 +192,17 @@ def load_ssafy_authenticated_documents(
                         list_url=list_url,
                         source_type=source_type,
                         link_extractor=link_extractor,
+                        login_url=login_url,
                     )
                     notices.extend(collected)
                     _record_collection_debug(f'collected_source={source_type} count={len(collected)}')
+                except SsafySessionExpiredError as exc:
+                    exc.collected_items = notices
+                    _record_collection_debug(
+                        f'failed_source={source_type} url={list_url} error_reason=session_expired error={exc}',
+                        level='warning',
+                    )
+                    raise exc
                 except Exception as exc:
                     _record_collection_debug(
                         f'failed_source={source_type} url={list_url} error={exc}',
@@ -207,10 +232,30 @@ def _login_ssafy(page, login_url, ssafy_id, ssafy_password):
         raise SsafyCrawlerError('SSAFY login failed. Please check SSAFY_ID, SSAFY_PASSWORD, and login selectors.')
 
 
-def _collect_authenticated_list(page, list_url, source_type, link_extractor):
+def _collect_authenticated_list(page, list_url, source_type, link_extractor, login_url=None):
     page.goto(list_url, wait_until='networkidle')
+    session_reason = _session_expired_reason(page, login_url=login_url)
+    if session_reason:
+        _record_source_page_debug(
+            source_type=source_type,
+            url=list_url,
+            page=page,
+            item_count=0,
+            error_reason=f'session_expired:{session_reason}',
+        )
+        raise SsafySessionExpiredError(
+            f'session_expired source_type={source_type} url={list_url} reason={session_reason}'
+        )
+
     soup = BeautifulSoup(page.content(), 'html.parser')
     links = link_extractor(soup, list_url)
+    _record_source_page_debug(
+        source_type=source_type,
+        url=list_url,
+        page=page,
+        item_count=len(links),
+        skipped_reason='' if links else 'no_detail_links',
+    )
     if not links:
         debug_info = _save_crawler_debug_page(
             page=page,
@@ -237,10 +282,35 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor):
             detail_url = link
             list_title = ''
         try:
-            details.append(fetch_authenticated_detail(page, detail_url, source_type=source_type, list_title=list_title))
+            details.append(
+                fetch_authenticated_detail(
+                    page,
+                    detail_url,
+                    source_type=source_type,
+                    list_title=list_title,
+                    login_url=login_url,
+                )
+            )
+        except SsafySessionExpiredError:
+            raise
         except Exception as exc:
             _LOGGER.warning('Failed to collect SSAFY %s detail from %s: %s', source_type, detail_url, exc)
     return details
+
+
+def _record_source_page_debug(source_type, url, page, item_count, skipped_reason='', error_reason=''):
+    parts = [
+        f'source_page source_type={source_type}',
+        f'url={url}',
+        f'final_url={_page_url(page)}',
+        f'page_title={_page_title(page)}',
+        f'item_count={item_count}',
+    ]
+    if skipped_reason:
+        parts.append(f'skipped_reason={skipped_reason}')
+    if error_reason:
+        parts.append(f'error_reason={error_reason}')
+    _record_collection_debug(' '.join(parts), level='warning' if skipped_reason or error_reason else 'info')
 
 
 def _save_crawler_debug_page(page, source_type, reason):
@@ -286,8 +356,77 @@ def _save_crawler_debug_page(page, source_type, reason):
     return metadata
 
 
-def fetch_authenticated_detail(page, detail_url, source_type='notice', list_title=''):
+def _session_expired_reason(page, login_url=None):
+    final_url = _page_url(page)
+    page_title = _page_title(page)
+    if _looks_like_login_url(final_url, login_url):
+        return 'login_url_redirect'
+    if _has_login_inputs(page):
+        return 'login_inputs_visible'
+    if _looks_like_login_title(final_url, page_title):
+        return 'login_page_title'
+    content = _page_content(page)
+    content_sample = content[:5000].lower()
+    if any(keyword.lower() in content_sample for keyword in SESSION_EXPIRED_KEYWORDS):
+        return 'login_or_session_text'
+    return ''
+
+
+def _page_title(page):
+    try:
+        return page.title()
+    except Exception:
+        return ''
+
+
+def _page_url(page):
+    return getattr(page, 'url', '') or ''
+
+
+def _page_content(page):
+    try:
+        return page.content()
+    except Exception:
+        return ''
+
+
+def _has_login_inputs(page):
+    try:
+        return page.locator('input[name="userId"], input[name="userPwd"]').count() > 0
+    except Exception:
+        return False
+
+
+def _looks_like_login_url(final_url, login_url=None):
+    parsed_final = urlparse(final_url or '')
+    final_path = (parsed_final.path or '').lower()
+    if 'login' in final_path:
+        return True
+    if login_url:
+        parsed_login = urlparse(login_url)
+        return bool(parsed_login.path and parsed_final.path == parsed_login.path)
+    return False
+
+
+def _looks_like_login_title(final_url, page_title):
+    target = f'{final_url} {page_title}'.lower()
+    return 'login' in target or '\ub85c\uadf8\uc778' in target
+
+
+def fetch_authenticated_detail(page, detail_url, source_type='notice', list_title='', login_url=None):
     page.goto(detail_url, wait_until='networkidle')
+    session_reason = _session_expired_reason(page, login_url=login_url)
+    if session_reason:
+        _record_source_page_debug(
+            source_type=source_type,
+            url=detail_url,
+            page=page,
+            item_count=0,
+            error_reason=f'session_expired:{session_reason}',
+        )
+        raise SsafySessionExpiredError(
+            f'session_expired source_type={source_type} url={detail_url} reason={session_reason}'
+        )
     soup = BeautifulSoup(page.content(), 'html.parser')
     return _parse_detail_soup(soup, detail_url, source_type=source_type, list_title=list_title)
 
@@ -454,7 +593,7 @@ def _looks_like_link(href, text, keywords):
 
 
 def _extract_detail_url_from_onclick(onclick, base_url):
-    match = re.search(r"fnDetail\(['\"]?(?P<id>[^'\",)]+)['\"]?", onclick or '')
+    match = re.search(r"fnDetail2?\(['\"]?(?P<id>[^'\",)]+)['\"]?", onclick or '')
     if not match:
         return ''
 

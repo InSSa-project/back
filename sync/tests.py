@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 
 from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
+    SsafySessionExpiredError,
     extract_image_urls_from_html,
     _extract_notice_links,
     _parse_detail_soup,
@@ -457,6 +458,54 @@ class SampleNoticeImportTests(TestCase):
             any(message.startswith('skipped_source=learning_material reason=missing_url') for message in debug_messages)
         )
 
+    def test_authenticated_documents_uses_mentoring_list_url_env(self):
+        fake_env = {
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_ID': 'tester',
+            'SSAFY_PASSWORD': 'secret',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/list/notice',
+            'SSAFY_MENTORING_LIST_URL': 'https://example.com/list/mentoring',
+        }
+
+        with patch.dict('os.environ', fake_env, clear=True):
+            with patch.dict('sys.modules', _fake_playwright_modules()):
+                with patch(
+                    'sync.services.ssafy_crawler._collect_authenticated_list',
+                    side_effect=[
+                        [_source_item('notice', 'https://example.com/notice/1', 'Notice 1', 'notice-1')],
+                        [
+                            _source_item(
+                                'mentoring_notice',
+                                'https://example.com/mentoring/1',
+                                'Mentoring notice',
+                                'mentoring-1',
+                            )
+                        ],
+                    ],
+                ) as collect:
+                    items = load_ssafy_authenticated_documents()
+
+        self.assertEqual([item['source_type'] for item in items], ['notice', 'mentoring_notice'])
+        self.assertEqual(collect.call_args_list[1].kwargs['list_url'], 'https://example.com/list/mentoring')
+
+    def test_collect_authenticated_list_raises_session_expired_for_login_page(self):
+        page = _StaticPage(
+            '<html><head><title>로그인</title></head><body><input name="userId"><input name="userPwd"></body></html>',
+            url='https://example.com/login',
+            title='로그인',
+        )
+
+        with self.assertRaises(SsafySessionExpiredError):
+            _collect_authenticated_list(
+                page=page,
+                list_url='https://example.com/list/notice',
+                source_type='notice',
+                link_extractor=lambda soup, base_url: [],
+                login_url='https://example.com/login',
+            )
+
+        self.assertTrue(any('error_reason=session_expired' in message for message in get_last_collection_debug()))
+
     def test_collect_authenticated_list_saves_debug_when_links_not_found(self):
         page = _StaticPage('<html><head><title>FAQ</title></head><main>No rows</main></html>')
 
@@ -497,6 +546,33 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.filter(source_type='mentoring_notice').count(), 1)
         self.assertEqual(RawSsafyData.objects.filter(source_type='learning_material').count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_different_source_urls_with_same_generic_title_are_not_deduped(self):
+        items = [
+            _source_item('mentoring_notice', 'https://example.com/mentor/1', '멘토 스토리 상세', 'mentor-1'),
+            _source_item('mentoring_notice', 'https://example.com/mentor/2', '멘토 스토리 상세', 'mentor-2'),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 2)
+        self.assertEqual(job_log.skipped_count, 0)
+        self.assertEqual(RawSsafyData.objects.filter(source_type='mentoring_notice').count(), 2)
+
+    def test_session_expired_job_fails_without_dropping_collected_items(self):
+        collected_item = _source_item('notice', 'https://example.com/notices/1', 'Notice 1', 'notice-1')
+
+        with patch(
+            'sync.services.import_service.load_notices_by_mode',
+            side_effect=SsafySessionExpiredError('session_expired source_type=mentoring_notice', [collected_item]),
+        ):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
+        self.assertIn('session_expired', job_log.message)
+        self.assertEqual(job_log.raw_count, 1)
+        self.assertEqual(RawSsafyData.objects.filter(source_url='https://example.com/notices/1').count(), 1)
 
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):
@@ -676,6 +752,21 @@ class SampleNoticeImportTests(TestCase):
                 'https://edu.ssafy.com/edu/board/docReq/detail.do?articleId=1',
                 'https://edu.ssafy.com/edu/board/docReq/detail.do?brdItmSeq=115458',
             ],
+        )
+
+    def test_link_extractor_supports_fn_detail2_onclick(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="#;" onclick="fnDetail2('119629','NOW');">Mentoring detail</a>
+            ''',
+            'html.parser',
+        )
+
+        links = _extract_notice_links(soup, 'https://edu.ssafy.com/edu/board/mentoState/list.do')
+
+        self.assertEqual(
+            links,
+            ['https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=119629'],
         )
 
     def test_academic_rule_list_without_detail_links_is_collected_as_document(self):
@@ -1653,14 +1744,30 @@ class _FailedLoginPage:
 
 
 class _StaticPage:
-    def __init__(self, html):
+    def __init__(self, html, url='https://example.com/list', title=''):
         self.html = html
+        self.url = url
+        self._title = title
 
     def goto(self, *args, **kwargs):
         return None
 
     def content(self):
         return self.html
+
+    def title(self):
+        return self._title
+
+    def locator(self, selector):
+        return _StaticLocator(1 if 'userId' in self.html or 'userPwd' in self.html else 0)
+
+
+class _StaticLocator:
+    def __init__(self, count):
+        self._count = count
+
+    def count(self):
+        return self._count
 
 
 class _ImageResponse:
