@@ -25,6 +25,7 @@ from sync.services.ssafy_crawler import (
     _parse_detail_soup,
     _login_ssafy,
     _collect_authenticated_list,
+    get_last_collection_debug,
     load_ssafy_authenticated_documents,
 )
 
@@ -423,6 +424,60 @@ class SampleNoticeImportTests(TestCase):
             'https://example.com/notice/1',
             'https://example.com/quest/1',
         ])
+
+    def test_authenticated_documents_records_skipped_sources_without_urls(self):
+        fake_env = {
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_ID': 'tester',
+            'SSAFY_PASSWORD': 'secret',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/list/notice',
+        }
+
+        with patch.dict('os.environ', fake_env, clear=True):
+            with patch.dict('sys.modules', _fake_playwright_modules()):
+                with patch(
+                    'sync.services.ssafy_crawler._collect_authenticated_list',
+                    return_value=[
+                        _source_item('notice', 'https://example.com/notice/1', 'Notice 1', 'notice-1')
+                    ],
+                ):
+                    items = load_ssafy_authenticated_documents()
+
+        debug_messages = get_last_collection_debug()
+        self.assertEqual([item['source_type'] for item in items], ['notice'])
+        self.assertTrue(any(message.startswith('skipped_source=faq reason=missing_url') for message in debug_messages))
+        self.assertTrue(any(message.startswith('skipped_source=quest reason=missing_url') for message in debug_messages))
+        self.assertTrue(
+            any(message.startswith('skipped_source=mentoring_notice reason=missing_url') for message in debug_messages)
+        )
+        self.assertTrue(
+            any(message.startswith('skipped_source=curriculum reason=missing_url') for message in debug_messages)
+        )
+        self.assertTrue(
+            any(message.startswith('skipped_source=learning_material reason=missing_url') for message in debug_messages)
+        )
+
+    def test_collect_authenticated_list_saves_debug_when_links_not_found(self):
+        page = _StaticPage('<html><head><title>FAQ</title></head><main>No rows</main></html>')
+
+        with patch(
+            'sync.services.ssafy_crawler._save_crawler_debug_page',
+            return_value={
+                'title': 'FAQ',
+                'url': 'https://example.com/list/faq',
+                'html_path': 'tmp/ssafy_crawler_debug/faq.html',
+                'screenshot_path': '',
+            },
+        ) as save_debug:
+            with self.assertRaises(SsafyCrawlerError):
+                _collect_authenticated_list(
+                    page=page,
+                    list_url='https://example.com/list/faq',
+                    source_type='faq',
+                    link_extractor=lambda soup, base_url: [],
+                )
+
+        save_debug.assert_called_once()
 
     def test_new_source_types_are_saved_to_raw_data(self):
         items = [

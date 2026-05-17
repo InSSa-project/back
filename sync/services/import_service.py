@@ -12,6 +12,7 @@ from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
     extract_image_urls_from_html,
     get_crawler_mode,
+    get_last_collection_debug,
     load_notices_by_mode,
 )
 
@@ -54,10 +55,11 @@ def run_notice_import(mode=None):
         selected_mode = get_crawler_mode(mode)
         job_log.crawler_mode = selected_mode
         raw_items = load_notices_by_mode(selected_mode)
+        crawler_debug = get_last_collection_debug()
         summary = _import_raw_items(raw_items)
 
         job_log.status = CrawlJobLog.STATUS_SUCCESS
-        job_log.message = _build_success_message(selected_mode, summary)
+        job_log.message = _build_success_message(selected_mode, summary, crawler_debug=crawler_debug)
         job_log.raw_count = summary.raw_count
         job_log.event_count = summary.event_count
         job_log.failed_count = summary.failed_count
@@ -72,7 +74,12 @@ def run_notice_import(mode=None):
         job_log.save()
         return job_log
     except (SsafyCrawlerError, ValueError) as exc:
-        return _mark_job_failed(job_log, f'{CRAWL_FAILED_MESSAGE} {exc}')
+        crawler_debug = get_last_collection_debug()
+        debug_message = _format_crawler_debug(crawler_debug)
+        message = f'{CRAWL_FAILED_MESSAGE} {exc}'
+        if debug_message:
+            message = f'{message}, crawler_debug={debug_message}'
+        return _mark_job_failed(job_log, message)
     except Exception as exc:
         return _mark_job_failed(job_log, str(exc))
 
@@ -168,7 +175,7 @@ def _store_review_required_candidates(raw_data, grid_debug):
     raw_data.metadata_json = metadata
 
 
-def _build_success_message(selected_mode, summary):
+def _build_success_message(selected_mode, summary, crawler_debug=None):
     message = (
         f'{SUCCESS_MESSAGE} mode={selected_mode}, '
         f'collected_notice_count={summary.collected_notice_count}, '
@@ -193,7 +200,16 @@ def _build_success_message(selected_mode, summary):
         message = f'{message}, no_schedule_by_type={no_schedule_detail}'
     if summary.failed_items:
         message = f'{message}, failed_items={";".join(summary.failed_items[:5])}'
+    debug_message = _format_crawler_debug(crawler_debug)
+    if debug_message:
+        message = f'{message}, crawler_debug={debug_message}'
     return message
+
+
+def _format_crawler_debug(crawler_debug):
+    if not crawler_debug:
+        return ''
+    return ' | '.join(str(item) for item in crawler_debug[:20])
 
 
 def _apply_ocr_pipeline(item, summary):

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 
@@ -24,6 +25,18 @@ IGNORED_OCR_IMAGE_KEYWORDS = (
 )
 
 _LOGGER = logging.getLogger(__name__)
+CRAWLER_DEBUG_DIR = settings.BASE_DIR / 'tmp' / 'ssafy_crawler_debug'
+CRAWLER_DEBUG_HTML_PREVIEW_LENGTH = 2000
+_LAST_COLLECTION_DEBUG = []
+SOURCE_LIST_URL_ENV_NAMES = {
+    'notice': 'SSAFY_NOTICE_LIST_URL',
+    'academic_rule': 'SSAFY_RULE_LIST_URL',
+    'faq': 'SSAFY_FAQ_LIST_URL',
+    'quest': 'SSAFY_QUEST_LIST_URL',
+    'mentoring_notice': 'SSAFY_MENTORING_NOTICE_LIST_URL',
+    'curriculum': 'SSAFY_CURRICULUM_LIST_URL',
+    'learning_material': 'SSAFY_LEARNING_MATERIAL_LIST_URL',
+}
 
 
 class SsafyCrawlerError(Exception):
@@ -69,6 +82,22 @@ def load_notices_by_mode(mode=None):
     raise SsafyCrawlerError(f'Unsupported SSAFY crawler mode: {selected_mode}')
 
 
+def get_last_collection_debug():
+    return list(_LAST_COLLECTION_DEBUG)
+
+
+def _reset_collection_debug():
+    _LAST_COLLECTION_DEBUG.clear()
+
+
+def _record_collection_debug(message, level='info'):
+    _LAST_COLLECTION_DEBUG.append(message)
+    if level == 'warning':
+        _LOGGER.warning(message)
+    else:
+        _LOGGER.info(message)
+
+
 def load_ssafy_notice_list(list_url=None):
     notice_list_url = list_url or os.getenv('SSAFY_NOTICE_LIST_URL')
     if not notice_list_url:
@@ -86,6 +115,7 @@ def load_ssafy_authenticated_documents(
     curriculum_list_url=None,
     learning_material_list_url=None,
 ):
+    _reset_collection_debug()
     login_url = os.getenv('SSAFY_LOGIN_URL')
     ssafy_id = os.getenv('SSAFY_ID')
     ssafy_password = os.getenv('SSAFY_PASSWORD')
@@ -131,19 +161,28 @@ def load_ssafy_authenticated_documents(
                 curriculum_url=curriculum_url,
                 learning_material_url=learning_material_url,
             ):
+                env_name = SOURCE_LIST_URL_ENV_NAMES.get(source_type, '')
                 if not list_url:
-                    continue
-                try:
-                    notices.extend(
-                        _collect_authenticated_list(
-                            page=page,
-                            list_url=list_url,
-                            source_type=source_type,
-                            link_extractor=link_extractor,
-                        )
+                    _record_collection_debug(
+                        f'skipped_source={source_type} reason=missing_url env_var={env_name}',
+                        level='warning',
                     )
+                    continue
+                _record_collection_debug(f'source_url source_type={source_type} env_var={env_name} url={list_url}')
+                try:
+                    collected = _collect_authenticated_list(
+                        page=page,
+                        list_url=list_url,
+                        source_type=source_type,
+                        link_extractor=link_extractor,
+                    )
+                    notices.extend(collected)
+                    _record_collection_debug(f'collected_source={source_type} count={len(collected)}')
                 except Exception as exc:
-                    _LOGGER.warning('Failed to collect SSAFY %s from %s: %s', source_type, list_url, exc)
+                    _record_collection_debug(
+                        f'failed_source={source_type} url={list_url} error={exc}',
+                        level='warning',
+                    )
             context.close()
             browser.close()
     except PlaywrightTimeoutError as exc:
@@ -173,6 +212,19 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor):
     soup = BeautifulSoup(page.content(), 'html.parser')
     links = link_extractor(soup, list_url)
     if not links:
+        debug_info = _save_crawler_debug_page(
+            page=page,
+            source_type=source_type,
+            reason='no_detail_links',
+        )
+        _record_collection_debug(
+            (
+                f'debug_saved source_type={source_type} reason=no_detail_links '
+                f'title={debug_info.get("title", "")} url={debug_info.get("url", "")} '
+                f'html={debug_info.get("html_path", "")} screenshot={debug_info.get("screenshot_path", "")}'
+            ),
+            level='warning',
+        )
         if source_type == 'academic_rule':
             return [_parse_detail_soup(soup, list_url, source_type=source_type)]
         raise SsafyCrawlerError(f'No {source_type} detail links were found: {list_url}')
@@ -189,6 +241,49 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor):
         except Exception as exc:
             _LOGGER.warning('Failed to collect SSAFY %s detail from %s: %s', source_type, detail_url, exc)
     return details
+
+
+def _save_crawler_debug_page(page, source_type, reason):
+    CRAWLER_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    safe_source_type = re.sub(r'[^a-zA-Z0-9_-]+', '_', source_type or 'unknown')
+    safe_reason = re.sub(r'[^a-zA-Z0-9_-]+', '_', reason or 'debug')
+    base_path = CRAWLER_DEBUG_DIR / f'{timestamp}_{safe_source_type}_{safe_reason}'
+
+    try:
+        title = page.title()
+    except Exception:
+        title = ''
+    url = getattr(page, 'url', '') or ''
+    try:
+        html = page.content()
+    except Exception:
+        html = ''
+
+    html_path = base_path.with_suffix('.html')
+    metadata_path = base_path.with_suffix('.json')
+    screenshot_path = base_path.with_suffix('.png')
+
+    html_path.write_text(html, encoding='utf-8')
+    screenshot_saved_path = ''
+    try:
+        page.screenshot(path=str(screenshot_path), full_page=True)
+        screenshot_saved_path = str(screenshot_path)
+    except Exception:
+        screenshot_saved_path = ''
+
+    metadata = {
+        'source_type': source_type,
+        'reason': reason,
+        'title': title,
+        'url': url,
+        'html_path': str(html_path),
+        'screenshot_path': screenshot_saved_path,
+        'html_preview': html[:CRAWLER_DEBUG_HTML_PREVIEW_LENGTH],
+    }
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding='utf-8')
+    metadata['metadata_path'] = str(metadata_path)
+    return metadata
 
 
 def fetch_authenticated_detail(page, detail_url, source_type='notice', list_title=''):
