@@ -16,7 +16,9 @@ class LocalCorsMiddleware:
 
         if origin in getattr(settings, 'CORS_ALLOWED_ORIGINS', []):
             response['Access-Control-Allow-Origin'] = origin
-            response['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+            response['Access-Control-Allow-Methods'] = ', '.join(
+                getattr(settings, 'CORS_ALLOW_METHODS', ['GET', 'POST', 'OPTIONS'])
+            )
             response['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
             response['Vary'] = 'Origin'
 
