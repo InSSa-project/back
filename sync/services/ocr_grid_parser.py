@@ -50,7 +50,13 @@ EXAM_COMPACT_KEYWORDS = {
     'SW역량테스트',
     '역량테스트',
 }
-MIN_EXAM_OVERLAP_RATIO = 0.18
+MIN_EXAM_CONFIDENCE = 0.85
+MIN_EXAM_OVERLAP_RATIO = 0.35
+REVIEW_REQUIRED_EXAM_FILTER_REASONS = {
+    'review_required_exam_title',
+    'low_confidence_exam',
+    'low_overlap_exam',
+}
 
 
 @dataclass
@@ -59,6 +65,7 @@ class GridScheduleCandidate:
     event_date: date
     event_type: str
     description: str
+    source_text: str = ''
     end_date: date = None
     source_box_count: int = 0
     row_index: int = None
@@ -80,6 +87,8 @@ class GridParseDebug:
     unmatched_texts: list = None
     filtered_candidate_count: int = 0
     filtered_candidates: list = None
+    review_required_candidate_count: int = 0
+    review_required_candidates: list = None
 
     def as_dict(self):
         return {
@@ -93,6 +102,8 @@ class GridParseDebug:
             'unmatched_texts': self.unmatched_texts or [],
             'filtered_candidate_count': self.filtered_candidate_count,
             'filtered_candidates': self.filtered_candidates or [],
+            'review_required_candidate_count': self.review_required_candidate_count,
+            'review_required_candidates': self.review_required_candidates or [],
         }
 
 
@@ -102,6 +113,7 @@ def parse_grid_schedule_candidates(ocr_boxes):
         candidates=[],
         unmatched_texts=[],
         filtered_candidates=[],
+        review_required_candidates=[],
     )
     boxes = normalize_ocr_boxes(ocr_boxes)
     debug.normalized_box_count = len(boxes)
@@ -126,13 +138,16 @@ def parse_grid_schedule_candidates(ocr_boxes):
 
     candidates = _dedupe_candidates(candidates)
     candidates, filtered_candidates = _filter_exam_false_positives(candidates)
+    review_required_candidates = _collect_review_required_candidates(filtered_candidates)
     debug.used_grid_parser = bool(candidates)
     debug.candidate_count = len(candidates)
     debug.filtered_candidate_count = len(filtered_candidates)
-    debug.reason = 'ok' if candidates else 'no_event_boxes_matched'
+    debug.review_required_candidate_count = len(review_required_candidates)
+    debug.reason = 'ok' if candidates else ('review_required_candidates_only' if review_required_candidates else 'no_event_boxes_matched')
     debug.candidates = [
         {
-            'title': candidate.title,
+            'title': candidate.source_text or candidate.title,
+            'source_text': candidate.source_text,
             'inferred_date': candidate.event_date.isoformat(),
             'start_date': candidate.event_date.isoformat(),
             'end_date': (candidate.end_date or candidate.event_date).isoformat(),
@@ -149,6 +164,7 @@ def parse_grid_schedule_candidates(ocr_boxes):
     debug.filtered_candidates = [
         {
             'title': candidate.title,
+            'source_text': candidate.source_text,
             'inferred_date': candidate.event_date.isoformat(),
             'event_type': candidate.event_type,
             'source_box_count': candidate.source_box_count,
@@ -159,6 +175,22 @@ def parse_grid_schedule_candidates(ocr_boxes):
             'filtered_reason': candidate.reason,
         }
         for candidate in sorted(filtered_candidates, key=lambda item: (item.event_date, item.title, item.reason))
+    ]
+    debug.review_required_candidates = [
+        {
+            'title': candidate.source_text or candidate.title,
+            'source_text': candidate.source_text,
+            'canonical_title': candidate.title,
+            'inferred_date': candidate.event_date.isoformat(),
+            'event_type': candidate.event_type,
+            'source_box_count': candidate.source_box_count,
+            'row_index': candidate.row_index,
+            'col_index': candidate.col_index,
+            'confidence': candidate.confidence,
+            'overlap_ratio': candidate.overlap_ratio,
+            'review_required_reason': candidate.reason,
+        }
+        for candidate in sorted(review_required_candidates, key=lambda item: (item.event_date, item.title, item.reason))
     ]
     debug.unmatched_texts = _collect_unmatched_texts(all_section_boxes, all_cells, candidates)
     return candidates, debug
@@ -319,6 +351,7 @@ def _assign_events_to_cells(boxes, cells):
                 event_date=cell['date'],
                 event_type=_event_type(title),
                 description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                source_text=box['text'],
                 source_box_count=1,
                 row_index=cell.get('row_index'),
                 col_index=cell.get('col_index'),
@@ -340,6 +373,7 @@ def _assign_events_to_cells(boxes, cells):
                     event_date=cell['date'],
                     event_type=_event_type(title),
                     description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                    source_text=' '.join(box['text'] for box in row_boxes),
                     source_box_count=len(row_boxes),
                     row_index=cell.get('row_index'),
                     col_index=cell.get('col_index'),
@@ -625,7 +659,17 @@ def _filter_exam_false_positives(candidates):
         if _is_exam_candidate(candidate) and candidate.event_date in holiday_dates:
             filtered.append(_with_filtered_reason(candidate, 'holiday_exam_conflict'))
             continue
-        if _is_exam_candidate(candidate) and candidate.overlap_ratio is not None and candidate.overlap_ratio < MIN_EXAM_OVERLAP_RATIO:
+        if _is_exam_candidate(candidate) and not _is_clear_exam_title(candidate.source_text or candidate.title):
+            filtered.append(_with_filtered_reason(candidate, 'review_required_exam_title'))
+            continue
+        if _is_exam_candidate(candidate) and (
+            candidate.confidence is None or candidate.confidence < MIN_EXAM_CONFIDENCE
+        ):
+            filtered.append(_with_filtered_reason(candidate, 'low_confidence_exam'))
+            continue
+        if _is_exam_candidate(candidate) and (
+            candidate.overlap_ratio is None or candidate.overlap_ratio < MIN_EXAM_OVERLAP_RATIO
+        ):
             filtered.append(_with_filtered_reason(candidate, 'low_overlap_exam'))
             continue
         kept.append(candidate)
@@ -688,6 +732,7 @@ def _with_filtered_reason(candidate, reason):
         col_index=candidate.col_index,
         confidence=candidate.confidence,
         overlap_ratio=candidate.overlap_ratio,
+        source_text=candidate.source_text,
         reason=reason,
     )
 
@@ -696,8 +741,27 @@ def _is_exam_candidate(candidate):
     return candidate.event_type == 'exam' or _is_exam_title_compact(_compact_text(candidate.title))
 
 
+def _collect_review_required_candidates(filtered_candidates):
+    return [
+        candidate
+        for candidate in filtered_candidates
+        if candidate.event_type == 'exam' and candidate.reason in REVIEW_REQUIRED_EXAM_FILTER_REASONS
+    ]
+
+
+def _is_clear_exam_title(title):
+    return _is_exam_title_compact(_compact_text(title))
+
+
 def _is_exam_title_compact(compact):
-    return any(keyword in compact for keyword in EXAM_COMPACT_KEYWORDS)
+    if not compact:
+        return False
+    if compact in EXAM_COMPACT_KEYWORDS:
+        return True
+    for keyword in EXAM_COMPACT_KEYWORDS:
+        if compact.startswith(keyword) and compact[len(keyword):].isdigit():
+            return True
+    return False
 
 
 def _is_holiday_title(title):

@@ -15,7 +15,7 @@ from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.import_service import run_notice_import, run_sample_notice_import
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.reparse_service import reparse_raw_data_to_events
-from sync.services.schedule_parser import parse_schedule_candidates
+from sync.services.schedule_parser import parse_schedule_candidates, parse_schedule_candidates_with_debug
 from bs4 import BeautifulSoup
 
 from sync.services.ssafy_crawler import (
@@ -507,9 +507,22 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(event.start_at.date().isoformat(), '2026-01-20')
         self.assertEqual(event.event_type, 'exam')
 
+    def test_parser_rejects_mixed_exam_titles_and_records_review_candidates(self):
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n1월\n20\n배틀싸피과목평가',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_review_required_exam_ocr_boxes(),
+        )
+
+        self.assertEqual(schedules, [])
+        self.assertEqual(grid_debug.candidate_count, 0)
+        self.assertEqual(grid_debug.review_required_candidate_count, 1)
+        self.assertEqual(grid_debug.review_required_candidates[0]['title'], '배틀싸피과목평가')
+        self.assertEqual(grid_debug.reason, 'review_required_candidates_only')
+
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):
-            with patch('sync.services.import_service.parse_schedule_candidates', side_effect=ValueError('bad date')):
+            with patch('sync.services.import_service.parse_schedule_candidates_with_debug', side_effect=ValueError('bad date')):
                 job_log = run_notice_import(mode='ssafy_notice')
 
         self.assertEqual(job_log.failed_count, 1)
@@ -983,7 +996,24 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('inferred_date=2026-01-20', value)
         self.assertIn('source_box_count=', value)
         self.assertIn('row_index=', value)
+        self.assertIn('grid_review_required_candidate_count=0', value)
         self.assertIn('grid_unmatched_texts=', value)
+
+    def test_reparse_records_review_required_exam_candidates_in_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/review-required',
+            title='[학습] 15기 1학기 전체 일정',
+            raw_text='[OCR_TEXT]\n1월\n20\n배틀싸피과목평가',
+            ocr_boxes=_review_required_exam_ocr_boxes(),
+        )
+
+        call_command('reparse_raw_ssafy_data', '--id', raw_data.id, '--replace-events')
+
+        raw_data.refresh_from_db()
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertEqual(raw_data.metadata_json['review_required_candidate_count'], 1)
+        self.assertEqual(raw_data.metadata_json['review_required_candidates'][0]['title'], '배틀싸피과목평가')
 
     def test_preview_parse_raw_data_exports_grid_debug_json(self):
         raw_data = RawSsafyData.objects.create(
@@ -1449,6 +1479,12 @@ def _calendar_ocr_boxes():
         {'text': '21', 'x1': 610, 'y1': 180, 'x2': 624, 'y2': 200},
         {'text': 'SW 역량테스트', 'x1': 505, 'y1': 212, 'x2': 590, 'y2': 232, 'confidence': 0.96},
     ]
+
+
+def _review_required_exam_ocr_boxes():
+    boxes = _calendar_ocr_boxes()
+    boxes[-1] = {'text': '배틀싸피과목평가', 'x1': 500, 'y1': 212, 'x2': 600, 'y2': 232, 'confidence': 0.96}
+    return boxes
 
 
 class _FailedLoginPage:

@@ -6,7 +6,7 @@ from django.utils import timezone
 from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
-from sync.services.schedule_parser import parse_schedule_candidates
+from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
@@ -98,12 +98,13 @@ def _import_raw_items(raw_items):
                 _mark_no_schedule(raw_data, summary)
                 continue
 
-            parsed_schedules = parse_schedule_candidates(
+            parsed_schedules, grid_debug = parse_schedule_candidates_with_debug(
                 raw_data.raw_text,
                 default_title=raw_data.title,
                 ocr_boxes=raw_data.ocr_boxes,
             )
             summary.parse_candidate_count += len(parsed_schedules)
+            _store_review_required_candidates(raw_data, grid_debug)
             if not parsed_schedules:
                 _mark_no_schedule(raw_data, summary)
                 continue
@@ -128,11 +129,11 @@ def _import_raw_items(raw_items):
                 summary.event_count += 1
 
             raw_data.status = RawSsafyData.STATUS_PARSED
-            raw_data.save(update_fields=['status'])
+            raw_data.save(update_fields=['status', 'metadata_json'])
         except Exception as exc:
             summary.failed_count += 1
             raw_data.status = RawSsafyData.STATUS_FAILED
-            raw_data.save(update_fields=['status'])
+            raw_data.save(update_fields=['status', 'metadata_json'])
             summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
 
     return summary
@@ -156,7 +157,15 @@ def _mark_no_schedule(raw_data, summary):
     summary.no_schedule_count += 1
     summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
     raw_data.status = RawSsafyData.STATUS_PARSED
-    raw_data.save(update_fields=['status'])
+    raw_data.save(update_fields=['status', 'metadata_json'])
+
+
+def _store_review_required_candidates(raw_data, grid_debug):
+    metadata = dict(raw_data.metadata_json or {})
+    review_required_candidates = grid_debug.review_required_candidates or []
+    metadata['review_required_candidate_count'] = len(review_required_candidates)
+    metadata['review_required_candidates'] = review_required_candidates
+    raw_data.metadata_json = metadata
 
 
 def _build_success_message(selected_mode, summary):

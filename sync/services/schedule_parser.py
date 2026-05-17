@@ -92,9 +92,14 @@ class ParsedSchedule:
 
 
 def parse_schedule_candidates(raw_text, default_title='SSAFY 일정', ocr_boxes=None):
+    schedules, _grid_debug = parse_schedule_candidates_with_debug(raw_text, default_title=default_title, ocr_boxes=ocr_boxes)
+    return schedules
+
+
+def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정', ocr_boxes=None):
     schedules = []
     context_title = _context_title(raw_text, default_title)
-    grid_candidates, _debug = parse_grid_schedule_candidates(ocr_boxes or [])
+    grid_candidates, grid_debug = parse_grid_schedule_candidates(ocr_boxes or [])
     for candidate in grid_candidates:
         start_at = _aware(candidate.event_date, time.min)
         schedules.append(
@@ -132,9 +137,9 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정', ocr_boxes=
             )
         )
 
-    if not grid_candidates:
+    if not grid_candidates and not getattr(grid_debug, 'review_required_candidate_count', 0):
         schedules.extend(_parse_calendar_ocr_candidates(raw_text))
-    return _dedupe_schedules(schedules)
+    return _dedupe_schedules(schedules), grid_debug
 
 
 def _parse_calendar_ocr_candidates(raw_text):
