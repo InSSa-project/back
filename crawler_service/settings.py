@@ -50,6 +50,8 @@ INSTALLED_APPS = [
     'apps.ocr',
     'apps.notifications',
     'apps.risk',
+    'sync',
+    'schedules',
     'common',
 
 ]

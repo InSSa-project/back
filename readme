@@ -62,4 +62,28 @@ open ai api 연동 채팅 사용법 :
     개선 : 
         일반질문 : semantic retrieval
         일정질문 : structured retrieval + metadata filter
+4. 프롬포팅 구현 완료
+  프롬포팅 하는 방법:
+  1. 기본 정체성/안전 규칙
+    back/ai_server/prompts/base/system.md
+    back/ai_server/prompts/base/safety.md
+    back/ai_server/prompts/base/response_format.md
+  2. 말투/스타일
+    back/ai_server/prompts/styles/ssafy_assistant.md
+    back/ai_server/prompts/styles/mentor_style.md
+    back/ai_server/prompts/styles/developer_tutor.md
+  3. 응답 정책
+    back/ai_server/prompts/policies/rag_answer_policy.md
+    back/ai_server/prompts/policies/fallback_policy.md
+    back/ai_server/prompts/policies/schedule_policy.md
+    back/ai_server/prompts/policies/general_tech_policy.md
+  4. 예시 답변
+    back/ai_server/prompts/few_shots/schedule_examples.json
+    back/ai_server/prompts/few_shots/tech_examples.json
+    back/ai_server/prompts/few_shots/mentoring_examples.json
+    back/ai_server/prompts/few_shots/exam_examples.json
+  5. 최종 조립 템플릿
+    back/ai_server/prompts/templates/rag_chat_template.md
+    back/ai_server/prompts/templates/general_chat_template.md
+    back/ai_server/prompts/templates/no_context_template.md
 -----------------------------------------------------
