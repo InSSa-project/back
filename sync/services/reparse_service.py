@@ -5,7 +5,7 @@ from django.db import transaction
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
 from sync.services.import_service import find_existing_schedule_event
-from sync.services.schedule_parser import parse_schedule_candidates
+from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 
 
 @dataclass
@@ -34,11 +34,12 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
             continue
 
         try:
-            parsed_schedules = parse_schedule_candidates(
+            parsed_schedules, grid_debug = parse_schedule_candidates_with_debug(
                 raw_data.raw_text,
                 default_title=raw_data.title,
                 ocr_boxes=raw_data.ocr_boxes,
             )
+            _store_review_required_candidates(raw_data, grid_debug)
         except Exception:
             summary.failed_count += 1
             continue
@@ -46,6 +47,8 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
         summary.candidate_count += len(parsed_schedules)
         if not parsed_schedules:
             summary.no_schedule_count += 1
+            if not dry_run:
+                raw_data.save(update_fields=['metadata_json'])
             continue
 
         if replace_events:
@@ -78,8 +81,16 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
 
         if not dry_run:
             raw_data.status = RawSsafyData.STATUS_PARSED
-            raw_data.save(update_fields=['status'])
+            raw_data.save(update_fields=['status', 'metadata_json'])
 
     if dry_run:
         transaction.set_rollback(True)
     return summary
+
+
+def _store_review_required_candidates(raw_data, grid_debug):
+    metadata = dict(raw_data.metadata_json or {})
+    review_required_candidates = grid_debug.review_required_candidates or []
+    metadata['review_required_candidate_count'] = len(review_required_candidates)
+    metadata['review_required_candidates'] = review_required_candidates
+    raw_data.metadata_json = metadata

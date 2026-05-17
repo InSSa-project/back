@@ -4,8 +4,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from sync.models import RawSsafyData
-from sync.services.ocr_grid_parser import parse_grid_schedule_candidates
-from sync.services.schedule_parser import parse_schedule_candidates
+from sync.services.schedule_parser import parse_schedule_candidates, parse_schedule_candidates_with_debug
 
 
 class Command(BaseCommand):
@@ -20,13 +19,12 @@ class Command(BaseCommand):
         if raw_data is None:
             raise CommandError(f'RawSsafyData id={options["id"]} was not found.')
 
-        candidates = parse_schedule_candidates(
+        candidates, grid_debug = parse_schedule_candidates_with_debug(
             raw_data.raw_text,
             default_title=raw_data.title,
             ocr_boxes=raw_data.ocr_boxes,
         )
         text_candidates = parse_schedule_candidates(raw_data.raw_text, default_title=raw_data.title)
-        _grid_candidates, grid_debug = parse_grid_schedule_candidates(raw_data.ocr_boxes)
         metadata = raw_data.metadata_json or {}
         image_urls = metadata.get('image_urls') or []
         preview_text = raw_data.raw_text[:500].replace('\r', '')
@@ -46,6 +44,7 @@ class Command(BaseCommand):
         self.stdout.write(f'grid_date_cell_count={grid_debug.date_cell_count}')
         self.stdout.write(f'grid_candidate_count={grid_debug.candidate_count}')
         self.stdout.write(f'grid_filtered_candidate_count={grid_debug.filtered_candidate_count}')
+        self.stdout.write(f'grid_review_required_candidate_count={grid_debug.review_required_candidate_count}')
         self.stdout.write(f'text_candidate_count={len(text_candidates)}')
         self.stdout.write(f'grid_parser_reason={grid_debug.reason}')
         self.stdout.write('raw_text_preview=')
@@ -78,6 +77,19 @@ class Command(BaseCommand):
                 f'confidence={candidate["confidence"]} '
                 f'overlap_ratio={candidate.get("overlap_ratio")} '
                 f'filtered_reason={candidate["filtered_reason"]}'
+            )
+        self.stdout.write('grid_review_required_candidates=')
+        for index, candidate in enumerate(grid_debug.review_required_candidates or [], start=1):
+            self.stdout.write(
+                f'{index}. inferred_date={candidate["inferred_date"]} '
+                f'title={candidate["title"]} '
+                f'event_type={candidate["event_type"]} '
+                f'source_box_count={candidate["source_box_count"]} '
+                f'row_index={candidate["row_index"]} '
+                f'col_index={candidate["col_index"]} '
+                f'confidence={candidate["confidence"]} '
+                f'overlap_ratio={candidate.get("overlap_ratio")} '
+                f'review_required_reason={candidate["review_required_reason"]}'
             )
         self.stdout.write('grid_unmatched_texts=')
         for index, unmatched in enumerate((grid_debug.unmatched_texts or [])[:80], start=1):
