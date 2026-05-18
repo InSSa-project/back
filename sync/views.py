@@ -14,6 +14,7 @@ from sync.services.notice_normalizer import (
     TRACKS,
     infer_notice_category,
     infer_notice_track,
+    normalize_notice_category,
     notice_matches_search,
 )
 from sync.services.import_service import run_notice_import
@@ -34,6 +35,7 @@ def notice_list(request):
         queryset = queryset.filter(source_type=source_type)
 
     rows = list(queryset)
+    category = normalize_notice_category(category)
     if category and category != 'all':
         if category not in CATEGORIES:
             return JsonResponse({'detail': 'Unsupported category.'}, status=400)
@@ -41,7 +43,8 @@ def notice_list(request):
     if track:
         if track not in TRACKS:
             return JsonResponse({'detail': 'Unsupported track.'}, status=400)
-        rows = [row for row in rows if infer_notice_track(row) in {track, 'common'}]
+        if category != 'mentoring':
+            rows = [row for row in rows if infer_notice_track(row) in {track, 'common'}]
     if search:
         rows = [row for row in rows if notice_matches_search(row, search)]
 

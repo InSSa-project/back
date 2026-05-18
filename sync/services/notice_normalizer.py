@@ -2,10 +2,19 @@ import json
 
 
 SOURCE_TYPES = {'notice', 'academic_rule', 'mentoring_notice'}
-CATEGORIES = {'all', 'study', 'exam', 'etc'}
+CATEGORIES = {'all', 'study', 'exam', 'mentoring', 'etc'}
 TRACKS = {'python', 'java', 'embedded', 'mobile', 'common'}
 
-EXAM_KEYWORDS = ('월말평가', '과목평가', '역량테스트', '시험', '평가')
+CATEGORY_ALIASES = {
+    'learning': 'study',
+    'education': 'study',
+    'evaluation': 'exam',
+    'test': 'exam',
+    'rule': 'etc',
+    'other': 'etc',
+}
+
+EXAM_KEYWORDS = ('평가', '시험', '월말평가', '과목평가', '역량테스트')
 STUDY_KEYWORDS = ('학습', '강의', '과제', '프로젝트', '커리큘럼', '보충', '라이브')
 TRACK_KEYWORDS = {
     'python': ('python', '파이썬'),
@@ -16,12 +25,23 @@ TRACK_KEYWORDS = {
 }
 
 
+def normalize_notice_category(category):
+    normalized = str(category or '').strip().lower()
+    return CATEGORY_ALIASES.get(normalized, normalized)
+
+
 def infer_notice_category(raw):
-    metadata_value = _metadata_value(raw, 'category')
-    if metadata_value in CATEGORIES:
+    source_type = str(getattr(raw, 'source_type', '') or '').strip().lower()
+    if source_type == 'mentoring_notice':
+        return 'mentoring'
+    if source_type == 'academic_rule':
+        return 'etc'
+
+    metadata_value = normalize_notice_category(_metadata_value(raw, 'category'))
+    if metadata_value in CATEGORIES and metadata_value != 'all':
         return metadata_value
 
-    text = _normalization_text(raw)
+    text = _normalization_text(raw).lower()
     if any(keyword in text for keyword in EXAM_KEYWORDS):
         return 'exam'
     if any(keyword in text for keyword in STUDY_KEYWORDS):
@@ -30,6 +50,10 @@ def infer_notice_category(raw):
 
 
 def infer_notice_track(raw):
+    source_type = str(getattr(raw, 'source_type', '') or '').strip().lower()
+    if source_type in {'mentoring_notice', 'academic_rule'}:
+        return 'common'
+
     metadata_value = _metadata_value(raw, 'track')
     if metadata_value in TRACKS:
         return metadata_value
