@@ -6,14 +6,18 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_GET, require_http_methods
+from django.views.decorators.http import require_http_methods
 
 from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
 def event_list(request):
+    if request.method == 'POST':
+        return _create_event(request)
+
     start_at = _parse_boundary(request.GET.get('start'), is_end=False)
     end_at = _parse_boundary(request.GET.get('end'), is_end=True)
 
@@ -29,6 +33,64 @@ def event_list(request):
     events = _filter_events_by_audience_params(events, request.GET)
 
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
+
+
+def _create_event(request):
+    # TODO: Require authentication and attach created_by before production use.
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'detail': 'Invalid JSON payload.'}, status=400)
+
+    invalid_fields = set(payload) - {
+        'title',
+        'description',
+        'start_at',
+        'end_at',
+        'is_all_day',
+        'event_type',
+        'metadata',
+        'metadata_json',
+    }
+    if invalid_fields:
+        return JsonResponse(
+            {'detail': f'Unsupported fields: {", ".join(sorted(invalid_fields))}'},
+            status=400,
+        )
+
+    missing_fields = [field for field in ['title', 'start_at', 'end_at'] if not payload.get(field)]
+    if missing_fields:
+        return JsonResponse(
+            {'detail': f'Missing required fields: {", ".join(missing_fields)}'},
+            status=400,
+        )
+
+    start_at = _parse_patch_datetime(payload['start_at'])
+    end_at = _parse_patch_datetime(payload['end_at'])
+    if start_at is None:
+        return JsonResponse({'detail': 'Invalid datetime format: start_at'}, status=400)
+    if end_at is None:
+        return JsonResponse({'detail': 'Invalid datetime format: end_at'}, status=400)
+    if end_at < start_at:
+        return JsonResponse({'detail': 'end_at must be after start_at.'}, status=400)
+
+    metadata_json = payload.get('metadata_json', payload.get('metadata', {}))
+    if metadata_json is None:
+        metadata_json = {}
+    if not isinstance(metadata_json, dict):
+        return JsonResponse({'detail': 'metadata_json must be an object.'}, status=400)
+
+    event = ScheduleEvent.objects.create(
+        title=payload['title'],
+        description=payload.get('description', ''),
+        start_at=start_at,
+        end_at=end_at,
+        is_all_day=payload.get('is_all_day', False),
+        event_type=payload.get('event_type', 'personal'),
+        source_type='manual',
+        metadata_json=metadata_json,
+    )
+    return JsonResponse(_serialize_event(event), status=201)
 
 
 @csrf_exempt
