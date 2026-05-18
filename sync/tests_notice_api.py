@@ -29,6 +29,29 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.json()['count'], 1)
         self.assertEqual(response.json()['results'][0]['category'], 'exam')
 
+    def test_notice_list_filters_mentoring_source_type_by_category(self):
+        RawSsafyData.objects.create(source_type='mentoring_notice', title='멘토링 안내', raw_text='본문')
+        RawSsafyData.objects.create(source_type='notice', title='일반 안내', raw_text='본문')
+
+        response = self.client.get(reverse('notice-list'), {'category': 'mentoring'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['source_type'], 'mentoring_notice')
+        self.assertEqual(response.json()['results'][0]['category'], 'mentoring')
+        self.assertEqual(response.json()['results'][0]['track'], 'common')
+
+    def test_notice_list_treats_academic_rule_as_etc(self):
+        RawSsafyData.objects.create(source_type='academic_rule', title='학사 규정', raw_text='본문')
+        RawSsafyData.objects.create(source_type='notice', title='월말평가 안내', raw_text='시험')
+
+        response = self.client.get(reverse('notice-list'), {'category': 'etc'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['source_type'], 'academic_rule')
+        self.assertEqual(response.json()['results'][0]['category'], 'etc')
+
     def test_notice_list_filters_by_search(self):
         RawSsafyData.objects.create(source_type='notice', title='Python 보충 학습', raw_text='자료')
         RawSsafyData.objects.create(source_type='notice', title='Java 라이브', raw_text='자료')
@@ -49,6 +72,31 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['count'], 2)
         self.assertEqual({item['track'] for item in response.json()['results']}, {'python', 'common'})
+
+    def test_notice_list_filters_study_category_by_track(self):
+        RawSsafyData.objects.create(source_type='notice', title='Python 보충 학습', raw_text='파이썬')
+        RawSsafyData.objects.create(source_type='notice', title='Java 보충 학습', raw_text='자바')
+        RawSsafyData.objects.create(source_type='notice', title='공통 보충 학습', raw_text='전체 공통')
+
+        response = self.client.get(reverse('notice-list'), {'category': 'study', 'track': 'python'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 2)
+        self.assertEqual({item['track'] for item in response.json()['results']}, {'python', 'common'})
+
+    def test_notice_list_ignores_track_for_mentoring_category(self):
+        RawSsafyData.objects.create(
+            source_type='mentoring_notice',
+            title='멘토링 안내',
+            raw_text='본문',
+            metadata_json={'track': 'java'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'category': 'mentoring', 'track': 'python'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['category'], 'mentoring')
 
     def test_notice_detail_returns_linked_schedule_events(self):
         raw_data = RawSsafyData.objects.create(
