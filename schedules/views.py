@@ -9,6 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
 from .models import ScheduleEvent
+from .services import filter_events_for_user_profile
 
 
 @require_GET
@@ -21,6 +22,7 @@ def event_list(request):
         events = events.filter(end_at__gte=start_at)
     if end_at:
         events = events.filter(start_at__lte=end_at)
+    events = filter_events_for_user_profile(list(events), _user_profile(request.user))
 
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
 
@@ -110,6 +112,14 @@ def _serialize_event(event):
         'is_all_day': event.is_all_day,
         'event_type': event.event_type,
         'source_type': event.source_type,
+        'metadata': event.metadata_json,
+        'audience': (event.metadata_json or {}).get('audience', {}),
         'source_url': raw_data.source_url if raw_data else None,
         'source_title': raw_data.title if raw_data else None,
     }
+
+
+def _user_profile(user):
+    if not getattr(user, 'is_authenticated', False):
+        return None
+    return getattr(user, 'profile', None) or getattr(user, 'userprofile', None) or user
