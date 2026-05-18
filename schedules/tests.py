@@ -78,6 +78,56 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['title'], 'Updated title')
         self.assertIn('+09:00', payload['start_at'])
 
+    def test_event_list_filters_by_event_type(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Exam event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='exam',
+        )
+        ScheduleEvent.objects.create(
+            title='Notice event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'event_type': 'exam'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+        self.assertEqual(response.json()[0]['event_type'], 'exam')
+
+    def test_event_list_filters_by_track_and_keeps_common_events(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Python event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='exam',
+            metadata_json={'audience': {'track': 'python'}},
+        )
+        ScheduleEvent.objects.create(
+            title='Common event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            metadata_json={'audience': {'track': None}},
+        )
+        ScheduleEvent.objects.create(
+            title='Java event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            metadata_json={'audience': {'track': 'java'}},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'track': 'python'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item['title'] for item in response.json()}, {'Python event', 'Common event'})
+
     def test_patch_event_rejects_source_fields(self):
         run_sample_notice_import()
         event = ScheduleEvent.objects.first()
