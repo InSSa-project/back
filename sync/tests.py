@@ -2,6 +2,7 @@ import json
 import tempfile
 import types
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -605,6 +606,34 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['image_urls'], ['https://example.com/eval.png'])
         self.assertIn('keyword_candidates_by_source=notice:1', job_log.message)
 
+    def test_image_url_item_with_short_content_is_saved(self):
+        item = _notice_item('https://example.com/notices/image-only', 'image-only')
+        item['title'] = '이미지 공지'
+        item['raw_text'] = ''
+        item['raw_html'] = '<img src="https://example.com/body.png" alt="notice image">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertIn('image_found_count=1', job_log.message)
+
+    def test_empty_detail_item_is_excluded(self):
+        item = {
+            'source_type': 'notice',
+            'source_url': 'https://example.com/notices/empty',
+            'title': '',
+            'raw_text': '',
+            'raw_html': '',
+            'metadata_json': {'notice_id': 'empty'},
+        }
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 0)
+        self.assertIn('no_title_no_content_no_image', job_log.message)
+
     def test_source_keyword_candidate_counts_are_reported(self):
         items = [
             _source_item('notice', 'https://example.com/notices/eval', '월말평가 안내', 'eval-1', '평가 안내'),
@@ -943,6 +972,53 @@ class SampleNoticeImportTests(TestCase):
             ),
             'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=54321',
         )
+
+    def test_detail_parser_extracts_real_content_without_menu(self):
+        soup = BeautifulSoup(
+            '''
+            <html><body>
+              <nav>HOME Copyright 메뉴</nav>
+              <div class="view_content">
+                <h1>공지 제목</h1>
+                <p>실제 본문입니다. 평가와 무관한 일반 상세 내용입니다.</p>
+              </div>
+              <footer>Copyright SSAFY</footer>
+            </body></html>
+            ''',
+            'html.parser',
+        )
+
+        item = _parse_detail_soup(soup, 'https://example.com/detail.do?brdItmSeq=1', 'notice')
+
+        self.assertIn('실제 본문입니다', item['raw_text'])
+        self.assertNotIn('Copyright', item['raw_text'])
+        self.assertTrue(item['metadata_json']['real_content'])
+
+    def test_detail_parser_body_fallback_removes_menu_text(self):
+        soup = BeautifulSoup(
+            '''
+            <html><body>
+              <header>HOME 메뉴 Copyright</header>
+              <section><p>본문 fallback 내용입니다. 일정 설명 본문입니다.</p></section>
+              <footer>Copyright</footer>
+            </body></html>
+            ''',
+            'html.parser',
+        )
+
+        item = _parse_detail_soup(soup, 'https://example.com/detail.do?brdItmSeq=2', 'notice')
+
+        self.assertIn('본문 fallback 내용입니다', item['raw_text'])
+        self.assertNotIn('HOME', item['raw_text'])
+
+    def test_detail_debug_html_can_be_saved(self):
+        soup = BeautifulSoup('<html><body><div class="view_content">debug body</div></body></html>', 'html.parser')
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict('os.environ', {'SSAFY_CRAWLER_DEBUG_HTML': 'true'}):
+                with patch('sync.services.ssafy_crawler.DETAIL_DEBUG_DIR', Path(tmp_dir)):
+                    _parse_detail_soup(soup, 'https://example.com/detail.do?brdItmSeq=3', 'notice')
+
+            self.assertTrue(list(Path(tmp_dir).glob('notice_*.html')))
 
     def test_academic_rule_list_without_detail_links_is_collected_as_document(self):
         page = _StaticPage('<main><h1>학사규정</h1><p>규정 본문</p></main>')

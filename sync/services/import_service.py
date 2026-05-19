@@ -43,6 +43,10 @@ class ImportSummary:
     excluded_count: int = 0
     keyword_candidate_count: int = 0
     saved_evaluation_notice_count: int = 0
+    detail_success_count: int = 0
+    real_content_count: int = 0
+    image_found_count: int = 0
+    menu_only_content_count: int = 0
     scanned_by_source: dict = field(default_factory=dict)
     excluded_by_source: dict = field(default_factory=dict)
     keyword_candidates_by_source: dict = field(default_factory=dict)
@@ -125,6 +129,7 @@ def _import_raw_items(raw_items):
             summary.saved_evaluation_notice_count += 1
             item_source = item.get('source_type', 'notice')
             summary.keyword_candidates_by_source[item_source] = summary.keyword_candidates_by_source.get(item_source, 0) + 1
+        _increment_detail_quality_counts(summary, item.get('metadata_json') or {})
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         if _find_existing_raw_data(item):
             summary.skipped_count += 1
@@ -234,6 +239,11 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'keyword_candidates_by_source={_format_count_dict(summary.keyword_candidates_by_source)}, '
         f'saved_evaluation_notice_count={summary.saved_evaluation_notice_count}, '
         f'evaluation_raw_count={RawSsafyData.objects.filter(metadata_json__document_type="evaluation_notice").count()}'
+        f', detail_success_count={summary.detail_success_count}, '
+        f'real_content_count={summary.real_content_count}, '
+        f'image_found_count={summary.image_found_count}, '
+        f'menu_only_content_count={summary.menu_only_content_count}, '
+        f'saved_count={summary.raw_count}'
     )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
@@ -318,17 +328,21 @@ def _is_non_document_item(title, raw_text, raw_html):
 
 
 def _non_document_reason(title, raw_text, raw_html):
+    image_urls = extract_image_urls_from_html(raw_html, '')
+    has_reference = bool(title and title not in PLACEHOLDER_TITLES) or bool(image_urls)
+    if not title and not raw_text and not raw_html:
+        return 'no_title_no_content_no_image'
     if title in PLACEHOLDER_TITLES and not raw_text and not raw_html:
         return 'placeholder_title_without_content'
-    if not title and not raw_text and not raw_html:
-        return 'empty_document'
+    if image_urls:
+        return ''
     compact_text = raw_text.replace('\n', ' ').strip()
     if len(compact_text) < 8 and title in PLACEHOLDER_TITLES:
         return 'short_placeholder_content'
     if compact_text and all(keyword in compact_text for keyword in ('HOME', 'Copyright')):
-        return 'menu_copyright_content'
+        return '' if has_reference else 'menu_only_content'
     if title in MENU_TEXT_KEYWORDS:
-        return 'menu_title'
+        return '' if has_reference else 'menu_title'
     return ''
 
 
@@ -359,6 +373,17 @@ def _format_count_dict(values):
     if not values:
         return 'none'
     return '|'.join(f'{key}:{values[key]}' for key in sorted(values))
+
+
+def _increment_detail_quality_counts(summary, metadata):
+    if metadata.get('detail_success'):
+        summary.detail_success_count += 1
+    if metadata.get('real_content'):
+        summary.real_content_count += 1
+    if metadata.get('image_found') or metadata.get('image_urls'):
+        summary.image_found_count += 1
+    if metadata.get('content_quality') == 'menu_only_content':
+        summary.menu_only_content_count += 1
 
 
 def _normalize_notice_category(source_type, title, raw_text, metadata):
@@ -399,6 +424,8 @@ def _apply_ocr_pipeline(item, summary):
         image_urls = extract_image_urls_from_html(prepared.get('raw_html', ''), prepared.get('source_url', ''))
     metadata['image_urls'] = image_urls
     summary.image_count += len(image_urls)
+    if image_urls and not metadata.get('image_found'):
+        summary.image_found_count += 1
 
     ocr_result = _safe_extract_ocr_text(image_urls)
     if image_urls:
