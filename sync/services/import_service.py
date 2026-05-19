@@ -442,6 +442,7 @@ def _apply_ocr_pipeline(item, summary):
             'ocr_provider': ocr_result.get('ocr_provider', 'mock'),
             'ocr_status': ocr_result.get('ocr_status', 'skipped'),
             'ocr_error': ocr_result.get('ocr_error', ''),
+            'ocr_error_type': ocr_result.get('ocr_error_type', ''),
             'ocr_text_length': len(ocr_text),
             'ocr_failed_count': ocr_result.get('ocr_failed_count', 0),
             'ocr_box_count': len(ocr_result.get('ocr_boxes') or []),
@@ -464,6 +465,7 @@ def _safe_extract_ocr_text(image_urls):
             'ocr_provider': 'mock',
             'ocr_status': 'failed',
             'ocr_error': str(exc),
+            'ocr_error_type': 'unknown',
             'ocr_failed_count': 1,
             'ocr_boxes': [],
         }

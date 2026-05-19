@@ -1193,8 +1193,26 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(result['ocr_provider'], 'google_vision')
         self.assertEqual(result['ocr_status'], 'failed')
+        self.assertEqual(result['ocr_error_type'], 'provider_auth_error')
         self.assertIn('credentials are not configured', result['ocr_error'])
         self.assertNotIn('GOOGLE_APPLICATION_CREDENTIALS=', result['ocr_error'])
+
+    def test_ocr_download_failure_is_classified(self):
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': 'C:\\fake\\vision.json',
+            },
+        ):
+            with patch.dict('sys.modules', _google_vision_modules('ignored')):
+                with patch('sync.services.ocr_service.requests.get', side_effect=RuntimeError('download down')):
+                    result = extract_text_from_image_urls(['https://example.com/down.png'])
+
+        self.assertEqual(result['ocr_status'], 'failed')
+        self.assertEqual(result['ocr_error_type'], 'image_download_failed')
+        self.assertIn('image_download_failed', result['ocr_error'])
 
     def test_clova_provider_extracts_infer_text_lines(self):
         response_payload = {
@@ -1382,6 +1400,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(job_log.failed_count, 0)
         self.assertEqual(job_log.ocr_failed_count, 1)
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
+        self.assertEqual(raw_data.metadata_json['ocr_error_type'], 'image_download_failed')
 
     def test_ocr_text_is_merged_into_raw_text_before_parsing(self):
         item = _notice_item('https://example.com/notices/ocr-text', 'notice-ocr-text')
@@ -1794,6 +1813,7 @@ class SampleNoticeImportTests(TestCase):
                 'ocr_provider': 'google_vision',
                 'ocr_status': 'failed',
                 'ocr_error': 'Google Vision credentials are not configured.',
+                'ocr_error_type': 'provider_auth_error',
                 'ocr_failed_count': 1,
             },
         ):
@@ -1802,7 +1822,41 @@ class SampleNoticeImportTests(TestCase):
         raw_data.refresh_from_db()
         self.assertEqual(raw_data.raw_text, '공지 본문')
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
+        self.assertEqual(raw_data.metadata_json['ocr_error_type'], 'provider_auth_error')
         self.assertIn('ocr_failed_count=1', output.getvalue())
+
+    def test_reprocess_ocr_filters_by_category_and_document_type_dry_run(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/eval',
+            title='evaluation',
+            raw_text='body',
+            raw_html='<main><img src="/eval.png"></main>',
+            metadata_json={'category': 'exam', 'document_type': 'evaluation_notice'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/study',
+            title='study',
+            raw_text='body',
+            raw_html='<main><img src="/study.png"></main>',
+            metadata_json={'category': 'study'},
+        )
+        output = StringIO()
+
+        with patch('sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls') as extract_mock:
+            call_command(
+                'reprocess_ocr',
+                '--category=exam',
+                '--document-type=evaluation_notice',
+                '--limit=20',
+                '--dry-run',
+                stdout=output,
+            )
+
+        extract_mock.assert_not_called()
+        self.assertIn('raw_checked=1', output.getvalue())
+        self.assertIn('image_count=1', output.getvalue())
 
     def test_admin_manual_ocr_api_updates_raw_text_and_metadata(self):
         raw_data = RawSsafyData.objects.create(
