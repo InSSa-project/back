@@ -1888,14 +1888,14 @@ class SampleNoticeImportTests(TestCase):
 
     def test_repair_calendar_events_dedupes_ai_lecture_roman_titles(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
-        for title in ['AI 강의 2', 'AI 강의 II', 'AI 강의 Ⅱ']:
+        for title, event_type in [('AI 강의 2', 'study'), ('AI 강의 II', 'lecture'), ('AI 강의 Ⅱ', 'study')]:
             ScheduleEvent.objects.create(
                 raw_data=raw_data,
                 title=title,
                 start_at=timezone.datetime(2026, 3, 16, tzinfo=timezone.get_current_timezone()),
                 end_at=timezone.datetime(2026, 3, 17, tzinfo=timezone.get_current_timezone()),
                 is_all_day=True,
-                event_type='study',
+                event_type=event_type,
                 source_type='notice',
             )
 
@@ -1905,6 +1905,28 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2').count(), 0)
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 II').count(), 0)
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-16').count(), 1)
+
+    def test_repair_calendar_events_keeps_one_ai_lecture_per_api_date(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for event_type in ['lecture', 'study']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title='AI 강의 Ⅱ',
+                start_at=timezone.datetime(2026, 3, 17, 9, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 3, 17, 10, tzinfo=timezone.get_current_timezone()),
+                is_all_day=False,
+                event_type=event_type,
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events')
+
+        response = self.client.get('/api/schedules/events/?start=2026-03-01&end=2026-04-02')
+        ai_events = [
+            event for event in response.json()
+            if event['title'] == 'AI 강의 Ⅱ' and event['start_at'].startswith('2026-03-17')
+        ]
+        self.assertEqual(len(ai_events), 1)
 
     def test_repair_calendar_events_creates_manual_exam_corrections_without_evaluation_raw(self):
         RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
@@ -1928,6 +1950,19 @@ class SampleNoticeImportTests(TestCase):
         exam = ScheduleEvent.objects.get(title='과목평가2')
         self.assertEqual(exam.metadata_json['repair_source'], 'manual_exam_correction')
         self.assertEqual(exam.metadata_json['source_reason'], 'evaluation_notice_missing_manual_mvp_seed')
+
+    def test_repair_calendar_events_february_items_are_in_api_response(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+
+        call_command('repair_calendar_events')
+
+        response = self.client.get('/api/schedules/events/?start=2026-02-01&end=2026-03-01')
+        titles = {event['title'] for event in response.json()}
+        self.assertIn('과목평가2', titles)
+        self.assertIn('설날', titles)
+        self.assertIn('SW역량테스트(IM형/A형)', titles)
+        self.assertIn('과목평가3(일타싸피)', titles)
+        self.assertIn('AI 강의 1', titles)
 
     def test_repair_calendar_events_removes_meetup_duplicate(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
