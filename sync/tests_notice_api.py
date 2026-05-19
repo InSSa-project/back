@@ -125,3 +125,40 @@ class NoticeApiTests(TestCase):
         self.assertEqual(payload['ocr_text'], 'OCR text')
         self.assertEqual(payload['schedule_events'][0]['event_type'], 'exam')
         self.assertEqual(payload['schedule_events'][0]['source_url'], raw_data.source_url)
+
+    def test_notice_list_filters_curriculum_source_type(self):
+        RawSsafyData.objects.create(source_type='curriculum', title='Weekly curriculum', raw_text='Python')
+        RawSsafyData.objects.create(source_type='notice', title='General notice', raw_text='body')
+
+        response = self.client.get(reverse('notice-list'), {'source_type': 'curriculum'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['source_type'], 'curriculum')
+        self.assertEqual(response.json()['results'][0]['category'], 'study')
+
+    def test_notice_list_filters_learning_material_source_type(self):
+        RawSsafyData.objects.create(source_type='learning_material', title='Learning material', raw_text='Java')
+        RawSsafyData.objects.create(source_type='notice', title='General notice', raw_text='body')
+
+        response = self.client.get(reverse('notice-list'), {'source_type': 'learning_material'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['source_type'], 'learning_material')
+        self.assertEqual(response.json()['results'][0]['category'], 'study')
+
+    def test_notice_list_study_category_includes_source_based_study_types(self):
+        RawSsafyData.objects.create(source_type='notice', title='Python study', raw_text='study')
+        RawSsafyData.objects.create(source_type='curriculum', title='Weekly curriculum', raw_text='body')
+        RawSsafyData.objects.create(source_type='learning_material', title='Learning material', raw_text='body')
+        RawSsafyData.objects.create(source_type='academic_rule', title='Rule', raw_text='body')
+
+        response = self.client.get(reverse('notice-list'), {'category': 'study'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 3)
+        self.assertEqual(
+            {item['source_type'] for item in response.json()['results']},
+            {'notice', 'curriculum', 'learning_material'},
+        )
