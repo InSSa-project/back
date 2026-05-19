@@ -1829,7 +1829,7 @@ class SampleNoticeImportTests(TestCase):
         )
         output = StringIO()
 
-        call_command('repair_calendar_events', stdout=output)
+        call_command('repair_calendar_events', '--use-manual-fallback', stdout=output)
 
         self.assertEqual(ScheduleEvent.objects.filter(title='15기 SW AI 캠프').count(), 1)
         self.assertEqual(ScheduleEvent.objects.get(title='15기 SW AI 캠프').raw_data, raw_data)
@@ -1858,7 +1858,7 @@ class SampleNoticeImportTests(TestCase):
             source_type='notice',
         )
 
-        call_command('repair_calendar_events')
+        call_command('repair_calendar_events', '--use-manual-fallback')
 
         self.assertEqual(
             list(ScheduleEvent.objects.filter(start_at__date='2026-01-15').values_list('title', flat=True)),
@@ -1869,7 +1869,7 @@ class SampleNoticeImportTests(TestCase):
     def test_repair_calendar_events_normalizes_ai_lecture_and_online_week(self):
         RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
 
-        call_command('repair_calendar_events')
+        call_command('repair_calendar_events', '--use-manual-fallback')
 
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-16').count(), 1)
@@ -1881,8 +1881,8 @@ class SampleNoticeImportTests(TestCase):
     def test_repair_calendar_events_keeps_only_jan24_ssafy_day(self):
         RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
 
-        call_command('repair_calendar_events')
-        call_command('repair_calendar_events')
+        call_command('repair_calendar_events', '--use-manual-fallback')
+        call_command('repair_calendar_events', '--use-manual-fallback')
 
         self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date='2026-01-24').count(), 1)
         for day in [25, 26, 27]:
@@ -1935,11 +1935,12 @@ class SampleNoticeImportTests(TestCase):
         output = StringIO()
 
         call_command('repair_calendar_events', '--dry-run', stdout=output)
-        self.assertIn('created_count=', output.getvalue())
+        self.assertIn('use_manual_fallback=false', output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.filter(event_type='exam').count(), 0)
 
-        call_command('repair_calendar_events')
+        call_command('repair_calendar_events', '--use-manual-fallback')
         first_count = ScheduleEvent.objects.filter(event_type='exam').count()
-        call_command('repair_calendar_events')
+        call_command('repair_calendar_events', '--use-manual-fallback')
         second_count = ScheduleEvent.objects.filter(event_type='exam').count()
 
         self.assertGreater(first_count, 0)
@@ -1953,10 +1954,54 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(exam.metadata_json['repair_source'], 'manual_exam_correction')
         self.assertEqual(exam.metadata_json['source_reason'], 'evaluation_notice_missing_manual_mvp_seed')
 
+    def test_repair_calendar_events_reports_manual_ratio_and_raw_candidates(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='학습 시간표',
+            raw_text='학습 시간표',
+            metadata_json={'ocr_text_length': 0},
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--dry-run', '--use-manual-fallback', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('raw_candidate_count=1', value)
+        self.assertIn('manual_correction_ratio=', value)
+        self.assertIn('parser_improvement_unavailable', value)
+        self.assertIn('use_manual_fallback=true', value)
+
+    def test_repair_calendar_events_ocr_candidate_creates_raw_linked_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/full-calendar',
+            title='15기 1학기 전체 일정',
+            raw_text='AI 강의 2026.03.16',
+            metadata_json={'ocr_text_length': len('AI 강의 2026.03.16')},
+        )
+
+        call_command('repair_calendar_events')
+
+        event = ScheduleEvent.objects.get(raw_data=raw_data)
+        self.assertEqual(event.source_id, str(raw_data.pk))
+        self.assertNotEqual(event.metadata_json.get('repair_source'), 'manual_calendar_correction')
+
+    def test_repair_calendar_events_notice_sentence_is_not_created(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='전체 일정',
+            raw_text='공지 안내 문장입니다. 캘린더 일정으로 만들 내용이 아닙니다.',
+            metadata_json={'ocr_text_length': 30},
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
     def test_repair_calendar_events_february_items_are_in_api_response(self):
         RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
 
-        call_command('repair_calendar_events')
+        call_command('repair_calendar_events', '--use-manual-fallback')
 
         response = self.client.get('/api/schedules/events/?start=2026-02-01&end=2026-03-01')
         titles = {event['title'] for event in response.json()}

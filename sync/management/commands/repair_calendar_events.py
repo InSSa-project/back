@@ -3,16 +3,29 @@ from datetime import date, time, timedelta
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
+from sync.services.reparse_service import reparse_raw_data_to_events
 
 
 REPAIR_SOURCE = 'manual_calendar_correction'
 MANUAL_EXAM_REPAIR_SOURCE = 'manual_exam_correction'
 MANUAL_EXAM_REASON = 'evaluation_notice_missing_manual_mvp_seed'
 NOISE_TITLES = {'시간', 'ViewModel', 'without questions', 'Live 방송'}
+OCR_CANDIDATE_KEYWORDS = [
+    '15기 1학기 전체 일정',
+    '전체 일정',
+    '과목월말평가',
+    '과목평가',
+    '월말평가',
+    '학습 시간표',
+    'AI 강의',
+    '온라인 위크',
+    '관통 프로젝트',
+]
 
 
 @dataclass
@@ -22,10 +35,22 @@ class RepairSummary:
     updated_count: int = 0
     skipped_count: int = 0
     dry_run: bool = False
+    use_manual_fallback: bool = False
+    raw_candidate_count: int = 0
+    parser_created_count: int = 0
+    parser_skipped_count: int = 0
+    parser_review_required_count: int = 0
+    total_events: int = 0
+    ocr_generated_count: int = 0
+    manual_correction_count: int = 0
+    manual_correction_ratio: float = 0.0
+    review_required_count: int = 0
+    missing_evaluation_notice_raw_data: bool = False
     deleted_titles: list = field(default_factory=list)
     key_events: list = field(default_factory=list)
     february_events: list = field(default_factory=list)
     ai_lecture_counts: list = field(default_factory=list)
+    raw_candidates: list = field(default_factory=list)
 
 
 class Command(BaseCommand):
@@ -33,16 +58,36 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--dry-run', action='store_true', help='Print changes without writing them.')
+        parser.add_argument(
+            '--use-manual-fallback',
+            action='store_true',
+            help='Apply MVP manual calendar/exam fallback corrections after OCR parsing.',
+        )
 
     def handle(self, *args, **options):
-        summary = repair_calendar_events(dry_run=options['dry_run'])
+        summary = repair_calendar_events(
+            dry_run=options['dry_run'],
+            use_manual_fallback=options['use_manual_fallback'],
+        )
         self.stdout.write(
             self.style.SUCCESS(
                 'Calendar repair completed.\n'
+                f'use_manual_fallback={str(summary.use_manual_fallback).lower()}\n'
                 f'deleted_count={summary.deleted_count}\n'
                 f'updated_count={summary.updated_count}\n'
                 f'created_count={summary.created_count}\n'
                 f'skipped_count={summary.skipped_count}\n'
+                f'raw_candidate_count={summary.raw_candidate_count}\n'
+                f'raw_candidates={"; ".join(summary.raw_candidates[:20]) or "none"}\n'
+                f'parser_created_count={summary.parser_created_count}\n'
+                f'parser_skipped_count={summary.parser_skipped_count}\n'
+                f'parser_review_required_count={summary.parser_review_required_count}\n'
+                f'total_events={summary.total_events}\n'
+                f'ocr_generated_count={summary.ocr_generated_count}\n'
+                f'manual_correction_count={summary.manual_correction_count}\n'
+                f'manual_correction_ratio={summary.manual_correction_ratio:.2f}\n'
+                f'review_required_count={summary.review_required_count}\n'
+                f'missing_evaluation_notice_raw_data={str(summary.missing_evaluation_notice_raw_data).lower()}\n'
                 f'deleted_titles={"; ".join(summary.deleted_titles[:20]) or "none"}\n'
                 f'key_events={"; ".join(summary.key_events[:40]) or "none"}\n'
                 f'february_events={"; ".join(summary.february_events[:40]) or "none"}\n'
@@ -53,17 +98,25 @@ class Command(BaseCommand):
 
 
 @transaction.atomic
-def repair_calendar_events(dry_run=False):
-    summary = RepairSummary(dry_run=dry_run)
+def repair_calendar_events(dry_run=False, use_manual_fallback=False):
+    summary = RepairSummary(dry_run=dry_run, use_manual_fallback=use_manual_fallback)
     base_raw = _find_base_schedule_raw()
     evaluation_raw = _find_evaluation_raw()
+    candidate_qs = _ocr_candidate_queryset()
+    summary.raw_candidate_count = candidate_qs.count()
+    summary.raw_candidates = _raw_candidate_logs(candidate_qs)
 
     _delete_false_positives(summary, dry_run=dry_run)
     _normalize_existing_titles(summary, dry_run=dry_run)
-    _upsert_base_corrections(summary, base_raw, dry_run=dry_run)
-    _upsert_exam_corrections(summary, evaluation_raw or base_raw, dry_run=dry_run)
+    _reparse_ocr_candidates(summary, candidate_qs, dry_run=dry_run)
+    if not evaluation_raw:
+        summary.missing_evaluation_notice_raw_data = True
+    if use_manual_fallback:
+        _upsert_base_corrections(summary, base_raw, dry_run=dry_run)
+        _upsert_exam_corrections(summary, evaluation_raw or base_raw, dry_run=dry_run)
 
     _dedupe_generated(summary, dry_run=dry_run)
+    _fill_metrics(summary)
     summary.key_events = _key_events()
     summary.february_events = _february_events()
     summary.ai_lecture_counts = _ai_lecture_counts()
@@ -106,6 +159,17 @@ def _delete_false_positives(summary, dry_run=False):
         summary.deleted_titles.append(f'{timezone.localdate(event.start_at).isoformat()} {event.title}')
     if not dry_run:
         meetup.delete()
+
+
+def _reparse_ocr_candidates(summary, candidate_qs, dry_run=False):
+    if not candidate_qs.exists():
+        summary.raw_candidates = ['parser_improvement_unavailable:no_matching_ocr_raw_data']
+        return
+
+    reparse_summary = reparse_raw_data_to_events(candidate_qs, dry_run=dry_run)
+    summary.parser_created_count = reparse_summary.created_count
+    summary.parser_skipped_count = reparse_summary.skipped_count
+    summary.parser_review_required_count = _review_required_raw_count(candidate_qs)
 
 
 def _normalize_existing_titles(summary, dry_run=False):
@@ -260,6 +324,58 @@ def _normalize_event_title(title):
     if compact in {'AI강의2', 'AI강의II'}:
         return 'AI 강의 Ⅱ'
     return normalized
+
+
+def _ocr_candidate_queryset():
+    text_query = Q()
+    for keyword in OCR_CANDIDATE_KEYWORDS:
+        text_query |= Q(title__contains=keyword) | Q(raw_text__contains=keyword)
+
+    ids = set(RawSsafyData.objects.filter(text_query).values_list('id', flat=True))
+    for raw_data in RawSsafyData.objects.all().only('id', 'metadata_json'):
+        metadata_text = str(raw_data.metadata_json or '')
+        if any(keyword in metadata_text for keyword in OCR_CANDIDATE_KEYWORDS):
+            ids.add(raw_data.id)
+    return RawSsafyData.objects.filter(id__in=ids).order_by('id')
+
+
+def _raw_candidate_logs(candidate_qs):
+    logs = []
+    for raw_data in candidate_qs[:20]:
+        metadata = raw_data.metadata_json or {}
+        ocr_length = metadata.get('ocr_text_length', 0)
+        sample = ' '.join((raw_data.raw_text or '').split())[:80] or 'no_ocr_text'
+        if not ocr_length and '[OCR_TEXT]' not in (raw_data.raw_text or ''):
+            sample = f'parser_improvement_unavailable:{sample}'
+        logs.append(
+            f'id={raw_data.id} title={raw_data.title} source_type={raw_data.source_type} '
+            f'source_url={raw_data.source_url or "-"} ocr_text_length={ocr_length} sample={sample}'
+        )
+    if not logs:
+        logs.append('parser_improvement_unavailable:no_matching_ocr_raw_data')
+    return logs
+
+
+def _fill_metrics(summary):
+    total_events = ScheduleEvent.objects.count()
+    manual_qs = ScheduleEvent.objects.filter(
+        metadata_json__repair_source__in=[REPAIR_SOURCE, MANUAL_EXAM_REPAIR_SOURCE]
+    )
+    manual_ids = list(manual_qs.values_list('id', flat=True))
+    ocr_qs = ScheduleEvent.objects.filter(raw_data__isnull=False).exclude(id__in=manual_ids)
+    summary.total_events = total_events
+    summary.manual_correction_count = manual_qs.count()
+    summary.ocr_generated_count = ocr_qs.count()
+    summary.manual_correction_ratio = (summary.manual_correction_count / total_events) if total_events else 0
+    summary.review_required_count = _review_required_raw_count(RawSsafyData.objects.all())
+
+
+def _review_required_raw_count(raw_queryset):
+    return sum(
+        1
+        for raw_data in raw_queryset
+        if (raw_data.metadata_json or {}).get('review_required_candidate_count', 0)
+    )
 
 
 def _find_base_schedule_raw():
