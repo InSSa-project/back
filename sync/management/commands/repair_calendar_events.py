@@ -24,6 +24,8 @@ class RepairSummary:
     dry_run: bool = False
     deleted_titles: list = field(default_factory=list)
     key_events: list = field(default_factory=list)
+    february_events: list = field(default_factory=list)
+    ai_lecture_counts: list = field(default_factory=list)
 
 
 class Command(BaseCommand):
@@ -43,6 +45,8 @@ class Command(BaseCommand):
                 f'skipped_count={summary.skipped_count}\n'
                 f'deleted_titles={"; ".join(summary.deleted_titles[:20]) or "none"}\n'
                 f'key_events={"; ".join(summary.key_events[:40]) or "none"}\n'
+                f'february_events={"; ".join(summary.february_events[:40]) or "none"}\n'
+                f'ai_lecture_counts={"; ".join(summary.ai_lecture_counts[:40]) or "none"}\n'
                 f'dry_run={str(summary.dry_run).lower()}'
             )
         )
@@ -61,6 +65,8 @@ def repair_calendar_events(dry_run=False):
 
     _dedupe_generated(summary, dry_run=dry_run)
     summary.key_events = _key_events()
+    summary.february_events = _february_events()
+    summary.ai_lecture_counts = _ai_lecture_counts()
     if dry_run:
         transaction.set_rollback(True)
     return summary
@@ -215,8 +221,11 @@ def _dedupe_generated(summary, dry_run=False):
     for event in events:
         track = (event.metadata_json or {}).get('track', '')
         event_date = timezone.localdate(event.start_at)
-        event_type = '' if event_date == date(2026, 1, 15) and event.title == '15기 SW AI 스타트 캠프' else event.event_type
-        key = (event_date, event_type, _normalize_event_title(event.title), track)
+        normalized_title = _normalize_event_title(event.title)
+        event_type = '' if event_date == date(2026, 1, 15) and normalized_title == '15기 SW AI 스타트 캠프' else event.event_type
+        if normalized_title == 'AI 강의 Ⅱ':
+            event_type = ''
+        key = (event_date, event_type, normalized_title, track)
         if key not in seen:
             seen[key] = event.id
             continue
@@ -229,7 +238,10 @@ def _dedupe_generated(summary, dry_run=False):
 def _find_existing_event(start_date, title, event_type, metadata):
     track = metadata.get('track', '')
     normalized_title = _normalize_event_title(title)
-    for event in ScheduleEvent.objects.filter(start_at=_aware(start_date), event_type=event_type):
+    events = ScheduleEvent.objects.filter(start_at__date=start_date)
+    if normalized_title != 'AI 강의 Ⅱ':
+        events = events.filter(event_type=event_type)
+    for event in events:
         event_track = (event.metadata_json or {}).get('track', '')
         if event_track != track:
             continue
@@ -284,3 +296,25 @@ def _key_events():
         f'{timezone.localdate(event.start_at).isoformat()} {event.title}'
         for event in ScheduleEvent.objects.filter(start_at__date__in=wanted).order_by('start_at', 'title')
     ]
+
+
+def _february_events():
+    wanted = [
+        date(2026, 2, 9),
+        date(2026, 2, 16),
+        date(2026, 2, 19),
+        date(2026, 2, 23),
+        date(2026, 2, 24),
+    ]
+    return [
+        f'{timezone.localdate(event.start_at).isoformat()} {event.title}'
+        for event in ScheduleEvent.objects.filter(start_at__date__in=wanted).order_by('start_at', 'title')
+    ]
+
+
+def _ai_lecture_counts():
+    counts = {}
+    for event in ScheduleEvent.objects.filter(title='AI 강의 Ⅱ').order_by('start_at'):
+        event_date = timezone.localdate(event.start_at).isoformat()
+        counts[event_date] = counts.get(event_date, 0) + 1
+    return [f'{event_date}={count}' for event_date, count in counts.items()]
