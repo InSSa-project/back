@@ -84,6 +84,14 @@ EVALUATION_DATE_PATTERN = re.compile(
 )
 EVALUATION_TYPE_PATTERN = re.compile(r'(월말평가|과목평가)')
 TRACK_KEYWORDS = ['마이스터고', '비전공', '전공', '임베디드', '모바일', 'Python', 'Java']
+NOISE_TITLE_COMPACTS = {
+    '시간',
+    'VIEWMODEL',
+    'WITHOUTQUESTIONS',
+    'LIVE방송',
+    'LIVE',
+    '방송',
+}
 
 
 @dataclass
@@ -420,12 +428,23 @@ def _dedupe_schedules(schedules):
     seen = set()
     deduped = []
     for schedule in schedules:
+        if _is_noise_schedule_title(schedule.title):
+            continue
         key = (schedule.title, schedule.start_at, schedule.event_type, 'notice')
         if key in seen:
             continue
         seen.add(key)
         deduped.append(schedule)
     return deduped
+
+
+def _is_noise_schedule_title(title):
+    compact = re.sub(r'[\s.()\-_/\]]+', '', str(title or '')).upper()
+    if compact in NOISE_TITLE_COMPACTS:
+        return True
+    if len(compact) <= 1:
+        return True
+    return False
 
 
 def _is_meta_line(line):
