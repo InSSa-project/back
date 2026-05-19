@@ -79,6 +79,13 @@ def _delete_false_positives(summary, dry_run=False):
     targets = targets | qs.filter(start_at__date=date(2026, 5, 5)).exclude(title='어린이날')
     targets = targets | qs.filter(start_at__date=date(2026, 1, 7)).filter(title__contains='소명')
     targets = targets | qs.filter(title__contains='오후 ) AI 강의')
+    generated_qs = ScheduleEvent.objects.filter(raw_data__isnull=False) | ScheduleEvent.objects.filter(
+        metadata_json__repair_source=REPAIR_SOURCE
+    )
+    targets = targets | generated_qs.filter(
+        title='SSAFY DAY',
+        start_at__date__in=[date(2026, 1, 25), date(2026, 1, 26), date(2026, 1, 27)],
+    )
     targets = targets.distinct()
     for event in targets:
         summary.deleted_count += 1
@@ -119,9 +126,6 @@ def _upsert_base_corrections(summary, raw_data, dry_run=False):
         ('15기 SW AI 스타트 캠프', date(2026, 1, 15), date(2026, 1, 16), 'study', {}),
         ('AI 창의 캠프', date(2026, 1, 19), date(2026, 1, 22), 'study', {'track': 'meister'}),
         ('SSAFY DAY', date(2026, 1, 24), date(2026, 1, 25), 'etc', {}),
-        ('SSAFY DAY', date(2026, 1, 25), date(2026, 1, 26), 'etc', {}),
-        ('SSAFY DAY', date(2026, 1, 26), date(2026, 1, 27), 'etc', {}),
-        ('SSAFY DAY', date(2026, 1, 27), date(2026, 1, 28), 'etc', {}),
         ('설날', date(2026, 2, 16), date(2026, 2, 19), 'etc', {}),
         ('SW역량테스트(IM형/A형)', date(2026, 2, 19), date(2026, 2, 20), 'etc', {}),
         ('AI 강의 1', date(2026, 2, 24), date(2026, 2, 28), 'study', {}),
