@@ -334,7 +334,11 @@ def _ocr_candidate_queryset():
     ids = set(RawSsafyData.objects.filter(text_query).values_list('id', flat=True))
     for raw_data in RawSsafyData.objects.all().only('id', 'metadata_json'):
         metadata_text = str(raw_data.metadata_json or '')
-        if any(keyword in metadata_text for keyword in OCR_CANDIDATE_KEYWORDS):
+        metadata = raw_data.metadata_json or {}
+        if (
+            any(keyword in metadata_text for keyword in OCR_CANDIDATE_KEYWORDS)
+            or metadata.get('document_type') == 'evaluation_notice'
+        ):
             ids.add(raw_data.id)
     return RawSsafyData.objects.filter(id__in=ids).order_by('id')
 
@@ -384,7 +388,9 @@ def _find_base_schedule_raw():
 
 def _find_evaluation_raw():
     return (
-        RawSsafyData.objects.filter(title__contains='과목월말평가 안내').order_by('id').first()
+        RawSsafyData.objects.filter(metadata_json__document_type='evaluation_notice').order_by('id').first()
+        or RawSsafyData.objects.filter(metadata_json__category='exam', title__contains='평가').order_by('id').first()
+        or RawSsafyData.objects.filter(title__contains='과목월말평가 안내').order_by('id').first()
         or RawSsafyData.objects.filter(raw_text__contains='과목월말평가 안내').order_by('id').first()
     )
 
