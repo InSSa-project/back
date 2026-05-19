@@ -239,11 +239,13 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
     max_pages = _crawler_max_pages()
     seen_page_urls = set()
     seen_detail_urls = set()
+    seen_page_signatures = {}
     links = []
     current_url = list_url
+    requested_page = 1
 
     for page_index in range(1, max_pages + 1):
-        page.goto(current_url, wait_until='networkidle')
+        _open_list_page(page, list_url, current_url, requested_page)
         session_reason = _session_expired_reason(page, login_url=login_url)
         if session_reason:
             _record_source_page_debug(
@@ -259,6 +261,30 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
 
         soup = BeautifulSoup(page.content(), 'html.parser')
         page_links = link_extractor(soup, current_url)
+        page_signature = _page_link_signature(page_links)
+        duplicate_url_count = sum(
+            1
+            for link in page_links
+            if (link['url'] if isinstance(link, dict) else link) in seen_detail_urls
+        )
+        first_link = page_links[0] if page_links else {}
+        last_link = page_links[-1] if page_links else {}
+        first_title, first_source_url = _link_debug_values(first_link)
+        last_title, last_source_url = _link_debug_values(last_link)
+        if page_signature in seen_page_signatures:
+            _record_collection_debug(
+                f'pagination_failed source_type={source_type} requested_page={requested_page} '
+                f'current_url={_page_url(page)} repeated_page={seen_page_signatures[page_signature]} '
+                f'row_count={_count_list_rows(soup)} extracted_item_count={len(page_links)}',
+                level='warning',
+            )
+            if not page_links:
+                requested_page += 1
+                current_url = _page_url_for_number(list_url, requested_page)
+                continue
+            break
+        seen_page_signatures[page_signature] = requested_page
+
         new_link_count = 0
         for link in page_links:
             detail_url = link['url'] if isinstance(link, dict) else link
@@ -285,12 +311,21 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             f'page_collected source_type={source_type} page={page_index} '
             f'new_links={new_link_count} total_links={len(links)} url={current_url}'
         )
+        _record_collection_debug(
+            f'pagination_debug source_type={source_type} requested_page={requested_page} current_url={_page_url(page)} '
+            f'row_count={_count_list_rows(soup)} extracted_item_count={len(page_links)} '
+            f'first_title={first_title or "-"} last_title={last_title or "-"} '
+            f'first_source_url={first_source_url or "-"} last_source_url={last_source_url or "-"} '
+            f'duplicate_url_count={duplicate_url_count} {_pagination_controls_debug(soup)}'
+        )
 
         seen_page_urls.add(_normalize_url_without_fragment(current_url))
-        next_url = _extract_next_page_url(soup, current_url, seen_page_urls)
+        next_page_number = _extract_next_page_number(soup, requested_page)
+        next_url = _page_url_for_number(list_url, next_page_number) if next_page_number else ''
         if not next_url:
             break
         current_url = next_url
+        requested_page = next_page_number
 
     if len(seen_page_urls) >= max_pages:
         _record_collection_debug(
@@ -352,14 +387,56 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             f'detail_summary source_type={source_type} success={len(details)} failed={failed_detail_count}',
             level='warning',
         )
+    _record_collection_debug(
+        f'list_summary source_type={source_type} pages_scanned={len(seen_page_signatures)} '
+        f'total_rows_seen={sum(len(signature) for signature in seen_page_signatures)} '
+        f'unique_items_extracted={len(links)} duplicated_items={sum(len(signature) for signature in seen_page_signatures) - len(links)} '
+        f'details_fetched={len(details)}'
+    )
     return details
 
 
 def _crawler_max_pages():
     try:
-        return max(1, int(os.getenv('SSAFY_CRAWLER_MAX_PAGES', '20')))
+        return max(1, int(os.getenv('SSAFY_NOTICE_MAX_PAGES') or os.getenv('SSAFY_CRAWLER_MAX_PAGES', '20')))
     except ValueError:
         return 20
+
+
+def _open_list_page(page, list_url, current_url, page_number):
+    page.goto(current_url, wait_until='networkidle')
+    if page_number <= 1:
+        return
+    try:
+        submitted = page.evaluate(
+            """
+            (pageNumber) => {
+              const names = ['pageNo', 'pageIndex', 'currentPageNo'];
+              let touched = false;
+              for (const name of names) {
+                const input = document.querySelector(`input[name="${name}"]`);
+                if (input) {
+                  input.value = String(pageNumber);
+                  touched = true;
+                }
+              }
+              const form = document.querySelector('form[name="searchForm"], form[name="frm"], form');
+              if (touched && form) {
+                form.submit();
+                return true;
+              }
+              return false;
+            }
+            """,
+            page_number,
+        )
+        if submitted:
+            page.wait_for_load_state('networkidle')
+    except Exception as exc:
+        _record_collection_debug(
+            f'pagination_form_submit_failed url={list_url} page={page_number} error={exc}',
+            level='warning',
+        )
 
 
 def _extract_next_page_url(soup, current_url, seen_page_urls):
@@ -384,6 +461,20 @@ def _extract_next_page_url(soup, current_url, seen_page_urls):
     return min(candidates, key=lambda item: item[0])[1]
 
 
+def _extract_next_page_number(soup, current_page):
+    candidates = []
+    for anchor in soup.select('a[href], a[onclick]'):
+        text = _clean_text(anchor.get_text(' ', strip=True))
+        href = anchor.get('href', '').strip()
+        onclick = anchor.get('onclick', '').strip()
+        page_number = _extract_page_number(text, href, onclick)
+        if page_number and page_number > current_page:
+            candidates.append(page_number)
+    if candidates:
+        return min(candidates)
+    return current_page + 1
+
+
 def _extract_page_number(text, href, onclick):
     for value in (onclick, href, text):
         match = re.search(r'(?:pageNo|pageIndex|currentPageNo|fn\w*Page|goPage|movePage)\D*(\d+)', value or '', re.I)
@@ -405,6 +496,41 @@ def _page_url_for_number(url, page_number):
         return re.sub(r'([?&](?:pageNo|pageIndex|currentPageNo)=)\d+', rf'\g<1>{page_number}', url)
     separator = '&' if '?' in url else '?'
     return f'{url}{separator}pageNo={page_number}'
+
+
+def _page_link_signature(page_links):
+    return tuple((link['url'] if isinstance(link, dict) else link) for link in page_links)
+
+
+def _link_debug_values(link):
+    if isinstance(link, dict):
+        return link.get('title', ''), link.get('url', '')
+    if isinstance(link, str):
+        return '', link
+    return '', ''
+
+
+def _count_list_rows(soup):
+    rows = soup.select('table tbody tr, .board-list li, .board_list li, .list li')
+    return len(rows)
+
+
+def _pagination_controls_debug(soup):
+    names = ['pageIndex', 'pageNo', 'currentPageNo', 'searchCondition', 'searchKeyword']
+    found_inputs = []
+    for name in names:
+        node = soup.select_one(f'input[name="{name}"], select[name="{name}"]')
+        if node:
+            found_inputs.append(name)
+    functions = []
+    html = str(soup)
+    for function_name in ['fnPage', 'goPage', 'linkPage', 'movePage']:
+        if function_name in html:
+            functions.append(function_name)
+    return (
+        f'pagination_inputs={",".join(found_inputs) or "none"} '
+        f'pagination_functions={",".join(functions) or "none"}'
+    )
 
 
 def _normalize_url_without_fragment(url):

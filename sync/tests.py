@@ -31,6 +31,7 @@ from sync.services.ssafy_crawler import (
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
+    _pagination_controls_debug,
 )
 
 
@@ -945,6 +946,48 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(next_url, 'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=2')
 
+    def test_pagination_repeated_html_is_reported_as_failed(self):
+        page = _StaticPage(
+            '''
+            <table><tbody>
+              <tr><td><a href="#;" onclick="fnDetail('1')">공지 1</a></td></tr>
+            </tbody></table>
+            <a href="#;" onclick="fnPage('2')">2</a>
+            '''
+        )
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_MAX_PAGES': '3'}):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                return_value=_source_item('notice', 'https://example.com/detail/1', '공지 1', '1'),
+            ):
+                _collect_authenticated_list(
+                    page,
+                    'https://edu.ssafy.com/edu/board/notice/list.do',
+                    'notice',
+                    _extract_notice_links,
+                )
+
+        self.assertTrue(any('pagination_failed source_type=notice' in message for message in get_last_collection_debug()))
+
+    def test_pagination_debug_reports_hidden_inputs_and_functions(self):
+        soup = BeautifulSoup(
+            '''
+            <form name="searchForm">
+              <input type="hidden" name="pageIndex" value="1">
+              <input name="searchKeyword" value="">
+            </form>
+            <script>function linkPage(pageNo) {}</script>
+            ''',
+            'html.parser',
+        )
+
+        debug = _pagination_controls_debug(soup)
+
+        self.assertIn('pageIndex', debug)
+        self.assertIn('searchKeyword', debug)
+        self.assertIn('linkPage', debug)
+
     def test_link_extractor_supports_fn_detail2_onclick(self):
         soup = BeautifulSoup(
             '''
@@ -958,6 +1001,25 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(
             links,
             ['https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=119629'],
+        )
+
+    def test_notice_links_use_brd_item_sequence_as_unique_source_url(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="#;" onclick="fnDetail('101');">공지 A</a>
+            <a href="#;" onclick="fnDetail('102');">공지 B</a>
+            ''',
+            'html.parser',
+        )
+
+        links = _extract_notice_links(soup, 'https://edu.ssafy.com/edu/board/notice/list.do')
+
+        self.assertEqual(
+            links,
+            [
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=101',
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=102',
+            ],
         )
 
     def test_detail_onclick_parser_supports_go_detail_and_location(self):
