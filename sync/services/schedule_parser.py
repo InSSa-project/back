@@ -209,8 +209,17 @@ def _extract_calendar_titles(line):
     for part in re.split(r'\s*/\s*', line):
         title = _canonical_calendar_title(part.strip(' :-|[]()~'))
         if title and _has_calendar_keyword(title):
-            titles.append(title[:255])
+            titles.extend(_expand_calendar_title(title))
     return _dedupe(titles)
+
+
+def _expand_calendar_title(title):
+    compact = re.sub(r'[\s.()\-_/\]]+', '', str(title or '')).upper()
+    if '과목평가' in compact and '월말평가' in compact:
+        suffix_match = re.search(r'(?:과목평가|월말평가)(\d+)$', compact)
+        suffix = suffix_match.group(1) if suffix_match else ''
+        return [f'과목평가{suffix}', f'월말평가{suffix}']
+    return [title[:255]]
 
 
 def _canonical_calendar_title(title):

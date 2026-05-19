@@ -233,29 +233,62 @@ def _login_ssafy(page, login_url, ssafy_id, ssafy_password):
 
 
 def _collect_authenticated_list(page, list_url, source_type, link_extractor, login_url=None):
-    page.goto(list_url, wait_until='networkidle')
-    session_reason = _session_expired_reason(page, login_url=login_url)
-    if session_reason:
+    max_pages = _crawler_max_pages()
+    seen_page_urls = set()
+    seen_detail_urls = set()
+    links = []
+    current_url = list_url
+
+    for page_index in range(1, max_pages + 1):
+        page.goto(current_url, wait_until='networkidle')
+        session_reason = _session_expired_reason(page, login_url=login_url)
+        if session_reason:
+            _record_source_page_debug(
+                source_type=source_type,
+                url=current_url,
+                page=page,
+                item_count=0,
+                error_reason=f'session_expired:{session_reason}',
+            )
+            raise SsafySessionExpiredError(
+                f'session_expired source_type={source_type} url={current_url} reason={session_reason}'
+            )
+
+        soup = BeautifulSoup(page.content(), 'html.parser')
+        page_links = link_extractor(soup, current_url)
+        new_link_count = 0
+        for link in page_links:
+            detail_url = link['url'] if isinstance(link, dict) else link
+            if detail_url in seen_detail_urls:
+                continue
+            seen_detail_urls.add(detail_url)
+            links.append(link)
+            new_link_count += 1
+
         _record_source_page_debug(
             source_type=source_type,
-            url=list_url,
+            url=current_url,
             page=page,
-            item_count=0,
-            error_reason=f'session_expired:{session_reason}',
+            item_count=len(page_links),
+            skipped_reason='' if page_links else 'no_detail_links',
         )
-        raise SsafySessionExpiredError(
-            f'session_expired source_type={source_type} url={list_url} reason={session_reason}'
+        _record_collection_debug(
+            f'page_collected source_type={source_type} page={page_index} '
+            f'new_links={new_link_count} total_links={len(links)} url={current_url}'
         )
 
-    soup = BeautifulSoup(page.content(), 'html.parser')
-    links = link_extractor(soup, list_url)
-    _record_source_page_debug(
-        source_type=source_type,
-        url=list_url,
-        page=page,
-        item_count=len(links),
-        skipped_reason='' if links else 'no_detail_links',
-    )
+        seen_page_urls.add(_normalize_url_without_fragment(current_url))
+        next_url = _extract_next_page_url(soup, current_url, seen_page_urls)
+        if not next_url:
+            break
+        current_url = next_url
+
+    if len(seen_page_urls) >= max_pages:
+        _record_collection_debug(
+            f'pagination_stopped source_type={source_type} reason=max_pages max_pages={max_pages}',
+            level='warning',
+        )
+
     if not links:
         debug_info = _save_crawler_debug_page(
             page=page,
@@ -274,6 +307,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             return [_parse_detail_soup(soup, list_url, source_type=source_type)]
         raise SsafyCrawlerError(f'No {source_type} detail links were found: {list_url}')
     details = []
+    failed_detail_count = 0
     for link in links:
         if isinstance(link, dict):
             detail_url = link['url']
@@ -294,8 +328,74 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         except SsafySessionExpiredError:
             raise
         except Exception as exc:
+            failed_detail_count += 1
             _LOGGER.warning('Failed to collect SSAFY %s detail from %s: %s', source_type, detail_url, exc)
+            _record_collection_debug(
+                f'failed_detail source_type={source_type} url={detail_url} error={exc}',
+                level='warning',
+            )
+    if failed_detail_count:
+        _record_collection_debug(
+            f'detail_summary source_type={source_type} success={len(details)} failed={failed_detail_count}',
+            level='warning',
+        )
     return details
+
+
+def _crawler_max_pages():
+    try:
+        return max(1, int(os.getenv('SSAFY_CRAWLER_MAX_PAGES', '20')))
+    except ValueError:
+        return 20
+
+
+def _extract_next_page_url(soup, current_url, seen_page_urls):
+    current_page = _current_page_number(current_url)
+    candidates = []
+    for anchor in soup.select('a[href], a[onclick]'):
+        text = _clean_text(anchor.get_text(' ', strip=True))
+        href = anchor.get('href', '').strip()
+        onclick = anchor.get('onclick', '').strip()
+        page_number = _extract_page_number(text, href, onclick)
+        if page_number is None:
+            continue
+        if page_number <= current_page:
+            continue
+        next_url = _page_url_for_number(current_url, page_number)
+        normalized = _normalize_url_without_fragment(next_url)
+        if normalized in seen_page_urls:
+            continue
+        candidates.append((page_number, next_url))
+    if not candidates:
+        return ''
+    return min(candidates, key=lambda item: item[0])[1]
+
+
+def _extract_page_number(text, href, onclick):
+    for value in (onclick, href, text):
+        match = re.search(r'(?:pageNo|pageIndex|currentPageNo|fn\w*Page|goPage|movePage)\D*(\d+)', value or '', re.I)
+        if match:
+            return int(match.group(1))
+    if text and text.isdigit():
+        return int(text)
+    return None
+
+
+def _current_page_number(url):
+    parsed_url = urlparse(url or '')
+    match = re.search(r'(?:pageNo|pageIndex|currentPageNo)=(\d+)', parsed_url.query)
+    return int(match.group(1)) if match else 1
+
+
+def _page_url_for_number(url, page_number):
+    if re.search(r'([?&](?:pageNo|pageIndex|currentPageNo)=)\d+', url):
+        return re.sub(r'([?&](?:pageNo|pageIndex|currentPageNo)=)\d+', rf'\g<1>{page_number}', url)
+    separator = '&' if '?' in url else '?'
+    return f'{url}{separator}pageNo={page_number}'
+
+
+def _normalize_url_without_fragment(url):
+    return urlparse(url)._replace(fragment='').geturl()
 
 
 def _record_source_page_debug(source_type, url, page, item_count, skipped_reason='', error_reason=''):

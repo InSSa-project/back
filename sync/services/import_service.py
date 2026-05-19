@@ -40,6 +40,7 @@ class ImportSummary:
     ocr_text_length: int = 0
     parse_candidate_count: int = 0
     event_skipped_count: int = 0
+    excluded_count: int = 0
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
 
@@ -99,6 +100,11 @@ def _import_raw_items(raw_items):
     summary = ImportSummary()
 
     for item in raw_items:
+        item = _normalize_import_item(item)
+        if item is None:
+            summary.skipped_count += 1
+            summary.excluded_count += 1
+            continue
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         if _find_existing_raw_data(item):
             summary.skipped_count += 1
@@ -204,6 +210,8 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
     )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
+    if summary.excluded_count:
+        message = f'{message}, excluded_count={summary.excluded_count}'
     if summary.no_schedule_by_type:
         no_schedule_detail = ','.join(
             f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())
@@ -215,6 +223,88 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
     if debug_message:
         message = f'{message}, crawler_debug={debug_message}'
     return message
+
+
+ALLOWED_SOURCE_TYPES = {
+    'notice',
+    'academic_rule',
+    'mentoring_notice',
+    'curriculum',
+    'learning_material',
+    'faq',
+    'quest',
+}
+CALENDAR_SOURCE_TYPES = {'notice'}
+PLACEHOLDER_TITLES = {
+    '',
+    'SSAFY document',
+    'SSAFY',
+    '공지사항 상세',
+    '게시물 상세',
+    '상세',
+    '목록',
+}
+MENU_TEXT_KEYWORDS = {'HOME', 'Copyright', '메뉴', '목록', '로그인'}
+
+
+def _normalize_import_item(item):
+    prepared = dict(item or {})
+    metadata = dict(prepared.get('metadata_json') or {})
+    source_type = (prepared.get('source_type') or 'notice').strip()
+    if source_type not in ALLOWED_SOURCE_TYPES:
+        metadata['original_source_type'] = source_type
+        source_type = 'notice'
+
+    title = str(prepared.get('title') or '').strip()
+    raw_text = str(prepared.get('raw_text') or '').strip()
+    raw_html = str(prepared.get('raw_html') or '').strip()
+    if _is_non_document_item(title, raw_text, raw_html):
+        return None
+
+    metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
+    prepared.update(
+        {
+            'source_type': source_type,
+            'title': title,
+            'raw_text': raw_text,
+            'raw_html': raw_html,
+            'metadata_json': metadata,
+        }
+    )
+    return prepared
+
+
+def _is_non_document_item(title, raw_text, raw_html):
+    if title in PLACEHOLDER_TITLES and not raw_text:
+        return True
+    if not title and not raw_text and not raw_html:
+        return True
+    compact_text = raw_text.replace('\n', ' ').strip()
+    if len(compact_text) < 8 and title in PLACEHOLDER_TITLES:
+        return True
+    if compact_text and all(keyword in compact_text for keyword in ('HOME', 'Copyright')):
+        return True
+    if title in MENU_TEXT_KEYWORDS:
+        return True
+    return False
+
+
+def _normalize_notice_category(source_type, title, raw_text, metadata):
+    current = str(metadata.get('category') or '').strip()
+    if current:
+        return current
+    target = f'{title} {raw_text}'
+    if source_type != 'notice':
+        return 'etc'
+    if any(keyword in target for keyword in ('평가', '시험', '테스트', '월말평가', '과목평가')):
+        return 'exam'
+    if any(keyword in target for keyword in ('과제', '제출', '마감')):
+        return 'assignment'
+    if any(keyword in target for keyword in ('스터디', '학습', '강의', '특강')):
+        return 'study'
+    if any(keyword in target for keyword in ('멘토', '멘토링')):
+        return 'mentoring'
+    return 'etc'
 
 
 def _format_crawler_debug(crawler_debug):

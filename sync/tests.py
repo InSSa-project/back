@@ -22,6 +22,7 @@ from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
     SsafySessionExpiredError,
     extract_image_urls_from_html,
+    _extract_next_page_url,
     _extract_notice_links,
     _parse_detail_soup,
     _login_ssafy,
@@ -547,6 +548,19 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.filter(source_type='learning_material').count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
+    def test_placeholder_notice_item_is_excluded(self):
+        items = [
+            _source_item('notice', 'https://example.com/notices/menu', '목록', 'notice-menu', 'HOME\nCopyright'),
+            _notice_item('https://example.com/notices/ok', 'notice-ok'),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(RawSsafyData.objects.get().source_url, 'https://example.com/notices/ok')
+        self.assertIn('excluded_count=1', job_log.message)
+
     def test_different_source_urls_with_same_generic_title_are_not_deduped(self):
         items = [
             _source_item('mentoring_notice', 'https://example.com/mentor/1', '멘토 스토리 상세', 'mentor-1'),
@@ -726,6 +740,28 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(grid_debug.review_required_candidates[0]['title'], '배틀싸피과목평가')
         self.assertEqual(grid_debug.reason, 'review_required_candidates_only')
 
+    def test_parser_splits_subject_and_monthly_exam_on_same_date(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n1월\n20\n과목평가1/ 월말평가1',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_combined_exam_ocr_boxes(),
+        )
+        titles = [schedule.title for schedule in schedules]
+
+        self.assertIn('과목평가1', titles)
+        self.assertIn('월말평가1', titles)
+        self.assertEqual(len([schedule for schedule in schedules if schedule.start_at.date().isoformat() == '2026-01-20']), 2)
+
+    def test_parser_keeps_three_day_march_exam_run(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n3월\n2\n3\n4\n과목평가',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_march_exam_run_ocr_boxes(),
+        )
+        dates = sorted(schedule.start_at.date().isoformat() for schedule in schedules if schedule.title == '과목평가')
+
+        self.assertEqual(dates, ['2026-03-02', '2026-03-03', '2026-03-04'])
+
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):
             with patch('sync.services.import_service.parse_schedule_candidates_with_debug', side_effect=ValueError('bad date')):
@@ -753,6 +789,23 @@ class SampleNoticeImportTests(TestCase):
                 'https://edu.ssafy.com/edu/board/docReq/detail.do?brdItmSeq=115458',
             ],
         )
+
+    def test_pagination_next_url_uses_page_no(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="#;" onclick="fnPage('2')">2</a>
+            <a href="#;" onclick="fnPage('3')">3</a>
+            ''',
+            'html.parser',
+        )
+
+        next_url = _extract_next_page_url(
+            soup,
+            'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=1',
+            {'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=1'},
+        )
+
+        self.assertEqual(next_url, 'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=2')
 
     def test_link_extractor_supports_fn_detail2_onclick(self):
         soup = BeautifulSoup(
@@ -1721,6 +1774,33 @@ def _review_required_exam_ocr_boxes():
     boxes = _calendar_ocr_boxes()
     boxes[-1] = {'text': '배틀싸피과목평가', 'x1': 500, 'y1': 212, 'x2': 600, 'y2': 232, 'confidence': 0.96}
     return boxes
+
+
+def _combined_exam_ocr_boxes():
+    boxes = _calendar_ocr_boxes()
+    boxes[-1] = {'text': '과목평가1/ 월말평가1', 'x1': 505, 'y1': 212, 'x2': 610, 'y2': 232, 'confidence': 0.96}
+    return boxes
+
+
+def _march_exam_run_ocr_boxes():
+    return [
+        {'text': '3', 'x1': 20, 'y1': 20, 'x2': 32, 'y2': 40},
+        {'text': '월', 'x1': 31, 'y1': 20, 'x2': 50, 'y2': 40},
+        {'text': 'SUN', 'x1': 10, 'y1': 60, 'x2': 40, 'y2': 80},
+        {'text': 'MON', 'x1': 110, 'y1': 60, 'x2': 140, 'y2': 80},
+        {'text': 'TUE', 'x1': 210, 'y1': 60, 'x2': 240, 'y2': 80},
+        {'text': 'WED', 'x1': 310, 'y1': 60, 'x2': 340, 'y2': 80},
+        {'text': 'THU', 'x1': 410, 'y1': 60, 'x2': 440, 'y2': 80},
+        {'text': 'FRI', 'x1': 510, 'y1': 60, 'x2': 540, 'y2': 80},
+        {'text': 'SAT', 'x1': 610, 'y1': 60, 'x2': 640, 'y2': 80},
+        {'text': '1', 'x1': 10, 'y1': 100, 'x2': 24, 'y2': 120},
+        {'text': '2', 'x1': 110, 'y1': 100, 'x2': 124, 'y2': 120},
+        {'text': '3', 'x1': 210, 'y1': 100, 'x2': 224, 'y2': 120},
+        {'text': '4', 'x1': 310, 'y1': 100, 'x2': 324, 'y2': 120},
+        {'text': '과목평가', 'x1': 110, 'y1': 132, 'x2': 170, 'y2': 152, 'confidence': 0.96},
+        {'text': '과목평가', 'x1': 210, 'y1': 132, 'x2': 270, 'y2': 152, 'confidence': 0.96},
+        {'text': '과목평가', 'x1': 310, 'y1': 132, 'x2': 370, 'y2': 152, 'confidence': 0.96},
+    ]
 
 
 class _FailedLoginPage:
