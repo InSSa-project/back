@@ -246,6 +246,7 @@ PLACEHOLDER_TITLES = {
     '목록',
 }
 MENU_TEXT_KEYWORDS = {'HOME', 'Copyright', '메뉴', '목록', '로그인'}
+EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평가', '평가 안내', '1학기 평가')
 
 
 def _normalize_import_item(item):
@@ -262,7 +263,16 @@ def _normalize_import_item(item):
     if _is_non_document_item(title, raw_text, raw_html):
         return None
 
-    metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
+    if _is_evaluation_notice(title, raw_text, raw_html, metadata):
+        metadata.update(
+            {
+                'category': 'exam',
+                'document_type': 'evaluation_notice',
+                'ocr_ready': bool(metadata.get('image_urls')),
+            }
+        )
+    else:
+        metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
     prepared.update(
         {
             'source_type': source_type,
@@ -308,6 +318,12 @@ def _normalize_notice_category(source_type, title, raw_text, metadata):
     return 'etc'
 
 
+def _is_evaluation_notice(title, raw_text, raw_html='', metadata=None):
+    metadata_text = str(metadata or '')
+    target = f'{title} {raw_text} {raw_html} {metadata_text}'
+    return any(keyword in target for keyword in EVALUATION_NOTICE_KEYWORDS)
+
+
 def _format_crawler_debug(crawler_debug):
     if not crawler_debug:
         return ''
@@ -343,6 +359,8 @@ def _apply_ocr_pipeline(item, summary):
             'ocr_box_count': len(ocr_result.get('ocr_boxes') or []),
         }
     )
+    if metadata.get('document_type') == 'evaluation_notice':
+        metadata['ocr_ready'] = bool(image_urls)
     prepared['metadata_json'] = metadata
     prepared['ocr_boxes'] = ocr_result.get('ocr_boxes') or []
     prepared['raw_text'] = _merge_ocr_text(prepared.get('raw_text', ''), ocr_text)

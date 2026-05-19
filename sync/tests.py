@@ -29,6 +29,7 @@ from sync.services.ssafy_crawler import (
     _collect_authenticated_list,
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
+    _extract_detail_url_from_onclick,
 )
 
 
@@ -561,6 +562,37 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.get().source_url, 'https://example.com/notices/ok')
         self.assertIn('excluded_count=1', job_log.message)
 
+    def test_evaluation_notice_import_stores_exam_metadata(self):
+        item = _notice_item('https://example.com/notices/eval', 'eval-1')
+        item['title'] = '1학기 과목월말평가 안내'
+        item['raw_text'] = '마이스터고 과목평가 월말평가'
+        item['raw_html'] = '<img src="/eval.png" alt="과목월말평가 안내">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['category'], 'exam')
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertTrue(raw_data.metadata_json['ocr_ready'])
+
+    def test_raw_data_api_filters_exam_category(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/notices/eval',
+            title='1학기 과목월말평가 안내',
+            raw_text='evaluation',
+            metadata_json={'category': 'exam', 'document_type': 'evaluation_notice'},
+        )
+        RawSsafyData.objects.create(source_type='notice', title='일반 공지', raw_text='notice', metadata_json={'category': 'etc'})
+
+        response = self.client.get(reverse('sync-raw-data-list'), {'category': 'exam'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]['document_type'], 'evaluation_notice')
+
     def test_different_source_urls_with_same_generic_title_are_not_deduped(self):
         items = [
             _source_item('mentoring_notice', 'https://example.com/mentor/1', '멘토 스토리 상세', 'mentor-1'),
@@ -855,6 +887,19 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(
             links,
             ['https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=119629'],
+        )
+
+    def test_detail_onclick_parser_supports_go_detail_and_location(self):
+        self.assertEqual(
+            _extract_detail_url_from_onclick("goDetail('12345')", 'https://edu.ssafy.com/edu/board/notice/list.do'),
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=12345',
+        )
+        self.assertEqual(
+            _extract_detail_url_from_onclick(
+                "location.href='/edu/board/notice/detail.do?brdItmSeq=54321'",
+                'https://edu.ssafy.com/edu/board/notice/list.do',
+            ),
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=54321',
         )
 
     def test_academic_rule_list_without_detail_links_is_collected_as_document(self):
@@ -1985,6 +2030,22 @@ class SampleNoticeImportTests(TestCase):
         event = ScheduleEvent.objects.get(raw_data=raw_data)
         self.assertEqual(event.source_id, str(raw_data.pk))
         self.assertNotEqual(event.metadata_json.get('repair_source'), 'manual_calendar_correction')
+
+    def test_repair_calendar_events_detects_evaluation_notice_metadata(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/evaluation',
+            title='1학기 과목월말평가 안내',
+            raw_text='마이스터고 2026.03.03 월말평가 알고리즘 기본',
+            metadata_json={'category': 'exam', 'document_type': 'evaluation_notice', 'ocr_text_length': 20},
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('raw_candidate_count=1', value)
+        self.assertIn('missing_evaluation_notice_raw_data=false', value)
 
     def test_repair_calendar_events_notice_sentence_is_not_created(self):
         RawSsafyData.objects.create(

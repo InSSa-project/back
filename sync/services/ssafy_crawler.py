@@ -23,6 +23,7 @@ IGNORED_OCR_IMAGE_KEYWORDS = (
     'icon',
     'banner',
 )
+EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평가', '평가 안내', '1학기 평가')
 
 _LOGGER = logging.getLogger(__name__)
 CRAWLER_DEBUG_DIR = settings.BASE_DIR / 'tmp' / 'ssafy_crawler_debug'
@@ -264,6 +265,12 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             seen_detail_urls.add(detail_url)
             links.append(link)
             new_link_count += 1
+            link_title = link.get('title', '') if isinstance(link, dict) else ''
+            if _looks_like_evaluation_notice(f'{link_title} {detail_url}'):
+                _record_collection_debug(
+                    f'evaluation_notice_candidate source_type={source_type} page={page_index} '
+                    f'title={link_title or "-"} url={detail_url} detail=pending'
+                )
 
         _record_source_page_debug(
             source_type=source_type,
@@ -316,15 +323,19 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             detail_url = link
             list_title = ''
         try:
-            details.append(
-                fetch_authenticated_detail(
-                    page,
-                    detail_url,
-                    source_type=source_type,
-                    list_title=list_title,
-                    login_url=login_url,
-                )
+            detail = fetch_authenticated_detail(
+                page,
+                detail_url,
+                source_type=source_type,
+                list_title=list_title,
+                login_url=login_url,
             )
+            details.append(detail)
+            if _looks_like_evaluation_notice(f'{detail.get("title", "")} {detail.get("raw_text", "")}'):
+                _record_collection_debug(
+                    f'evaluation_notice_candidate source_type={source_type} title={detail.get("title", "")} '
+                    f'url={detail_url} detail=ok'
+                )
         except SsafySessionExpiredError:
             raise
         except Exception as exc:
@@ -555,6 +566,22 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
     image_urls = extract_image_urls_from_html(raw_html, detail_url)
     notice_id = _guess_notice_id(detail_url)
     published_at = _extract_published_at(soup)
+    is_evaluation_notice = _looks_like_evaluation_notice(f'{title} {raw_text} {raw_html}')
+    metadata = {
+        'notice_id': notice_id,
+        'collected_from': MODE_SSAFY_NOTICE,
+        'published_at': published_at,
+        'image_urls': image_urls,
+        'ocr_status': 'pending' if image_urls else 'skipped',
+    }
+    if is_evaluation_notice:
+        metadata.update(
+            {
+                'category': 'exam',
+                'document_type': 'evaluation_notice',
+                'ocr_ready': bool(image_urls),
+            }
+        )
 
     return {
         'source_type': source_type,
@@ -562,13 +589,7 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
         'title': title,
         'raw_text': raw_text,
         'raw_html': raw_html,
-        'metadata_json': {
-            'notice_id': notice_id,
-            'collected_from': MODE_SSAFY_NOTICE,
-            'published_at': published_at,
-            'image_urls': image_urls,
-            'ocr_status': 'pending' if image_urls else 'skipped',
-        },
+        'metadata_json': metadata,
     }
 
 
@@ -662,7 +683,7 @@ def _is_ignored_ocr_image_url(image_url):
 def _extract_links_by_keywords(soup, base_url, keywords, include_titles=False):
     links = []
     seen = set()
-    for anchor in soup.select('a[href]'):
+    for anchor in soup.select('a[href], a[onclick]'):
         href = anchor.get('href', '').strip()
         onclick = anchor.get('onclick', '').strip()
         text = _clean_text(anchor.get_text(' ', strip=True))
@@ -693,7 +714,15 @@ def _looks_like_link(href, text, keywords):
 
 
 def _extract_detail_url_from_onclick(onclick, base_url):
-    match = re.search(r"fnDetail2?\(['\"]?(?P<id>[^'\",)]+)['\"]?", onclick or '')
+    direct_url_match = re.search(r"(?:location\.href|document\.location)\s*=\s*['\"](?P<url>[^'\"]+)['\"]", onclick or '')
+    if direct_url_match:
+        return urljoin(base_url, direct_url_match.group('url'))
+
+    match = re.search(
+        r"(?:fnDetail2?|goDetail|detail|selectDetail|viewDetail)\s*\(\s*['\"]?(?P<id>\d+)[^)]*\)",
+        onclick or '',
+        flags=re.IGNORECASE,
+    )
     if not match:
         return ''
 
@@ -703,6 +732,10 @@ def _extract_detail_url_from_onclick(onclick, base_url):
         return ''
     detail_url = urljoin(base_url, detail_path)
     return f'{detail_url}?brdItmSeq={quote(match.group("id"))}'
+
+
+def _looks_like_evaluation_notice(text):
+    return any(keyword in (text or '') for keyword in EVALUATION_NOTICE_KEYWORDS)
 
 
 def _is_same_or_list_page_url(url, base_url):
