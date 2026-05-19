@@ -1726,6 +1726,52 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.get().raw_data, raw_data)
         self.assertIn('reparse_created_count=1', output.getvalue())
 
+    def test_reparse_evaluation_exams_replaces_only_linked_exam_events(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/evaluation',
+            title='평가 안내',
+            raw_text=(
+                '[OCR_TEXT]\n'
+                '15기 1학기 평가 안내\n'
+                '마이스터고 트랙\n'
+                '3월 3일 월말평가 알고리즘 기본\n'
+                '3월 16일 과목평가 알고리즘 응용\n'
+                '3월 26일 과목평가 AI\n'
+            ),
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='잘못된 과목평가',
+            start_at=timezone.datetime(2026, 3, 1, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 3, 2, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+        )
+        ScheduleEvent.objects.create(
+            title='사용자 직접 시험',
+            start_at=timezone.datetime(2026, 3, 4, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 3, 5, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='manual',
+            source_id='manual',
+        )
+        output = StringIO()
+
+        call_command('reparse_evaluation_exams', stdout=output)
+
+        titles = list(ScheduleEvent.objects.order_by('start_at').values_list('title', flat=True))
+        self.assertNotIn('잘못된 과목평가', titles)
+        self.assertIn('사용자 직접 시험', titles)
+        self.assertIn('월말평가: 알고리즘 기본', titles)
+        self.assertIn('과목평가: 알고리즘 응용', titles)
+        self.assertIn('과목평가: AI', titles)
+        self.assertIn('deleted_count=1', output.getvalue())
+        self.assertIn('created_count=3', output.getvalue())
+
 
 def _notice_item(source_url, notice_id):
     return {
