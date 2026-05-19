@@ -752,15 +752,50 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('월말평가1', titles)
         self.assertEqual(len([schedule for schedule in schedules if schedule.start_at.date().isoformat() == '2026-01-20']), 2)
 
-    def test_parser_keeps_three_day_march_exam_run(self):
-        schedules = parse_schedule_candidates(
-            '[OCR_TEXT]\n3월\n2\n3\n4\n과목평가',
-            default_title='[학습] 15기 1학기 전체 일정',
-            ocr_boxes=_march_exam_run_ocr_boxes(),
-        )
-        dates = sorted(schedule.start_at.date().isoformat() for schedule in schedules if schedule.title == '과목평가')
+    def test_parser_creates_meister_evaluation_notice_march_exams_only(self):
+        raw_text = '''
+        [OCR_TEXT]
+        15기 1학기 평가 안내
+        마이스터고 트랙
+        3월 3일 월말평가 알고리즘 기본
+        3월 16일 과목평가 알고리즘 응용
+        3월 26일 과목평가 AI
+        '''
 
-        self.assertEqual(dates, ['2026-03-02', '2026-03-03', '2026-03-04'])
+        schedules, grid_debug = parse_schedule_candidates_with_debug(raw_text, default_title='평가 안내')
+        result = [(schedule.start_at.date().isoformat(), schedule.title) for schedule in schedules]
+
+        self.assertEqual(
+            result,
+            [
+                ('2026-03-03', '월말평가: 알고리즘 기본'),
+                ('2026-03-16', '과목평가: 알고리즘 응용'),
+                ('2026-03-26', '과목평가: AI'),
+            ],
+        )
+        self.assertEqual(grid_debug.metadata_json['track'], '마이스터고')
+
+    def test_generic_four_day_exam_grid_goes_to_review_required(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n3월\n2\n3\n4\n5\n과목평가',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_march_exam_run_ocr_boxes(day_count=4),
+        )
+
+        self.assertEqual(schedules, [])
+
+    def test_evaluation_notice_without_track_requires_review(self):
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n평가 안내\n3월 3일 월말평가 알고리즘 기본',
+            default_title='평가 안내',
+        )
+
+        self.assertEqual(schedules, [])
+        self.assertEqual(grid_debug.review_required_candidate_count, 1)
+        self.assertEqual(
+            grid_debug.review_required_candidates[0]['review_required_reason'],
+            'missing_or_ambiguous_track',
+        )
 
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):
@@ -1782,8 +1817,8 @@ def _combined_exam_ocr_boxes():
     return boxes
 
 
-def _march_exam_run_ocr_boxes():
-    return [
+def _march_exam_run_ocr_boxes(day_count=3):
+    boxes = [
         {'text': '3', 'x1': 20, 'y1': 20, 'x2': 32, 'y2': 40},
         {'text': '월', 'x1': 31, 'y1': 20, 'x2': 50, 'y2': 40},
         {'text': 'SUN', 'x1': 10, 'y1': 60, 'x2': 40, 'y2': 80},
@@ -1801,6 +1836,14 @@ def _march_exam_run_ocr_boxes():
         {'text': '과목평가', 'x1': 210, 'y1': 132, 'x2': 270, 'y2': 152, 'confidence': 0.96},
         {'text': '과목평가', 'x1': 310, 'y1': 132, 'x2': 370, 'y2': 152, 'confidence': 0.96},
     ]
+    if day_count >= 4:
+        boxes.extend(
+            [
+                {'text': '5', 'x1': 410, 'y1': 100, 'x2': 424, 'y2': 120},
+                {'text': '과목평가', 'x1': 410, 'y1': 132, 'x2': 470, 'y2': 152, 'confidence': 0.96},
+            ]
+        )
+    return boxes
 
 
 class _FailedLoginPage:

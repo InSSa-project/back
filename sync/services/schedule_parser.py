@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
-from sync.services.ocr_grid_parser import parse_grid_schedule_candidates
+from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
 
 
 DEFAULT_YEAR = 2026
@@ -79,6 +79,11 @@ SINGLE_TIME_PATTERN = re.compile(r'(?<!\d)(?P<hour>\d{1,2}):(?P<minute>\d{2})(?:
 CALENDAR_MONTH_PATTERN = re.compile(r'^(?P<month>[1-9]|1[0-2])\s*월$')
 CALENDAR_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
 CALENDAR_INLINE_EVENT_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
+EVALUATION_DATE_PATTERN = re.compile(
+    r'(?:(?P<year>\d{4})[.\-/년]\s*)?(?P<month>\d{1,2})\s*(?:[.\-/월])\s*(?P<day>\d{1,2})\s*(?:일)?'
+)
+EVALUATION_TYPE_PATTERN = re.compile(r'(월말평가|과목평가)')
+TRACK_KEYWORDS = ['마이스터고', '비전공', '전공', '임베디드', '모바일', 'Python', 'Java']
 
 
 @dataclass
@@ -99,6 +104,11 @@ def parse_schedule_candidates(raw_text, default_title='SSAFY 일정', ocr_boxes=
 def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정', ocr_boxes=None):
     schedules = []
     context_title = _context_title(raw_text, default_title)
+
+    evaluation_schedules, evaluation_debug = _parse_evaluation_notice(raw_text, default_title)
+    if evaluation_schedules or evaluation_debug.review_required_candidate_count:
+        return _dedupe_schedules(evaluation_schedules), evaluation_debug
+
     grid_candidates, grid_debug = parse_grid_schedule_candidates(ocr_boxes or [])
     for candidate in grid_candidates:
         start_at = _aware(candidate.event_date, time.min)
@@ -140,6 +150,112 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
     if not grid_candidates and not getattr(grid_debug, 'review_required_candidate_count', 0):
         schedules.extend(_parse_calendar_ocr_candidates(raw_text))
     return _dedupe_schedules(schedules), grid_debug
+
+
+def _parse_evaluation_notice(raw_text, default_title):
+    text = f'{default_title or ""}\n{raw_text or ""}'
+    if not _looks_like_evaluation_notice(text):
+        return [], GridParseDebug(candidates=[], review_required_candidates=[])
+
+    track = _extract_clear_track(text)
+    debug = GridParseDebug(candidates=[], review_required_candidates=[])
+    if not track:
+        debug.reason = 'evaluation_notice_track_review_required'
+        debug.review_required_candidates = [
+            {
+                'title': default_title or '평가 안내',
+                'source_text': _debug_text_sample(text),
+                'review_required_reason': 'missing_or_ambiguous_track',
+            }
+        ]
+        debug.review_required_candidate_count = 1
+        return [], debug
+
+    schedules = []
+    for line in _candidate_lines_for_evaluation(text):
+        match = EVALUATION_DATE_PATTERN.search(line)
+        type_match = EVALUATION_TYPE_PATTERN.search(line)
+        if not match or not type_match:
+            continue
+        subject = _evaluation_subject(line, match, type_match)
+        if not subject:
+            continue
+        event_date = date(
+            int(match.group('year') or DEFAULT_YEAR),
+            int(match.group('month')),
+            int(match.group('day')),
+        )
+        evaluation_type = type_match.group(1)
+        title = f'{evaluation_type}: {subject}'
+        schedules.append(
+            ParsedSchedule(
+                title=title[:255],
+                description=f'SSAFY 평가 안내 OCR에서 추출한 {track} 트랙 시험 일정',
+                start_at=_aware(event_date, time.min),
+                end_at=_aware(event_date, time.min) + timedelta(days=1),
+                is_all_day=True,
+                event_type='exam',
+            )
+        )
+
+    if not schedules:
+        debug.reason = 'evaluation_notice_no_parseable_rows'
+        debug.review_required_candidates = [
+            {
+                'title': default_title or '평가 안내',
+                'source_text': _debug_text_sample(text),
+                'review_required_reason': 'no_parseable_evaluation_rows',
+            }
+        ]
+        debug.review_required_candidate_count = 1
+    else:
+        debug.reason = 'evaluation_notice_ok'
+        debug.candidates = [
+            {
+                'title': schedule.title,
+                'inferred_date': schedule.start_at.date().isoformat(),
+                'event_type': schedule.event_type,
+                'track': track,
+            }
+            for schedule in schedules
+        ]
+        debug.candidate_count = len(debug.candidates)
+        debug.metadata_json = {'track': track, 'parser': 'evaluation_notice_ocr'}
+    return schedules, debug
+
+
+def _looks_like_evaluation_notice(text):
+    return (
+        '[OCR_TEXT]' in text
+        and
+        ('평가 안내' in text or '평가안내' in text)
+        and ('과목평가' in text or '월말평가' in text)
+    )
+
+
+def _extract_clear_track(text):
+    found = []
+    for keyword in TRACK_KEYWORDS:
+        if re.search(re.escape(keyword), text, re.I):
+            found.append(keyword)
+    return found[0] if len(set(found)) == 1 else ''
+
+
+def _candidate_lines_for_evaluation(text):
+    return [_normalize_line(line) for line in text.splitlines() if _normalize_line(line)]
+
+
+def _evaluation_subject(line, date_match, type_match):
+    subject = line[type_match.end():].strip(' :-|[]()~')
+    if not subject:
+        subject = line[date_match.end():type_match.start()].strip(' :-|[]()~')
+    subject = re.sub(r'\b(마이스터고|비전공|전공|임베디드|모바일|Python|Java)\b', '', subject, flags=re.I).strip(' :-|[]()~')
+    subject = re.sub(r'\s+', ' ', subject)
+    return subject[:80]
+
+
+def _debug_text_sample(text):
+    return re.sub(r'\s+', ' ', text).strip()[:300]
 
 
 def _parse_calendar_ocr_candidates(raw_text):

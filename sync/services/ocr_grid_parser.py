@@ -54,6 +54,7 @@ MIN_EXAM_OVERLAP_RATIO = 0.35
 REVIEW_REQUIRED_EXAM_FILTER_REASONS = {
     'review_required_exam_title',
     'low_overlap_exam',
+    'generic_exam_calendar_marker',
 }
 
 
@@ -670,6 +671,9 @@ def _filter_exam_false_positives(candidates):
         if _is_exam_candidate(candidate) and candidate.event_date in holiday_dates:
             filtered.append(_with_filtered_reason(candidate, 'holiday_exam_conflict'))
             continue
+        if _is_generic_exam_calendar_marker(candidate):
+            filtered.append(_with_filtered_reason(candidate, 'generic_exam_calendar_marker'))
+            continue
         if _is_exam_candidate(candidate) and not _is_clear_exam_title(candidate.source_text or candidate.title):
             filtered.append(_with_filtered_reason(candidate, 'review_required_exam_title'))
             continue
@@ -746,6 +750,13 @@ def _with_filtered_reason(candidate, reason):
 
 def _is_exam_candidate(candidate):
     return candidate.event_type == 'exam' or _is_exam_title_compact(_compact_text(candidate.title))
+
+
+def _is_generic_exam_calendar_marker(candidate):
+    compact_title = _normalize_exam_compact(_compact_text(candidate.title))
+    compact_source = _normalize_exam_compact(_compact_text(candidate.source_text or candidate.title))
+    generic_titles = {'과목평가', '월말평가'}
+    return compact_title in generic_titles and compact_source in generic_titles
 
 
 def _collect_review_required_candidates(filtered_candidates):
