@@ -10,6 +10,8 @@ from sync.models import RawSsafyData
 
 
 REPAIR_SOURCE = 'manual_calendar_correction'
+MANUAL_EXAM_REPAIR_SOURCE = 'manual_exam_correction'
+MANUAL_EXAM_REASON = 'evaluation_notice_missing_manual_mvp_seed'
 NOISE_TITLES = {'시간', 'ViewModel', 'without questions', 'Live 방송'}
 
 
@@ -54,8 +56,7 @@ def repair_calendar_events(dry_run=False):
 
     _delete_false_positives(summary, dry_run=dry_run)
     _upsert_base_corrections(summary, base_raw, dry_run=dry_run)
-    if evaluation_raw:
-        _upsert_exam_corrections(summary, evaluation_raw, dry_run=dry_run)
+    _upsert_exam_corrections(summary, evaluation_raw or base_raw, dry_run=dry_run)
 
     _dedupe_generated(summary, dry_run=dry_run)
     summary.key_events = _key_events()
@@ -119,6 +120,7 @@ def _upsert_base_corrections(summary, raw_data, dry_run=False):
 
 def _upsert_exam_corrections(summary, raw_data, dry_run=False):
     exams = [
+        ('과목평가/월말평가', date(2026, 1, 28)),
         ('과목평가2', date(2026, 2, 9)),
         ('과목평가3(일타싸피)', date(2026, 2, 23)),
         ('월말평가2', date(2026, 3, 3)),
@@ -134,7 +136,19 @@ def _upsert_exam_corrections(summary, raw_data, dry_run=False):
         ('월말평가6', date(2026, 6, 25)),
     ]
     for title, start_date in exams:
-        _upsert_event(summary, raw_data, title, start_date, start_date + timedelta(days=1), 'exam', {}, dry_run)
+        _upsert_event(
+            summary,
+            raw_data,
+            title,
+            start_date,
+            start_date + timedelta(days=1),
+            'exam',
+            {
+                'repair_source': MANUAL_EXAM_REPAIR_SOURCE,
+                'source_reason': MANUAL_EXAM_REASON,
+            },
+            dry_run,
+        )
 
 
 def _upsert_event(summary, raw_data, title, start_date, end_date, event_type, extra_metadata, dry_run=False):
