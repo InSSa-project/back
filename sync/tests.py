@@ -576,6 +576,48 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
         self.assertTrue(raw_data.metadata_json['ocr_ready'])
 
+    def test_excluded_like_evaluation_notice_keyword_item_is_saved(self):
+        item = _notice_item('https://example.com/notices/eval-short', 'eval-short')
+        item['title'] = 'SSAFY document'
+        item['raw_text'] = '월말평가'
+        item['raw_html'] = ''
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertIn('keyword_candidate_count=1', job_log.message)
+        self.assertIn('saved_evaluation_notice_count=1', job_log.message)
+
+    def test_image_only_evaluation_notice_candidate_is_saved(self):
+        item = _notice_item('https://example.com/notices/eval-image', 'eval-image')
+        item['title'] = 'SSAFY document'
+        item['raw_text'] = ''
+        item['raw_html'] = '<img src="https://example.com/eval.png" alt="과목월말평가 안내">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertEqual(raw_data.metadata_json['image_urls'], ['https://example.com/eval.png'])
+        self.assertIn('keyword_candidates_by_source=notice:1', job_log.message)
+
+    def test_source_keyword_candidate_counts_are_reported(self):
+        items = [
+            _source_item('notice', 'https://example.com/notices/eval', '월말평가 안내', 'eval-1', '평가 안내'),
+            _source_item('quest', 'https://example.com/quest/eval', '과목평가 안내', 'quest-eval', '평가 안내'),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertIn('keyword_candidate_count=2', job_log.message)
+        self.assertIn('keyword_candidates_by_source=notice:1|quest:1', job_log.message)
+        self.assertIn('saved_evaluation_notice_count=2', job_log.message)
+
     def test_raw_data_api_filters_exam_category(self):
         RawSsafyData.objects.create(
             source_type='notice',

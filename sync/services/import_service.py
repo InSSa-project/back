@@ -41,6 +41,12 @@ class ImportSummary:
     parse_candidate_count: int = 0
     event_skipped_count: int = 0
     excluded_count: int = 0
+    keyword_candidate_count: int = 0
+    saved_evaluation_notice_count: int = 0
+    scanned_by_source: dict = field(default_factory=dict)
+    excluded_by_source: dict = field(default_factory=dict)
+    keyword_candidates_by_source: dict = field(default_factory=dict)
+    excluded_items: list = field(default_factory=list)
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
 
@@ -100,11 +106,25 @@ def _import_raw_items(raw_items):
     summary = ImportSummary()
 
     for item in raw_items:
-        item = _normalize_import_item(item)
-        if item is None:
+        source_type = (item or {}).get('source_type', 'notice')
+        summary.scanned_by_source[source_type] = summary.scanned_by_source.get(source_type, 0) + 1
+        normalized_item, excluded_debug = _normalize_import_item(item)
+        if excluded_debug:
             summary.skipped_count += 1
             summary.excluded_count += 1
+            excluded_source = excluded_debug['source_type']
+            summary.excluded_by_source[excluded_source] = summary.excluded_by_source.get(excluded_source, 0) + 1
+            if excluded_debug['keyword_candidate']:
+                summary.keyword_candidate_count += 1
+                summary.keyword_candidates_by_source[excluded_source] = summary.keyword_candidates_by_source.get(excluded_source, 0) + 1
+            summary.excluded_items.append(_format_excluded_debug(excluded_debug))
             continue
+        item = normalized_item
+        if (item.get('metadata_json') or {}).get('document_type') == 'evaluation_notice':
+            summary.keyword_candidate_count += 1
+            summary.saved_evaluation_notice_count += 1
+            item_source = item.get('source_type', 'notice')
+            summary.keyword_candidates_by_source[item_source] = summary.keyword_candidates_by_source.get(item_source, 0) + 1
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         if _find_existing_raw_data(item):
             summary.skipped_count += 1
@@ -207,12 +227,20 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'parse_candidate_count={summary.parse_candidate_count}, '
         f'ocr_failed_count={summary.ocr_failed_count}, '
         f'failed_count={summary.failed_count}, '
-        f'skipped_count={summary.skipped_count}'
+        f'skipped_count={summary.skipped_count}, '
+        f'scanned_by_source={_format_count_dict(summary.scanned_by_source)}, '
+        f'excluded_by_source={_format_count_dict(summary.excluded_by_source)}, '
+        f'keyword_candidate_count={summary.keyword_candidate_count}, '
+        f'keyword_candidates_by_source={_format_count_dict(summary.keyword_candidates_by_source)}, '
+        f'saved_evaluation_notice_count={summary.saved_evaluation_notice_count}, '
+        f'evaluation_raw_count={RawSsafyData.objects.filter(metadata_json__document_type="evaluation_notice").count()}'
     )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
     if summary.excluded_count:
         message = f'{message}, excluded_count={summary.excluded_count}'
+    if summary.excluded_items:
+        message = f'{message}, excluded_items={"; ".join(summary.excluded_items[:20])}'
     if summary.no_schedule_by_type:
         no_schedule_detail = ','.join(
             f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())
@@ -260,9 +288,6 @@ def _normalize_import_item(item):
     title = str(prepared.get('title') or '').strip()
     raw_text = str(prepared.get('raw_text') or '').strip()
     raw_html = str(prepared.get('raw_html') or '').strip()
-    if _is_non_document_item(title, raw_text, raw_html):
-        return None
-
     if _is_evaluation_notice(title, raw_text, raw_html, metadata):
         metadata.update(
             {
@@ -272,6 +297,9 @@ def _normalize_import_item(item):
             }
         )
     else:
+        exclude_reason = _non_document_reason(title, raw_text, raw_html)
+        if exclude_reason:
+            return None, _excluded_debug(source_type, prepared, title, raw_text, raw_html, metadata, exclude_reason)
         metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
     prepared.update(
         {
@@ -282,22 +310,55 @@ def _normalize_import_item(item):
             'metadata_json': metadata,
         }
     )
-    return prepared
+    return prepared, None
 
 
 def _is_non_document_item(title, raw_text, raw_html):
-    if title in PLACEHOLDER_TITLES and not raw_text:
-        return True
+    return bool(_non_document_reason(title, raw_text, raw_html))
+
+
+def _non_document_reason(title, raw_text, raw_html):
+    if title in PLACEHOLDER_TITLES and not raw_text and not raw_html:
+        return 'placeholder_title_without_content'
     if not title and not raw_text and not raw_html:
-        return True
+        return 'empty_document'
     compact_text = raw_text.replace('\n', ' ').strip()
     if len(compact_text) < 8 and title in PLACEHOLDER_TITLES:
-        return True
+        return 'short_placeholder_content'
     if compact_text and all(keyword in compact_text for keyword in ('HOME', 'Copyright')):
-        return True
+        return 'menu_copyright_content'
     if title in MENU_TEXT_KEYWORDS:
-        return True
-    return False
+        return 'menu_title'
+    return ''
+
+
+def _excluded_debug(source_type, prepared, title, raw_text, raw_html, metadata, reason):
+    return {
+        'source_type': source_type,
+        'source_url': prepared.get('source_url', ''),
+        'title': title or '(empty)',
+        'exclude_reason': reason,
+        'keyword_candidate': _is_evaluation_notice(title, raw_text, raw_html, metadata),
+        'content_sample': _sample_text(f'{raw_text} {raw_html}'),
+    }
+
+
+def _format_excluded_debug(debug):
+    return (
+        f'source_type={debug["source_type"]} title={debug["title"]} url={debug["source_url"] or "-"} '
+        f'reason={debug["exclude_reason"]} keyword_candidate={str(debug["keyword_candidate"]).lower()} '
+        f'content={debug["content_sample"]}'
+    )
+
+
+def _sample_text(text):
+    return ' '.join((text or '').split())[:120] or '-'
+
+
+def _format_count_dict(values):
+    if not values:
+        return 'none'
+    return '|'.join(f'{key}:{values[key]}' for key in sorted(values))
 
 
 def _normalize_notice_category(source_type, title, raw_text, metadata):
