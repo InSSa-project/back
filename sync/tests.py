@@ -1878,6 +1878,34 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-01').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-03').count(), 0)
 
+    def test_repair_calendar_events_creates_jan24_to_jan27_sequence(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+
+        call_command('repair_calendar_events')
+
+        for day in [24, 25, 26, 27]:
+            self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date=f'2026-01-{day}').count(), 1)
+
+    def test_repair_calendar_events_dedupes_ai_lecture_roman_titles(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['AI 강의 2', 'AI 강의 II', 'AI 강의 Ⅱ']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 3, 16, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 3, 17, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='study',
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events')
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 II').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-16').count(), 1)
+
     def test_repair_calendar_events_creates_manual_exam_corrections_without_evaluation_raw(self):
         RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
         output = StringIO()
