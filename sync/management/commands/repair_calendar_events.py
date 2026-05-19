@@ -55,6 +55,7 @@ def repair_calendar_events(dry_run=False):
     evaluation_raw = _find_evaluation_raw()
 
     _delete_false_positives(summary, dry_run=dry_run)
+    _normalize_existing_titles(summary, dry_run=dry_run)
     _upsert_base_corrections(summary, base_raw, dry_run=dry_run)
     _upsert_exam_corrections(summary, evaluation_raw or base_raw, dry_run=dry_run)
 
@@ -94,12 +95,27 @@ def _delete_false_positives(summary, dry_run=False):
         meetup.delete()
 
 
+def _normalize_existing_titles(summary, dry_run=False):
+    for event in ScheduleEvent.objects.filter(raw_data__isnull=False):
+        normalized_title = _normalize_event_title(event.title)
+        if normalized_title == event.title:
+            continue
+        summary.updated_count += 1
+        if not dry_run:
+            event.title = normalized_title
+            event.save(update_fields=['title'])
+
+
 def _upsert_base_corrections(summary, raw_data, dry_run=False):
     corrections = [
         ('15기 SW AI 캠프', date(2026, 1, 7), date(2026, 1, 10), 'study', {}),
         ('15기 SW AI 스타트 캠프', date(2026, 1, 12), date(2026, 1, 13), 'study', {}),
         ('15기 SW AI 스타트 캠프', date(2026, 1, 15), date(2026, 1, 16), 'study', {}),
         ('AI 창의 캠프', date(2026, 1, 19), date(2026, 1, 22), 'study', {'track': 'meister'}),
+        ('SSAFY DAY', date(2026, 1, 24), date(2026, 1, 25), 'etc', {}),
+        ('SSAFY DAY', date(2026, 1, 25), date(2026, 1, 26), 'etc', {}),
+        ('SSAFY DAY', date(2026, 1, 26), date(2026, 1, 27), 'etc', {}),
+        ('SSAFY DAY', date(2026, 1, 27), date(2026, 1, 28), 'etc', {}),
         ('설날', date(2026, 2, 16), date(2026, 2, 19), 'etc', {}),
         ('SW역량테스트(IM형/A형)', date(2026, 2, 19), date(2026, 2, 20), 'etc', {}),
         ('AI 강의 1', date(2026, 2, 24), date(2026, 2, 28), 'study', {}),
@@ -224,8 +240,8 @@ def _find_existing_event(start_date, title, event_type, metadata):
 
 def _normalize_event_title(title):
     normalized = str(title or '').strip()
-    compact = normalized.replace(' ', '').upper()
-    if compact in {'AI강의2', 'AI강의II', 'AI강의Ⅱ'}:
+    compact = normalized.replace(' ', '').upper().replace('Ⅱ', 'II')
+    if compact in {'AI강의2', 'AI강의II'}:
         return 'AI 강의 Ⅱ'
     return normalized
 
