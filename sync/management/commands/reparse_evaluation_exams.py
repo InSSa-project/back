@@ -12,10 +12,13 @@ from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 
 @dataclass
 class EvaluationReparseSummary:
+    evaluation_raw_count: int = 0
+    delete_plan_count: int = 0
     raw_checked: int = 0
     deleted_count: int = 0
     created_count: int = 0
     review_required_count: int = 0
+    abort_reason: str = ''
     march_exams: list = field(default_factory=list)
 
 
@@ -38,10 +41,13 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 'Evaluation exam reparse completed.\n'
+                f'evaluation_raw_count={summary.evaluation_raw_count}\n'
+                f'delete_plan_count={summary.delete_plan_count}\n'
                 f'raw_checked={summary.raw_checked}\n'
                 f'deleted_count={summary.deleted_count}\n'
                 f'created_count={summary.created_count}\n'
                 f'review_required_count={summary.review_required_count}\n'
+                f'abort_reason={summary.abort_reason or "none"}\n'
                 f'march_exams={"; ".join(summary.march_exams) or "none"}\n'
                 f'dry_run={str(options["dry_run"]).lower()}'
             )
@@ -62,20 +68,39 @@ def _evaluation_queryset():
 @transaction.atomic
 def _reparse(queryset, dry_run=False):
     summary = EvaluationReparseSummary()
-    raw_ids = []
+    prepared = []
     for raw_data in queryset:
-        summary.raw_checked += 1
-        raw_ids.append(raw_data.id)
         parsed_schedules, grid_debug = parse_schedule_candidates_with_debug(
             raw_data.raw_text,
             default_title=raw_data.title,
             ocr_boxes=raw_data.ocr_boxes,
         )
+        is_evaluation_raw = getattr(grid_debug, 'metadata_json', {}).get('parser') == 'evaluation_notice_ocr'
+        if is_evaluation_raw:
+            summary.evaluation_raw_count += 1
+            prepared.append((raw_data, parsed_schedules, grid_debug))
+        elif grid_debug.review_required_candidate_count:
+            prepared.append((raw_data, [], grid_debug))
+
+    if summary.evaluation_raw_count == 0:
+        summary.abort_reason = 'no_evaluation_ocr_raw_data'
+        summary.review_required_count = sum(
+            1 for _raw_data, _parsed_schedules, grid_debug in prepared
+            if grid_debug.review_required_candidate_count
+        )
+        return summary
+
+    raw_ids = [raw_data.id for raw_data, _parsed_schedules, _grid_debug in prepared]
+    summary.delete_plan_count = ScheduleEvent.objects.filter(
+        raw_data_id__in=raw_ids,
+        event_type='exam',
+    ).count()
+
+    for raw_data, parsed_schedules, grid_debug in prepared:
+        summary.raw_checked += 1
         _store_review_metadata(raw_data, grid_debug)
         if grid_debug.review_required_candidate_count:
             summary.review_required_count += 1
-        if getattr(grid_debug, 'metadata_json', {}).get('parser') != 'evaluation_notice_ocr':
-            parsed_schedules = []
 
         delete_qs = ScheduleEvent.objects.filter(raw_data=raw_data, event_type='exam')
         delete_count = delete_qs.count()

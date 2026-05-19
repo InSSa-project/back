@@ -1772,6 +1772,46 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('deleted_count=1', output.getvalue())
         self.assertIn('created_count=3', output.getvalue())
 
+    def test_reparse_evaluation_exams_aborts_without_evaluation_ocr_raw_data(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/full-calendar',
+            title='[학습] 15기 1학기 전체 일정',
+            raw_text='[OCR_TEXT]\n3월\n2\n3\n4\n과목평가',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='기존 시험',
+            start_at=timezone.datetime(2026, 3, 2, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 3, 3, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+        )
+        output = StringIO()
+
+        call_command('reparse_evaluation_exams', stdout=output)
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='기존 시험').count(), 1)
+        self.assertIn('evaluation_raw_count=0', output.getvalue())
+        self.assertIn('deleted_count=0', output.getvalue())
+        self.assertIn('abort_reason=no_evaluation_ocr_raw_data', output.getvalue())
+
+    def test_parser_filters_ocr_garbage_titles(self):
+        schedules = parse_schedule_candidates(
+            '시간 2026.05.20\nViewModel 2026.05.21\nwithout questions 2026.05.22\nLive 방송 2026.05.23',
+            default_title='공지사항 상세',
+        )
+
+        self.assertEqual(schedules, [])
+
+    def test_parser_keeps_meaningful_pjt_schedule(self):
+        schedules = parse_schedule_candidates('관통 PJT 2026.05.20', default_title='공지사항 상세')
+
+        self.assertEqual(len(schedules), 1)
+        self.assertEqual(schedules[0].title, '관통 PJT')
+
 
 def _notice_item(source_url, notice_id):
     return {
