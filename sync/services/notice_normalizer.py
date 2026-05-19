@@ -1,10 +1,26 @@
 import json
 
 
-SOURCE_TYPES = {'notice', 'academic_rule', 'mentoring_notice'}
+SOURCE_TYPES = {
+    'notice',
+    'academic_rule',
+    'mentoring_notice',
+    'curriculum',
+    'learning_material',
+    'quest',
+    'faq',
+}
 CATEGORIES = {'all', 'study', 'exam', 'mentoring', 'etc'}
 TRACKS = {'python', 'java', 'embedded', 'mobile', 'common'}
 
+SOURCE_CATEGORY_MAP = {
+    'academic_rule': 'etc',
+    'mentoring_notice': 'mentoring',
+    'curriculum': 'study',
+    'learning_material': 'study',
+    'quest': 'exam',
+    'faq': 'etc',
+}
 CATEGORY_ALIASES = {
     'learning': 'study',
     'education': 'study',
@@ -14,14 +30,37 @@ CATEGORY_ALIASES = {
     'other': 'etc',
 }
 
-EXAM_KEYWORDS = ('평가', '시험', '월말평가', '과목평가', '역량테스트')
-STUDY_KEYWORDS = ('학습', '강의', '과제', '프로젝트', '커리큘럼', '보충', '라이브')
+EXAM_KEYWORDS = (
+    'exam',
+    'test',
+    'evaluation',
+    '\uc6d4\ub9d0\ud3c9\uac00',
+    '\uacfc\ubaa9\ud3c9\uac00',
+    '\uc5ed\ub7c9\ud14c\uc2a4\ud2b8',
+    '\uc2dc\ud5d8',
+    '\ud3c9\uac00',
+)
+STUDY_KEYWORDS = (
+    'study',
+    'lecture',
+    'curriculum',
+    'course',
+    'learning',
+    'project',
+    '\ud559\uc2b5',
+    '\uac15\uc758',
+    '\uacfc\uc81c',
+    '\ud504\ub85c\uc81d\ud2b8',
+    '\ucee4\ub9ac\ud058\ub7fc',
+    '\ubcf4\ucda9',
+    '\ub77c\uc774\ube0c',
+)
 TRACK_KEYWORDS = {
-    'python': ('python', '파이썬'),
-    'java': ('java', '자바'),
-    'embedded': ('embedded', '임베디드'),
-    'mobile': ('mobile', '모바일'),
-    'common': ('공통', '전체', '공통반', '전공통합'),
+    'python': ('python', '\ud30c\uc774\uc36c'),
+    'java': ('java', '\uc790\ubc14'),
+    'embedded': ('embedded', '\uc784\ubca0\ub514\ub4dc'),
+    'mobile': ('mobile', '\ubaa8\ubc14\uc77c'),
+    'common': ('common', '\uacf5\ud1b5', '\uc804\uccb4'),
 }
 
 
@@ -32,10 +71,8 @@ def normalize_notice_category(category):
 
 def infer_notice_category(raw):
     source_type = str(getattr(raw, 'source_type', '') or '').strip().lower()
-    if source_type == 'mentoring_notice':
-        return 'mentoring'
-    if source_type == 'academic_rule':
-        return 'etc'
+    if source_type in SOURCE_CATEGORY_MAP:
+        return SOURCE_CATEGORY_MAP[source_type]
 
     metadata_value = normalize_notice_category(_metadata_value(raw, 'category'))
     if metadata_value in CATEGORIES and metadata_value != 'all':
@@ -51,7 +88,7 @@ def infer_notice_category(raw):
 
 def infer_notice_track(raw):
     source_type = str(getattr(raw, 'source_type', '') or '').strip().lower()
-    if source_type in {'mentoring_notice', 'academic_rule'}:
+    if source_type in {'mentoring_notice', 'academic_rule', 'faq'}:
         return 'common'
 
     metadata_value = _metadata_value(raw, 'track')
