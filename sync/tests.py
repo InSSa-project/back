@@ -1877,6 +1877,29 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-01').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-03').count(), 0)
 
+    def test_repair_calendar_events_creates_manual_exam_corrections_without_evaluation_raw(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--dry-run', stdout=output)
+        self.assertIn('created_count=', output.getvalue())
+
+        call_command('repair_calendar_events')
+        first_count = ScheduleEvent.objects.filter(event_type='exam').count()
+        call_command('repair_calendar_events')
+        second_count = ScheduleEvent.objects.filter(event_type='exam').count()
+
+        self.assertGreater(first_count, 0)
+        self.assertEqual(first_count, second_count)
+        self.assertEqual(ScheduleEvent.objects.filter(title='과목평가2', start_at__date='2026-02-09').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='SW역량테스트(IM형/A형)', start_at__date='2026-02-19').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='과목평가3(일타싸피)', start_at__date='2026-02-23').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-27').count(), 0)
+        exam = ScheduleEvent.objects.get(title='과목평가2')
+        self.assertEqual(exam.metadata_json['repair_source'], 'manual_exam_correction')
+        self.assertEqual(exam.metadata_json['source_reason'], 'evaluation_notice_missing_manual_mvp_seed')
+
     def test_repair_calendar_events_removes_meetup_duplicate(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
         for title in ['밋업', '상반기 밋업']:
