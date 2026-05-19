@@ -1878,13 +1878,15 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-01').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-03').count(), 0)
 
-    def test_repair_calendar_events_creates_jan24_to_jan27_sequence(self):
+    def test_repair_calendar_events_keeps_only_jan24_ssafy_day(self):
         RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
 
         call_command('repair_calendar_events')
+        call_command('repair_calendar_events')
 
-        for day in [24, 25, 26, 27]:
-            self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date=f'2026-01-{day}').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date='2026-01-24').count(), 1)
+        for day in [25, 26, 27]:
+            self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date=f'2026-01-{day}').count(), 0)
 
     def test_repair_calendar_events_dedupes_ai_lecture_roman_titles(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
