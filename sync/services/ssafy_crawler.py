@@ -27,8 +27,10 @@ EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평�
 
 _LOGGER = logging.getLogger(__name__)
 CRAWLER_DEBUG_DIR = settings.BASE_DIR / 'tmp' / 'ssafy_crawler_debug'
+DETAIL_DEBUG_DIR = CRAWLER_DEBUG_DIR / 'ssafy_detail'
 CRAWLER_DEBUG_HTML_PREVIEW_LENGTH = 2000
 _LAST_COLLECTION_DEBUG = []
+_DETAIL_DEBUG_COUNTS = {}
 SOURCE_LIST_URL_ENV_NAMES = {
     'notice': 'SSAFY_NOTICE_LIST_URL',
     'academic_rule': 'SSAFY_RULE_LIST_URL',
@@ -548,7 +550,8 @@ def fetch_notice_detail(detail_url, list_title=''):
 
 
 def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
-    content_node = soup.select_one('article, main, .notice-view, .board-view, .view, body')
+    _save_detail_debug_html(soup, source_type, detail_url)
+    content_node, content_quality = _select_detail_content_node(soup)
     if content_node is None:
         raise SsafyCrawlerError(f'SSAFY content area was not found: {detail_url}')
 
@@ -561,9 +564,10 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
     if not title:
         title = 'SSAFY document'
 
-    raw_text = _clean_text(content_node.get_text('\n', strip=True))
-    raw_html = str(content_node)
+    raw_html, raw_text = _clean_detail_html_and_text(content_node)
     image_urls = extract_image_urls_from_html(raw_html, detail_url)
+    if not image_urls:
+        image_urls = extract_image_urls_from_html(str(soup), detail_url)
     notice_id = _guess_notice_id(detail_url)
     published_at = _extract_published_at(soup)
     is_evaluation_notice = _looks_like_evaluation_notice(f'{title} {raw_text} {raw_html}')
@@ -573,6 +577,10 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
         'published_at': published_at,
         'image_urls': image_urls,
         'ocr_status': 'pending' if image_urls else 'skipped',
+        'detail_success': True,
+        'real_content': content_quality == 'real_content',
+        'content_quality': content_quality,
+        'image_found': bool(image_urls),
     }
     if is_evaluation_notice:
         metadata.update(
@@ -591,6 +599,82 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
         'raw_html': raw_html,
         'metadata_json': metadata,
     }
+
+
+def _select_detail_content_node(soup):
+    selectors = [
+        '.view_cont',
+        '.view_content',
+        '.view-content',
+        '.board_view',
+        '.boardView',
+        '.board-view',
+        '.notice-view',
+        '.noticeView',
+        '.detail-content',
+        '.detail_content',
+        '.content_view',
+        '.contentView',
+        '.cont',
+        '.content',
+        '#content',
+        'article',
+        'main',
+        'td',
+        'body',
+    ]
+    best_node = None
+    best_score = -1
+    best_quality = 'empty_detail'
+    for selector in selectors:
+        for node in soup.select(selector):
+            raw_html, text = _clean_detail_html_and_text(node)
+            score = _detail_content_score(text, raw_html)
+            if score > best_score:
+                best_node = node
+                best_score = score
+                best_quality = 'real_content' if score >= 20 else 'menu_only_content'
+        if best_quality == 'real_content' and selector != 'body':
+            break
+    return best_node or soup.select_one('body'), best_quality
+
+
+def _clean_detail_html_and_text(node):
+    cleaned = BeautifulSoup(str(node), 'html.parser')
+    for removable in cleaned.select(
+        'script, style, header, footer, nav, aside, .header, .footer, .gnb, .lnb, .menu, '
+        '.breadcrumb, .pagination, .paging, .copyright, .sidebar'
+    ):
+        removable.decompose()
+    raw_html = str(cleaned)
+    raw_text = _clean_text(cleaned.get_text('\n', strip=True))
+    return raw_html, raw_text
+
+
+def _detail_content_score(text, raw_html):
+    compact = (text or '').replace('\n', ' ').strip()
+    if not compact and '<img' not in (raw_html or '').lower():
+        return 0
+    score = len(compact)
+    menu_hits = sum(1 for keyword in ('HOME', 'Copyright', '마이캠퍼스', '로그아웃', '메뉴') if keyword in compact)
+    score -= menu_hits * 80
+    if '<img' in (raw_html or '').lower():
+        score += 30
+    return score
+
+
+def _save_detail_debug_html(soup, source_type, detail_url):
+    if str(os.getenv('SSAFY_CRAWLER_DEBUG_HTML', '')).lower() not in {'1', 'true', 'yes', 'on'}:
+        return
+    count = _DETAIL_DEBUG_COUNTS.get(source_type, 0)
+    if count >= 3:
+        return
+    DETAIL_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    notice_id = re.sub(r'[^A-Za-z0-9_-]+', '_', _guess_notice_id(detail_url))[:80] or str(count + 1)
+    path = DETAIL_DEBUG_DIR / f'{source_type}_{notice_id}.html'
+    path.write_text(str(soup)[:200000], encoding='utf-8')
+    _DETAIL_DEBUG_COUNTS[source_type] = count + 1
+    _record_collection_debug(f'detail_debug_saved source_type={source_type} url={detail_url} html={path}')
 
 
 def _request_soup(url):
