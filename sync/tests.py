@@ -1812,6 +1812,88 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(len(schedules), 1)
         self.assertEqual(schedules[0].title, '관통 PJT')
 
+    def test_repair_calendar_events_creates_january_camp_and_keeps_manual_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/full-calendar',
+            title='15기 1학기 전체 일정',
+            raw_text='calendar',
+        )
+        ScheduleEvent.objects.create(
+            title='사용자 직접 일정',
+            start_at=timezone.datetime(2026, 1, 7, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 1, 8, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='etc',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', stdout=output)
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='15기 SW AI 캠프').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get(title='15기 SW AI 캠프').raw_data, raw_data)
+        self.assertEqual(ScheduleEvent.objects.filter(title='사용자 직접 일정').count(), 1)
+        self.assertIn('created_count=', output.getvalue())
+
+    def test_repair_calendar_events_removes_jan15_duplicates_and_jan31_notice(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['15기 SW AI 스타트 캠프', '공지 안내문', 'ViewModel']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 1, 15, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 1, 16, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='etc',
+                source_type='notice',
+            )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='1월 31일 공지용 설명 문장',
+            start_at=timezone.datetime(2026, 1, 31, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 2, 1, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(
+            list(ScheduleEvent.objects.filter(start_at__date='2026-01-15').values_list('title', flat=True)),
+            ['15기 SW AI 스타트 캠프'],
+        )
+        self.assertEqual(ScheduleEvent.objects.filter(start_at__date='2026-01-31').count(), 0)
+
+    def test_repair_calendar_events_normalizes_ai_lecture_and_online_week(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2', start_at__date='2026-03-16').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2', start_at__date='2026-03-21').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-01').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-03').count(), 0)
+
+    def test_repair_calendar_events_removes_meetup_duplicate(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['밋업', '상반기 밋업']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 4, 10, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 4, 11, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='etc',
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(list(ScheduleEvent.objects.filter(start_at__date='2026-04-10').values_list('title', flat=True)), ['상반기 밋업'])
+
 
 def _notice_item(source_url, notice_id):
     return {
