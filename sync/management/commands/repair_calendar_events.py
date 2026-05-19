@@ -15,6 +15,21 @@ REPAIR_SOURCE = 'manual_calendar_correction'
 MANUAL_EXAM_REPAIR_SOURCE = 'manual_exam_correction'
 MANUAL_EXAM_REASON = 'evaluation_notice_missing_manual_mvp_seed'
 NOISE_TITLES = {'시간', 'ViewModel', 'without questions', 'Live 방송'}
+NOISE_TITLES.update({'운영자', '♥알림신청♥', '공지사항 상세', '목록'})
+PROMOTIONAL_TITLE_KEYWORDS = [
+    '싸피티비',
+    '치킨세트',
+    '박슬기',
+    '수다 타임',
+    '중요! 방송인',
+    '기타] [싸피티비]',
+    '알림신청',
+    '이벤트 게시물',
+    '영상에 댓글',
+    '삼성청년SW',
+    '사무국입니다',
+    '첨부 파일',
+]
 OCR_CANDIDATE_KEYWORDS = [
     '15기 1학기 전체 일정',
     '전체 일정',
@@ -109,6 +124,8 @@ def repair_calendar_events(dry_run=False, use_manual_fallback=False):
     _delete_false_positives(summary, dry_run=dry_run)
     _normalize_existing_titles(summary, dry_run=dry_run)
     _reparse_ocr_candidates(summary, candidate_qs, dry_run=dry_run)
+    _normalize_existing_titles(summary, dry_run=dry_run)
+    _delete_false_positives(summary, dry_run=dry_run)
     if not evaluation_raw:
         summary.missing_evaluation_notice_raw_data = True
     if use_manual_fallback:
@@ -128,6 +145,11 @@ def repair_calendar_events(dry_run=False, use_manual_fallback=False):
 def _delete_false_positives(summary, dry_run=False):
     qs = ScheduleEvent.objects.filter(raw_data__isnull=False)
     targets = qs.filter(title__in=NOISE_TITLES)
+    for keyword in PROMOTIONAL_TITLE_KEYWORDS:
+        targets = targets | qs.filter(title__contains=keyword)
+    targets = targets | qs.filter(title__endswith='운영자')
+    targets = targets | qs.filter(title__contains='출연').exclude(title__contains='과목평가').exclude(title__contains='월말평가')
+    targets = targets | qs.filter(title__contains='시간표 운영자')
     targets = targets | qs.filter(start_at__date__in=[date(2026, 1, 31), date(2026, 5, 2), date(2026, 5, 3)])
     targets = targets | qs.filter(start_at__date=date(2026, 5, 5)).exclude(title='어린이날')
     targets = targets | qs.filter(start_at__date=date(2026, 1, 7)).filter(title__contains='소명')
