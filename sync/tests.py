@@ -2085,6 +2085,23 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(schedules, [])
 
+    def test_parser_filters_promotional_ocr_titles_but_keeps_valid_events(self):
+        schedules = parse_schedule_candidates(
+            '2026.02.19 운영자\n'
+            '2026.02.19 ♥알림신청♥\n'
+            '2026.02.23 [싸피티비] 박슬기랑 수다 타임 치킨세트 이벤트\n'
+            '2026.02.19 SW역량테스트(IM형/A형)\n'
+            '2026.02.23 과목평가3(일타싸피)',
+            default_title='공지사항 상세',
+        )
+        titles = [schedule.title for schedule in schedules]
+
+        self.assertNotIn('운영자', titles)
+        self.assertNotIn('♥알림신청♥', titles)
+        self.assertFalse(any('싸피티비' in title for title in titles))
+        self.assertTrue(any('SW역량테스트' in title for title in titles))
+        self.assertTrue(any('과목평가3' in title for title in titles))
+
     def test_parser_keeps_meaningful_pjt_schedule(self):
         schedules = parse_schedule_candidates('관통 PJT 2026.05.20', default_title='공지사항 상세')
 
@@ -2305,6 +2322,36 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('SW역량테스트(IM형/A형)', titles)
         self.assertIn('과목평가3(일타싸피)', titles)
         self.assertIn('AI 강의 1', titles)
+
+    def test_repair_calendar_events_removes_promotional_ocr_events(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15湲?1?숆린 ?꾩껜 ?쇱젙', raw_text='calendar')
+        for title in ['운영자', '♥알림신청♥', '[싸피티비] 박슬기랑 수다 타임', '치킨세트 이벤트 출연']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 2, 23, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 2, 24, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='notice',
+                source_type='notice',
+            )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='SW역량테스트(IM형/A형)',
+            start_at=timezone.datetime(2026, 2, 19, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 2, 20, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+        )
+
+        call_command('repair_calendar_events')
+
+        titles = set(ScheduleEvent.objects.values_list('title', flat=True))
+        self.assertIn('SW역량테스트(IM형/A형)', titles)
+        self.assertNotIn('운영자', titles)
+        self.assertNotIn('♥알림신청♥', titles)
+        self.assertFalse(any('싸피티비' in title or '치킨세트' in title for title in titles))
 
     def test_repair_calendar_events_removes_meetup_duplicate(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')

@@ -92,6 +92,20 @@ NOISE_TITLE_COMPACTS = {
     'LIVE',
     '방송',
 }
+NOISE_TITLE_CONTAINS = [
+    '싸피티비',
+    '치킨세트',
+    '박슬기',
+    '수다타임',
+    '중요!방송인',
+    '시간표운영자',
+    '알림신청',
+    '이벤트게시물',
+    '영상에댓글',
+    '삼성청년SW',
+    '사무국입니다',
+    '첨부파일',
+]
 
 
 @dataclass
@@ -442,9 +456,34 @@ def _is_noise_schedule_title(title):
     compact = re.sub(r'[\s.()\-_/\]]+', '', str(title or '')).upper()
     if compact in NOISE_TITLE_COMPACTS:
         return True
+    if compact in {'운영자', '♥알림신청♥', '공지사항상세', '목록'}:
+        return True
+    if any(noise.upper() in compact for noise in NOISE_TITLE_CONTAINS):
+        return True
+    if compact.endswith('운영자') and not _is_allowed_promotional_exception(title):
+        return True
+    if '출연' in compact and not _is_allowed_promotional_exception(title):
+        return True
     if len(compact) <= 1:
         return True
     return False
+
+
+def _is_allowed_promotional_exception(title):
+    normalized = str(title or '')
+    allowed_keywords = [
+        'SW역량테스트',
+        '과목평가',
+        '월말평가',
+        'AI 강의',
+        'AI 媛뺤쓽',
+        '설날',
+        'SSAFY DAY',
+        '온라인 위크',
+        '관통 프로젝트 집중기간',
+        '상반기 밋업',
+    ]
+    return any(keyword in normalized for keyword in allowed_keywords)
 
 
 def _is_meta_line(line):
