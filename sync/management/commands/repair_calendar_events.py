@@ -113,7 +113,7 @@ def _upsert_base_corrections(summary, raw_data, dry_run=False):
         _upsert_event(summary, raw_data, title, start_date, end_date, event_type, metadata, dry_run)
 
     for day in _weekdays(date(2026, 3, 16), date(2026, 4, 2)):
-        _upsert_event(summary, raw_data, 'AI 강의 2', day, day + timedelta(days=1), 'study', {}, dry_run)
+        _upsert_event(summary, raw_data, 'AI 강의 Ⅱ', day, day + timedelta(days=1), 'study', {}, dry_run)
     for day in _weekdays(date(2026, 6, 1), date(2026, 6, 13), excluded={date(2026, 6, 3)}):
         _upsert_event(summary, raw_data, '온라인 위크', day, day + timedelta(days=1), 'study', {}, dry_run)
 
@@ -152,22 +152,27 @@ def _upsert_exam_corrections(summary, raw_data, dry_run=False):
 
 
 def _upsert_event(summary, raw_data, title, start_date, end_date, event_type, extra_metadata, dry_run=False):
+    title = _normalize_event_title(title)
     metadata = {'repair_source': REPAIR_SOURCE}
     metadata.update(extra_metadata)
     event_filter = {
-        'title': title,
         'start_at': _aware(start_date),
     }
-    existing = ScheduleEvent.objects.filter(**event_filter).first()
+    existing = _find_existing_event(start_date, title, event_type, extra_metadata)
     if existing:
-        changed = existing.end_at != _aware(end_date) or existing.event_type != event_type
+        changed = (
+            existing.title != title
+            or existing.end_at != _aware(end_date)
+            or existing.event_type != event_type
+        )
         if changed:
             summary.updated_count += 1
             if not dry_run:
+                existing.title = title
                 existing.end_at = _aware(end_date)
                 existing.event_type = event_type
                 existing.metadata_json = {**(existing.metadata_json or {}), **metadata}
-                existing.save(update_fields=['end_at', 'event_type', 'metadata_json'])
+                existing.save(update_fields=['title', 'end_at', 'event_type', 'metadata_json'])
         else:
             summary.skipped_count += 1
         return
@@ -194,7 +199,8 @@ def _dedupe_generated(summary, dry_run=False):
     for event in events:
         track = (event.metadata_json or {}).get('track', '')
         event_date = timezone.localdate(event.start_at)
-        key = (event_date, event.title, track)
+        event_type = '' if event_date == date(2026, 1, 15) and event.title == '15기 SW AI 스타트 캠프' else event.event_type
+        key = (event_date, event_type, _normalize_event_title(event.title), track)
         if key not in seen:
             seen[key] = event.id
             continue
@@ -202,6 +208,26 @@ def _dedupe_generated(summary, dry_run=False):
         summary.deleted_titles.append(f'{timezone.localdate(event.start_at).isoformat()} {event.title}')
         if not dry_run:
             event.delete()
+
+
+def _find_existing_event(start_date, title, event_type, metadata):
+    track = metadata.get('track', '')
+    normalized_title = _normalize_event_title(title)
+    for event in ScheduleEvent.objects.filter(start_at=_aware(start_date), event_type=event_type):
+        event_track = (event.metadata_json or {}).get('track', '')
+        if event_track != track:
+            continue
+        if _normalize_event_title(event.title) == normalized_title:
+            return event
+    return None
+
+
+def _normalize_event_title(title):
+    normalized = str(title or '').strip()
+    compact = normalized.replace(' ', '').upper()
+    if compact in {'AI강의2', 'AI강의II', 'AI강의Ⅱ'}:
+        return 'AI 강의 Ⅱ'
+    return normalized
 
 
 def _find_base_schedule_raw():
