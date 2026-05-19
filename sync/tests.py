@@ -1872,8 +1872,9 @@ class SampleNoticeImportTests(TestCase):
         call_command('repair_calendar_events')
 
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
-        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2', start_at__date='2026-03-16').count(), 1)
-        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2', start_at__date='2026-03-21').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-16').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-21').count(), 0)
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-01').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-03').count(), 0)
 
