@@ -132,6 +132,7 @@ def repair_calendar_events(dry_run=False, use_manual_fallback=False):
         _upsert_base_corrections(summary, base_raw, dry_run=dry_run)
         _upsert_exam_corrections(summary, evaluation_raw or base_raw, dry_run=dry_run)
 
+    _apply_requested_calendar_repairs(summary, base_raw, dry_run=dry_run)
     _dedupe_generated(summary, dry_run=dry_run)
     _fill_metrics(summary)
     summary.key_events = _key_events()
@@ -197,6 +198,8 @@ def _reparse_ocr_candidates(summary, candidate_qs, dry_run=False):
 def _normalize_existing_titles(summary, dry_run=False):
     for event in ScheduleEvent.objects.filter(raw_data__isnull=False):
         normalized_title = _normalize_event_title(event.title)
+        if normalized_title == '관통 PJT':
+            track = ''
         if normalized_title == event.title:
             continue
         summary.updated_count += 1
@@ -223,6 +226,11 @@ def _upsert_base_corrections(summary, raw_data, dry_run=False):
     ]
     for title, start_date, end_date, event_type, metadata in corrections:
         _upsert_event(summary, raw_data, title, start_date, end_date, event_type, metadata, dry_run)
+
+    for day in [date(2026, 2, 24), date(2026, 2, 25), date(2026, 2, 26), date(2026, 2, 27)]:
+        _upsert_event(summary, raw_data, 'AI 강의 1', day, day + timedelta(days=1), 'study', {}, dry_run)
+    for day in [date(2026, 6, 22), date(2026, 6, 23), date(2026, 6, 24)]:
+        _upsert_event(summary, raw_data, '관통 프로젝트 집중기간', day, day + timedelta(days=1), 'project', {}, dry_run)
 
     for day in _weekdays(date(2026, 3, 16), date(2026, 4, 2)):
         _upsert_event(summary, raw_data, 'AI 강의 Ⅱ', day, day + timedelta(days=1), 'study', {}, dry_run)
@@ -261,6 +269,35 @@ def _upsert_exam_corrections(summary, raw_data, dry_run=False):
             },
             dry_run,
         )
+
+
+def _apply_requested_calendar_repairs(summary, raw_data, dry_run=False):
+    ai_days = [date(2026, 2, 24), date(2026, 2, 25), date(2026, 2, 26), date(2026, 2, 27)]
+    if ScheduleEvent.objects.filter(start_at__date__in=ai_days, title='AI 강의 1').exists():
+        for day in ai_days:
+            _upsert_event(summary, raw_data, 'AI 강의 1', day, day + timedelta(days=1), 'study', {}, dry_run)
+
+    focus_days = [date(2026, 6, 22), date(2026, 6, 23), date(2026, 6, 24)]
+    focus_exists = ScheduleEvent.objects.filter(
+        start_at__date__in=focus_days,
+        event_type='project',
+        title__contains='관통 프로젝트',
+    ).exists()
+    if focus_exists:
+        for day in focus_days:
+            _upsert_event(summary, raw_data, '관통 프로젝트 집중기간', day, day + timedelta(days=1), 'project', {}, dry_run)
+
+    stale_focus = ScheduleEvent.objects.filter(
+        start_at__date__in=[date(2026, 6, 22), date(2026, 6, 23), date(2026, 6, 24)],
+        event_type='project',
+        raw_data__isnull=False,
+        title__contains='관통 프로젝트',
+    ).exclude(title='관통 프로젝트 집중기간')
+    for event in stale_focus:
+        summary.deleted_count += 1
+        summary.deleted_titles.append(f'{timezone.localdate(event.start_at).isoformat()} {event.title}')
+    if not dry_run:
+        stale_focus.delete()
 
 
 def _upsert_event(summary, raw_data, title, start_date, end_date, event_type, extra_metadata, dry_run=False):
@@ -307,11 +344,16 @@ def _upsert_event(summary, raw_data, title, start_date, end_date, event_type, ex
 
 def _dedupe_generated(summary, dry_run=False):
     seen = {}
-    events = ScheduleEvent.objects.filter(raw_data__isnull=False).order_by('start_at', '-id')
+    events = (
+        ScheduleEvent.objects.filter(raw_data__isnull=False)
+        | ScheduleEvent.objects.filter(metadata_json__repair_source__in=[REPAIR_SOURCE, MANUAL_EXAM_REPAIR_SOURCE])
+    ).distinct().order_by('start_at', '-id')
     for event in events:
         track = (event.metadata_json or {}).get('track', '')
         event_date = timezone.localdate(event.start_at)
         normalized_title = _normalize_event_title(event.title)
+        if normalized_title == '관통 PJT':
+            track = ''
         event_type = '' if event_date == date(2026, 1, 15) and normalized_title == '15기 SW AI 스타트 캠프' else event.event_type
         if normalized_title == 'AI 강의 Ⅱ':
             event_type = ''
@@ -333,7 +375,7 @@ def _find_existing_event(start_date, title, event_type, metadata):
         events = events.filter(event_type=event_type)
     for event in events:
         event_track = (event.metadata_json or {}).get('track', '')
-        if event_track != track:
+        if normalized_title != '관통 PJT' and event_track != track:
             continue
         if _normalize_event_title(event.title) == normalized_title:
             return event
@@ -342,6 +384,17 @@ def _find_existing_event(start_date, title, event_type, metadata):
 
 def _normalize_event_title(title):
     normalized = str(title or '').strip()
+    compact_no_space = normalized.replace(' ', '')
+    if compact_no_space in {'관통PJT'}:
+        return '관통 PJT'
+    if '관통프로젝트집중기간' in compact_no_space:
+        return '관통 프로젝트 집중기간'
+    if compact_no_space in {'AI강의2', 'AI강의II', 'AI강의Ⅱ'}:
+        return 'AI 강의 Ⅱ'
+    if compact_no_space in {'관통PJT'}:
+        return '관통 PJT'
+    if '관통프로젝트집중기간' in compact_no_space:
+        return '관통 프로젝트 집중기간'
     compact = normalized.replace(' ', '').upper().replace('Ⅱ', 'II')
     if compact in {'AI강의2', 'AI강의II'}:
         return 'AI 강의 Ⅱ'

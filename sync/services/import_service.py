@@ -239,6 +239,9 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'keyword_candidates_by_source={_format_count_dict(summary.keyword_candidates_by_source)}, '
         f'saved_evaluation_notice_count={summary.saved_evaluation_notice_count}, '
         f'evaluation_raw_count={RawSsafyData.objects.filter(metadata_json__document_type="evaluation_notice").count()}'
+        f', raw_notice_count={RawSsafyData.objects.filter(source_type="notice").count()}'
+        f', latest_notice_title={_latest_notice_title(raw_items=None)}'
+        f', target_evaluation_10th_found={str(_target_evaluation_10th_found()).lower()}'
         f', detail_success_count={summary.detail_success_count}, '
         f'real_content_count={summary.real_content_count}, '
         f'image_found_count={summary.image_found_count}, '
@@ -285,6 +288,16 @@ PLACEHOLDER_TITLES = {
 }
 MENU_TEXT_KEYWORDS = {'HOME', 'Copyright', '메뉴', '목록', '로그인'}
 EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평가', '평가 안내', '1학기 평가')
+
+EVALUATION_NOTICE_KEYWORDS = EVALUATION_NOTICE_KEYWORDS + (
+    '과목월말평가',
+    '과목 평가',
+    '과목평가',
+    '월말평가',
+    '평가 안내',
+    '10회차 과목',
+    '5회차 월말평가',
+)
 
 
 def _normalize_import_item(item):
@@ -373,6 +386,15 @@ def _format_count_dict(values):
     if not values:
         return 'none'
     return '|'.join(f'{key}:{values[key]}' for key in sorted(values))
+
+
+def _latest_notice_title(raw_items=None):
+    latest = RawSsafyData.objects.filter(source_type='notice').order_by('-collected_at', '-id').first()
+    return latest.title if latest else 'none'
+
+
+def _target_evaluation_10th_found():
+    return RawSsafyData.objects.filter(title__contains='10회차').filter(title__contains='월말평가').exists()
 
 
 def _increment_detail_quality_counts(summary, metadata):
