@@ -15,7 +15,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         job_log = run_notice_import(mode=options.get('mode'))
-        style = self.style.SUCCESS if job_log.status == 'success' else self.style.ERROR
+        style = self.style.SUCCESS if job_log.status in {'success', 'partial_success'} else self.style.ERROR
         self.stdout.write(
             style(
                 f'{job_log.message} status={job_log.status}, raw_count={job_log.raw_count}, '

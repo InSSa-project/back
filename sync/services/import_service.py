@@ -97,6 +97,15 @@ def run_notice_import(mode=None):
         message = f'{CRAWL_FAILED_MESSAGE} session_expired {exc}'
         if debug_message:
             message = f'{message}, crawler_debug={debug_message}'
+        if partial_summary and partial_summary.scanned_by_source:
+            message = (
+                f'{SUCCESS_MESSAGE} partial_success session_expired_source_error={exc} '
+                f'relogin_required=true skipped_after_session_expired=true, '
+                f'{_source_result_summary(partial_summary, crawler_debug, failed_error=exc)}'
+            )
+            if debug_message:
+                message = f'{message}, crawler_debug={debug_message}'
+            return _mark_job_partial_success(job_log, message, partial_summary)
         return _mark_job_failed(job_log, message, summary=partial_summary)
     except (SsafyCrawlerError, ValueError) as exc:
         crawler_debug = get_last_collection_debug()
@@ -234,6 +243,7 @@ def _store_review_required_candidates(raw_data, grid_debug):
 def _build_success_message(selected_mode, summary, crawler_debug=None):
     message = (
         f'{SUCCESS_MESSAGE} mode={selected_mode}, '
+        f'{_source_result_summary(summary, crawler_debug)}, '
         f'collected_notice_count={summary.collected_notice_count}, '
         f'collected_academic_rule_count={summary.collected_academic_rule_count}, '
         f'notice_count={summary.notice_count}, '
@@ -497,6 +507,54 @@ def _format_crawler_debug(crawler_debug):
     return ' | '.join(str(item) for item in crawler_debug[:20])
 
 
+def _source_result_summary(summary, crawler_debug=None, failed_error=None):
+    source_types = sorted(set(summary.scanned_by_source) | _sources_from_debug(crawler_debug))
+    if failed_error and 'source_type=' in str(failed_error):
+        source_types.append(str(failed_error).split('source_type=', 1)[1].split()[0])
+        source_types = sorted(set(source_types))
+    parts = []
+    for source_type in source_types:
+        status = 'success' if summary.scanned_by_source.get(source_type, 0) else 'skipped'
+        error_type = ''
+        error_message = ''
+        if failed_error and f'source_type={source_type}' in str(failed_error):
+            status = 'failed'
+            error_type = 'session_expired'
+            error_message = _truncate_log(str(failed_error))
+        collected_count = summary.scanned_by_source.get(source_type, 0)
+        saved_count = _saved_count_for_source(summary, source_type)
+        skipped_count = max(0, collected_count - saved_count)
+        parts.append(
+            f'{source_type}:{status}:collected={collected_count}:saved={saved_count}:'
+            f'skipped={skipped_count}:error_type={error_type or "-"}:error={error_message or "-"}'
+        )
+    return f'source_results={";".join(parts) or "none"}'
+
+
+def _sources_from_debug(crawler_debug):
+    sources = set()
+    for message in crawler_debug or []:
+        for marker in ['source_type=', 'skipped_source=', 'failed_source=', 'collected_source=']:
+            if marker not in str(message):
+                continue
+            value = str(message).split(marker, 1)[1].split()[0]
+            sources.add(value)
+    return sources
+
+
+def _saved_count_for_source(summary, source_type):
+    if source_type == 'notice':
+        return summary.notice_count
+    if source_type == 'academic_rule':
+        return summary.academic_rule_count
+    return summary.scanned_by_source.get(source_type, 0) - summary.no_schedule_by_type.get(source_type, 0)
+
+
+def _truncate_log(value, limit=120):
+    value = ' '.join(str(value).split())
+    return value[:limit]
+
+
 def _apply_ocr_pipeline(item, summary):
     prepared = dict(item)
     metadata = dict(prepared.get('metadata_json') or {})
@@ -626,6 +684,24 @@ def _mark_job_failed(job_log, message, summary=None):
     job_log.image_count = summary.image_count if summary else 0
     job_log.ocr_processed_count = summary.ocr_processed_count if summary else 0
     job_log.ocr_failed_count = summary.ocr_failed_count if summary else 0
+    job_log.finished_at = timezone.now()
+    job_log.save()
+    return job_log
+
+
+def _mark_job_partial_success(job_log, message, summary):
+    job_log.status = CrawlJobLog.STATUS_PARTIAL_SUCCESS
+    job_log.message = message
+    job_log.raw_count = summary.raw_count
+    job_log.event_count = summary.event_count
+    job_log.failed_count = summary.failed_count + 1
+    job_log.skipped_count = summary.skipped_count
+    job_log.notice_count = summary.notice_count
+    job_log.academic_rule_count = summary.academic_rule_count
+    job_log.no_schedule_count = summary.no_schedule_count
+    job_log.image_count = summary.image_count
+    job_log.ocr_processed_count = summary.ocr_processed_count
+    job_log.ocr_failed_count = summary.ocr_failed_count
     job_log.finished_at = timezone.now()
     job_log.save()
     return job_log

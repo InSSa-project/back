@@ -732,7 +732,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('target_visible_count=3', job_log.message)
         self.assertIn('inaccessible_or_unknown_gap=1', job_log.message)
 
-    def test_session_expired_job_fails_without_dropping_collected_items(self):
+    def test_session_expired_job_partial_success_without_dropping_collected_items(self):
         collected_item = _source_item('notice', 'https://example.com/notices/1', 'Notice 1', 'notice-1')
 
         with patch(
@@ -741,10 +741,32 @@ class SampleNoticeImportTests(TestCase):
         ):
             job_log = run_notice_import(mode='ssafy_notice')
 
-        self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_PARTIAL_SUCCESS)
         self.assertIn('session_expired', job_log.message)
+        self.assertIn('source_results=', job_log.message)
+        self.assertIn('mentoring_notice:failed', job_log.message)
         self.assertEqual(job_log.raw_count, 1)
         self.assertEqual(RawSsafyData.objects.filter(source_url='https://example.com/notices/1').count(), 1)
+
+    def test_session_expired_without_collected_items_fails(self):
+        with patch(
+            'sync.services.import_service.load_notices_by_mode',
+            side_effect=SsafySessionExpiredError('session_expired source_type=notice', []),
+        ):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
+        self.assertIn('session_expired', job_log.message)
+        self.assertEqual(RawSsafyData.objects.count(), 0)
+
+    def test_success_job_records_source_summary(self):
+        item = _source_item('notice', 'https://example.com/notices/source-summary', 'Notice', 'source-summary')
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_SUCCESS)
+        self.assertIn('source_results=notice:success', job_log.message)
 
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):
