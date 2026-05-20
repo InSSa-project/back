@@ -31,6 +31,7 @@ from sync.services.ssafy_crawler import (
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
+    _extract_pagination_totals,
     _pagination_controls_debug,
 )
 
@@ -693,6 +694,29 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(job_log.skipped_count, 0)
         self.assertEqual(RawSsafyData.objects.filter(source_type='mentoring_notice').count(), 2)
 
+    def test_same_title_different_brd_item_sequence_is_not_deduped(self):
+        items = [
+            _source_item(
+                'notice',
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1001',
+                'Same title',
+                '1001',
+            ),
+            _source_item(
+                'notice',
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1002',
+                'Same title',
+                '1002',
+            ),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 2)
+        self.assertIn('unique_brdItmSeq_count=2', job_log.message)
+        self.assertEqual(RawSsafyData.objects.filter(title='Same title').count(), 2)
+
     def test_session_expired_job_fails_without_dropping_collected_items(self):
         collected_item = _source_item('notice', 'https://example.com/notices/1', 'Notice 1', 'notice-1')
 
@@ -1002,6 +1026,34 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('pageIndex', debug)
         self.assertIn('searchKeyword', debug)
         self.assertIn('linkPage', debug)
+
+    def test_pagination_total_count_is_extracted(self):
+        soup = BeautifulSoup(
+            '''
+            <div class="total">총 193건</div>
+            <table><tbody><tr><td>1</td></tr><tr><td>2</td></tr></tbody></table>
+            <a href="#;" onclick="fnPage('19')">19</a>
+            <a href="#;" onclick="fnPage('20')">20</a>
+            ''',
+            'html.parser',
+        )
+
+        totals = _extract_pagination_totals(soup)
+
+        self.assertEqual(totals['total_notice_count'], 193)
+        self.assertEqual(totals['last_page'], 20)
+        self.assertEqual(totals['page_size'], 2)
+
+    def test_pagination_page_number_ignores_detail_ids(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="/edu/board/notice/detail.do?brdItmSeq=1541431">detail</a>
+            <a href="#;" onclick="fnPage('2')">2</a>
+            ''',
+            'html.parser',
+        )
+
+        self.assertEqual(_extract_next_page_url(soup, 'https://edu.ssafy.com/edu/board/notice/list.do', set()), 'https://edu.ssafy.com/edu/board/notice/list.do?pageNo=2')
 
     def test_link_extractor_supports_fn_detail2_onclick(self):
         soup = BeautifulSoup(
