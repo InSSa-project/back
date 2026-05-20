@@ -786,11 +786,11 @@ class SampleNoticeImportTests(TestCase):
 
     def test_source_filter_and_skip_source_env(self):
         with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,academic_rule'}, clear=False):
-            specs = _source_collection_specs('notice-url', 'rule-url', 'faq-url', '', '', '', '')
+            specs = _source_collection_specs('notice-url', 'rule-url', 'faq-url', '', '', '', '', '')
         self.assertEqual([source for source, _, _ in specs], ['notice', 'academic_rule'])
 
         with patch.dict('os.environ', {'SSAFY_CRAWLER_SKIP_SOURCES': 'mentoring_notice'}, clear=False):
-            specs = _source_collection_specs('notice-url', 'rule-url', '', '', 'mentor-url', '', '')
+            specs = _source_collection_specs('notice-url', 'rule-url', '', '', 'mentor-url', '', '', '')
         self.assertNotIn('mentoring_notice', [source for source, _, _ in specs])
 
     def test_crawl_command_sets_source_options(self):
