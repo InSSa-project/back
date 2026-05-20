@@ -345,7 +345,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             f'first_source_url={first_source_url or "-"} last_source_url={last_source_url or "-"} '
             f'duplicate_url_count={duplicate_url_count} unique_count={new_link_count} '
             f'total_notice_count={total_notice_count or "-"} last_page={last_page or "-"} page_size={page_size or "-"} '
-            f'{_pagination_controls_debug(soup)}'
+            f'{_pagination_controls_debug(soup)} {_filter_controls_debug(soup)}'
         )
 
         seen_page_urls.add(_normalize_url_without_fragment(current_url))
@@ -422,6 +422,9 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         f'unique_items_extracted={len(links)} duplicated_items={sum(stat["duplicate_count"] for stat in page_stats)} '
         f'details_fetched={len(details)} target_total_notice_count={total_notice_count or "-"} '
         f'last_page={last_page or "-"} page_size={page_size or "-"} '
+        f'total_count_unavailable={str(not bool(total_notice_count)).lower()} '
+        f'discovered_filter_conditions={_discovered_filter_conditions(page_stats)} '
+        f'additional_candidates_count=0 '
         f'pagination_gap={"|".join(_format_page_stat(stat) for stat in page_stats) or "none"}'
     )
     return details
@@ -597,6 +600,56 @@ def _pagination_controls_debug(soup):
         f'pagination_inputs={",".join(found_inputs) or "none"} '
         f'pagination_functions={",".join(functions) or "none"}'
     )
+
+
+def _filter_controls_debug(soup):
+    forms = []
+    for form in soup.select('form')[:3]:
+        forms.append(
+            f'{form.get("name") or "-"}:{form.get("method") or "get"}:{form.get("action") or "-"}'
+        )
+
+    hidden_inputs = []
+    for node in soup.select('input[type="hidden"][name]')[:20]:
+        hidden_inputs.append(f'{node.get("name")}={node.get("value", "")[:30]}')
+
+    selects = []
+    for node in soup.select('select[name]')[:10]:
+        options = [
+            _clean_text(option.get_text(' ', strip=True)) or option.get('value', '')
+            for option in node.select('option')[:8]
+        ]
+        selects.append(f'{node.get("name")}:[{"/".join(options)}]')
+
+    buttons = [
+        _clean_text(node.get_text(' ', strip=True)) or node.get('value', '')
+        for node in soup.select('button, input[type="button"], input[type="submit"]')[:10]
+    ]
+    tabs = [
+        _clean_text(node.get_text(' ', strip=True)) or node.get('href', '') or node.get('onclick', '')
+        for node in soup.select('a[href], a[onclick]')[:20]
+        if _looks_like_filter_control(node)
+    ]
+    return (
+        f'forms={";".join(forms) or "none"} '
+        f'hidden_inputs={";".join(hidden_inputs) or "none"} '
+        f'selects={";".join(selects) or "none"} '
+        f'buttons={";".join(buttons) or "none"} '
+        f'filter_tabs={";".join(tabs) or "none"}'
+    )
+
+
+def _looks_like_filter_control(node):
+    target = f'{node.get("href", "")} {node.get("onclick", "")} {node.get_text(" ", strip=True)}'.lower()
+    keywords = ['tab', 'category', 'type', 'search', 'filter', 'campus', 'track', 'generation', 'brditmcd']
+    korean_keywords = ['공지', '학습', '평가', '기타', '검색', '분류', '트랙', '캠퍼스', '기수']
+    return any(keyword in target for keyword in keywords + korean_keywords)
+
+
+def _discovered_filter_conditions(page_stats):
+    if not page_stats:
+        return 'none'
+    return 'default'
 
 
 def _extract_pagination_totals(soup):
