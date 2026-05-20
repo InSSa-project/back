@@ -1,0 +1,14 @@
+[
+  {
+    "id": "django_fk",
+    "keywords": ["django", "foreignkey", "모델"],
+    "user": "Django에서 ForeignKey가 뭐야?",
+    "assistant": "SSAFY 공식 자료 기준은 아니지만, 일반적인 Django 기준으로 ForeignKey는 다른 모델의 row를 참조하는 관계 필드입니다."
+  },
+  {
+    "id": "git_conflict",
+    "keywords": ["git", "충돌", "merge"],
+    "user": "Git pull 충돌 해결법 알려줘",
+    "assistant": "SSAFY 공식 자료 기준은 아니지만, 일반적인 개발 기준으로는 충돌 파일을 열어 원하는 변경을 남긴 뒤 add, commit 순서로 해결합니다."
+  }
+]

@@ -49,6 +49,7 @@ SOURCE_LIST_URL_ENV_NAMES = {
     'mentoring_notice': 'SSAFY_MENTORING_LIST_URL',
     'curriculum': 'SSAFY_CURRICULUM_LIST_URL',
     'learning_material': 'SSAFY_LEARNING_MATERIAL_LIST_URL',
+    'event': 'SSAFY_EVENT_LIST_URL',
 }
 SESSION_EXPIRED_KEYWORDS = (
     '\ub85c\uadf8\uc778',
@@ -144,6 +145,7 @@ def load_ssafy_authenticated_documents(
     mentoring_notice_list_url=None,
     curriculum_list_url=None,
     learning_material_list_url=None,
+    event_list_url=None,
 ):
     _reset_collection_debug()
     login_url = os.getenv('SSAFY_LOGIN_URL')
@@ -160,6 +162,8 @@ def load_ssafy_authenticated_documents(
     )
     curriculum_url = curriculum_list_url or os.getenv('SSAFY_CURRICULUM_LIST_URL')
     learning_material_url = learning_material_list_url or os.getenv('SSAFY_LEARNING_MATERIAL_LIST_URL')
+    event_url = event_list_url or os.getenv('SSAFY_EVENT_LIST_URL')
+    main_url = os.getenv('SSAFY_MAIN_URL')
 
     missing_names = _missing_required_env_vars(
         {
@@ -185,6 +189,12 @@ def load_ssafy_authenticated_documents(
             page = context.new_page()
             page.set_default_timeout(_detail_timeout_ms())
             _login_ssafy(page, login_url, ssafy_id, ssafy_password)
+            discovered_urls = _discover_source_urls(page, main_url, login_url=login_url) if main_url else {}
+            faq_url = faq_url or discovered_urls.get('faq')
+            quest_url = quest_url or discovered_urls.get('quest')
+            curriculum_url = curriculum_url or discovered_urls.get('curriculum')
+            learning_material_url = learning_material_url or discovered_urls.get('learning_material')
+            event_url = event_url or discovered_urls.get('event')
 
             for source_type, list_url, link_extractor in _source_collection_specs(
                 notice_url=notice_url,
@@ -194,6 +204,7 @@ def load_ssafy_authenticated_documents(
                 mentoring_notice_url=mentoring_notice_url,
                 curriculum_url=curriculum_url,
                 learning_material_url=learning_material_url,
+                event_url=event_url,
             ):
                 env_name = SOURCE_LIST_URL_ENV_NAMES.get(source_type, '')
                 if not list_url:
@@ -389,7 +400,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             ),
             level='warning',
         )
-        if source_type == 'academic_rule':
+        if source_type in {'academic_rule', 'curriculum'}:
             return [_parse_detail_soup(soup, list_url, source_type=source_type)]
         raise SsafyCrawlerError(f'No {source_type} detail links were found: {list_url}')
     details = []
@@ -1030,6 +1041,10 @@ def _extract_learning_material_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['learning', 'material', 'study', '\ud559\uc2b5\uc790\ub8cc', '\uc790\ub8cc', '\uad50\uc7ac'])
 
 
+def _extract_event_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['event', 'ssafyday', 'ssafy day', '\uc774\ubca4\ud2b8', '\uc2f8\ud53c\ub370\uc774'])
+
+
 def _source_collection_specs(
     notice_url,
     academic_rule_url,
@@ -1038,15 +1053,17 @@ def _source_collection_specs(
     mentoring_notice_url,
     curriculum_url,
     learning_material_url,
+    event_url,
 ):
     specs = [
         ('notice', notice_url, _extract_notice_link_items),
         ('academic_rule', academic_rule_url, _extract_academic_rule_links),
-        ('faq', faq_url, _extract_faq_links),
         ('quest', quest_url, _extract_quest_links),
-        ('mentoring_notice', mentoring_notice_url, _extract_mentoring_notice_links),
         ('curriculum', curriculum_url, _extract_curriculum_links),
+        ('faq', faq_url, _extract_faq_links),
         ('learning_material', learning_material_url, _extract_learning_material_links),
+        ('event', event_url, _extract_event_links),
+        ('mentoring_notice', mentoring_notice_url, _extract_mentoring_notice_links),
     ]
     selected_sources = _env_source_set('SSAFY_CRAWLER_SOURCES')
     skipped_sources = _env_source_set('SSAFY_CRAWLER_SKIP_SOURCES')
@@ -1066,6 +1083,101 @@ def _source_collection_specs(
 def _env_source_set(name):
     value = os.getenv(name, '')
     return {item.strip() for item in value.split(',') if item.strip()}
+
+
+def _discover_source_urls(page, main_url, login_url=None):
+    discovered = {}
+    try:
+        page.goto(main_url, wait_until='networkidle')
+        session_reason = _session_expired_reason(page, login_url=login_url)
+        if session_reason and session_reason != 'login_or_session_text':
+            _record_collection_debug(f'source_discovery_failed reason=session_expired:{session_reason}', level='warning')
+            return discovered
+        if session_reason == 'login_or_session_text':
+            _record_collection_debug('source_discovery_ignored_session_text reason=login_or_session_text')
+        candidates = _extract_source_url_candidates(page.content(), main_url)
+        for source_type, urls in candidates.items():
+            _record_collection_debug(f'source_url_candidates source_type={source_type} urls={",".join(urls[:10])}')
+            for url in urls:
+                if _candidate_is_accessible(page, url, source_type, login_url=login_url):
+                    discovered[source_type] = url
+                    _record_collection_debug(f'discovered_source_url source_type={source_type} url={url}')
+                    break
+    except Exception as exc:
+        _record_collection_debug(f'source_discovery_failed error={exc}', level='warning')
+    return discovered
+
+
+def _extract_source_url_candidates(html, base_url):
+    soup = BeautifulSoup(html, 'html.parser')
+    candidates = {source_type: [] for source_type in ['quest', 'curriculum', 'faq', 'learning_material', 'event']}
+    seen = set()
+    for node in soup.select('a, button, li, div, span'):
+        text = _clean_text(node.get_text(' ', strip=True))
+        raw_targets = [node.get('href', ''), node.get('onclick', ''), node.get('data-url', '')]
+        for raw_target in raw_targets:
+            for url in _urls_from_menu_target(raw_target, base_url):
+                source_type = _guess_source_type_from_menu(url, text, raw_target)
+                if not source_type or (source_type, url) in seen:
+                    continue
+                seen.add((source_type, url))
+                candidates[source_type].append(url)
+    return {source_type: urls for source_type, urls in candidates.items() if urls}
+
+
+def _urls_from_menu_target(raw_target, base_url):
+    if not raw_target:
+        return []
+    urls = []
+    target = raw_target.strip()
+    if target and not target.startswith(('javascript:', '#', 'mailto:')) and '.do' in target:
+        urls.append(urljoin(base_url, target))
+    for quoted in re.findall(r"['\"](?P<url>[^'\"]+\.do(?:\?[^'\"]*)?)['\"]", target):
+        urls.append(urljoin(base_url, quoted))
+    return [_normalize_list_url(url) for url in urls]
+
+
+def _normalize_list_url(url):
+    parsed = urlparse(url)
+    path = parsed.path
+    if path.endswith('/detail.do'):
+        path = path[:-len('/detail.do')] + '/list.do'
+    return parsed._replace(path=path, fragment='').geturl()
+
+
+def _guess_source_type_from_menu(url, text, raw_target):
+    target = f'{url} {text} {raw_target}'.lower()
+    if any(keyword in target for keyword in ['quest', 'eval', 'test', '\ud3c9\uac00', '\uc2dc\ud5d8']):
+        return 'quest'
+    if any(keyword in target for keyword in ['curriculum', 'course', 'weekly', '\ucee4\ub9ac\ud058', '\uc8fc\uac04\ud559\uc2b5']):
+        return 'curriculum'
+    if any(keyword in target for keyword in ['faq', 'qna', '\uc790\uc8fc', '\ubb38\uc758']):
+        return 'faq'
+    if any(keyword in target for keyword in ['learning', 'material', 'study', '\ud559\uc2b5\uc790\ub8cc', '\uc790\ub8cc']):
+        return 'learning_material'
+    if any(keyword in target for keyword in ['event', 'ssafyday', 'ssafy day', '\uc774\ubca4\ud2b8', '\uc2f8\ud53c\ub370\uc774']):
+        return 'event'
+    return ''
+
+
+def _candidate_is_accessible(page, url, source_type, login_url=None):
+    try:
+        page.goto(url, wait_until='networkidle')
+        session_reason = _session_expired_reason(page, login_url=login_url)
+        if session_reason:
+            _record_collection_debug(
+                f'source_url_candidate source_type={source_type} url={url} accessible=false reason=session_expired:{session_reason}',
+                level='warning',
+            )
+            return False
+        _record_collection_debug(f'source_url_candidate source_type={source_type} url={url} accessible=true')
+        return True
+    except Exception as exc:
+        _record_collection_debug(
+            f'source_url_candidate source_type={source_type} url={url} accessible=false error={exc}',
+            level='warning',
+        )
+        return False
 
 
 def extract_image_urls_from_html(raw_html, source_url):
