@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     retrieval_score_threshold: float = Field(default=0.08, alias='RETRIEVAL_SCORE_THRESHOLD')
     chunk_size: int = Field(default=800, alias='CHUNK_SIZE')
     chunk_overlap: int = Field(default=120, alias='CHUNK_OVERLAP')
+    max_prompt_tokens: int = Field(default=2400, alias='MAX_PROMPT_TOKENS')
+    max_context_chunks: int = Field(default=4, alias='MAX_CONTEXT_CHUNKS')
+    max_few_shots: int = Field(default=2, alias='MAX_FEW_SHOTS')
 
     class Config:
         env_file = '.env'
