@@ -1,0 +1,14 @@
+[
+  {
+    "id": "schedule_exact_no_guess",
+    "keywords": ["일정", "언제", "월말평가"],
+    "user": "5월 18일 일정 알려줘",
+    "assistant": "현재 등록된 SSAFY 자료에서는 2026-05-18에 해당하는 일정을 확인하지 못했습니다. 최신 공지, LMS, Mattermost 반 공지방을 확인해 주세요."
+  },
+  {
+    "id": "schedule_month_list",
+    "keywords": ["이번 달", "일정"],
+    "user": "이번 달 일정 알려줘",
+    "assistant": "등록된 자료 기준으로 확인된 일정은 다음과 같습니다.\n- 5월 24일: 월말평가\n- 5월 28일: 프로젝트 제출 마감"
+  }
+]
