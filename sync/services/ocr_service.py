@@ -16,7 +16,7 @@ IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 10
 CLOVA_OCR_TIMEOUT_SECONDS = 20
 
 
-def extract_text_from_image_urls(image_urls):
+def extract_text_from_image_urls(image_urls, image_downloader=None):
     """Return OCR extraction metadata for notice images."""
     normalized_urls = [url for url in (image_urls or []) if url]
     provider = _get_ocr_provider()
@@ -24,9 +24,9 @@ def extract_text_from_image_urls(image_urls):
         return _result(provider=provider, status='skipped')
 
     if provider == OCR_PROVIDER_GOOGLE_VISION:
-        return _extract_with_google_vision(normalized_urls)
+        return _extract_with_google_vision(normalized_urls, image_downloader=image_downloader)
     if provider == OCR_PROVIDER_CLOVA:
-        return _extract_with_clova(normalized_urls)
+        return _extract_with_clova(normalized_urls, image_downloader=image_downloader)
 
     return _result(provider=OCR_PROVIDER_MOCK, status='skipped')
 
@@ -38,7 +38,7 @@ def _get_ocr_provider():
     return provider
 
 
-def _extract_with_clova(image_urls):
+def _extract_with_clova(image_urls, image_downloader=None):
     invoke_url = os.getenv('CLOVA_OCR_INVOKE_URL', '').strip()
     secret_key = os.getenv('CLOVA_OCR_SECRET_KEY', '').strip()
     if not invoke_url or not secret_key:
@@ -47,13 +47,14 @@ def _extract_with_clova(image_urls):
             status='failed',
             error='Clova OCR invoke URL or secret key is not configured.',
             failed_count=len(image_urls),
+            error_type='provider_auth_error',
         )
 
     ocr_texts = []
     ocr_boxes = []
     errors = []
     for image_url in image_urls:
-        image_bytes = _download_image(image_url, errors)
+        image_bytes = _download_image(image_url, errors, image_downloader=image_downloader)
         if not image_bytes:
             continue
 
@@ -66,7 +67,7 @@ def _extract_with_clova(image_urls):
                 ocr_texts.append(ocr_text)
             ocr_boxes.extend(_parse_clova_ocr_boxes(payload, image_url=image_url, image_index=len(ocr_texts)))
         except Exception as exc:
-            errors.append(_summarize_error(exc, secret_values=[secret_key]))
+            errors.append(_error_detail('provider_request_error', image_url, _summarize_error(exc, secret_values=[secret_key])))
 
     ocr_text = '\n\n'.join(text for text in ocr_texts if text)
     if ocr_text:
@@ -84,8 +85,9 @@ def _extract_with_clova(image_urls):
             status='failed',
             error='; '.join(errors[:3]),
             failed_count=len(errors),
+            error_type=_first_error_type(errors),
         )
-    return _result(provider=OCR_PROVIDER_CLOVA, status='skipped')
+    return _result(provider=OCR_PROVIDER_CLOVA, status='failed', error='OCR provider returned empty result.', failed_count=len(image_urls), error_type='provider_empty_result')
 
 
 def _post_clova_ocr(invoke_url, secret_key, image_url, image_bytes):
@@ -150,13 +152,14 @@ def _guess_image_format(image_url):
     return 'png'
 
 
-def _extract_with_google_vision(image_urls):
+def _extract_with_google_vision(image_urls, image_downloader=None):
     if not _is_google_vision_enabled():
         return _result(
             provider=OCR_PROVIDER_GOOGLE_VISION,
             status='failed',
             error='Google Vision OCR is not enabled.',
             failed_count=len(image_urls),
+            error_type='provider_auth_error',
         )
     if not os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
         return _result(
@@ -164,6 +167,7 @@ def _extract_with_google_vision(image_urls):
             status='failed',
             error='Google Vision credentials are not configured.',
             failed_count=len(image_urls),
+            error_type='provider_auth_error',
         )
 
     try:
@@ -174,6 +178,7 @@ def _extract_with_google_vision(image_urls):
             status='failed',
             error='google-cloud-vision package is not installed.',
             failed_count=len(image_urls),
+            error_type='provider_auth_error',
         )
 
     try:
@@ -182,29 +187,30 @@ def _extract_with_google_vision(image_urls):
         return _result(
             provider=OCR_PROVIDER_GOOGLE_VISION,
             status='failed',
-            error=_summarize_error(exc),
+            error=_summarize_error(exc, secret_values=[os.getenv('GOOGLE_APPLICATION_CREDENTIALS')]),
             failed_count=len(image_urls),
+            error_type='provider_auth_error',
         )
 
     ocr_texts = []
     ocr_boxes = []
     errors = []
     for image_url in image_urls:
-        image_bytes = _download_image(image_url, errors)
+        image_bytes = _download_image(image_url, errors, image_downloader=image_downloader)
         if not image_bytes:
             continue
 
         try:
             response = client.text_detection(image=vision.Image(content=image_bytes))
             if getattr(response, 'error', None) and response.error.message:
-                errors.append(response.error.message)
+                errors.append(_error_detail('provider_request_error', image_url, response.error.message))
                 continue
             annotations = getattr(response, 'text_annotations', None) or []
             if annotations:
                 ocr_texts.append(annotations[0].description.strip())
                 ocr_boxes.extend(_parse_google_vision_ocr_boxes(annotations[1:], image_url, len(ocr_texts)))
         except Exception as exc:
-            errors.append(_summarize_error(exc))
+            errors.append(_error_detail('provider_request_error', image_url, _summarize_error(exc)))
 
     ocr_text = '\n\n'.join(text for text in ocr_texts if text)
     if ocr_text:
@@ -222,8 +228,9 @@ def _extract_with_google_vision(image_urls):
             status='failed',
             error='; '.join(errors[:3]),
             failed_count=len(errors),
+            error_type=_first_error_type(errors),
         )
-    return _result(provider=OCR_PROVIDER_GOOGLE_VISION, status='skipped')
+    return _result(provider=OCR_PROVIDER_GOOGLE_VISION, status='failed', error='OCR provider returned empty result.', failed_count=len(image_urls), error_type='provider_empty_result')
 
 
 def _parse_google_vision_ocr_boxes(annotations, image_url='', image_index=0):
@@ -276,27 +283,47 @@ def _vertex_value(vertex, name):
         return None
 
 
-def _download_image(image_url, errors):
+def _download_image(image_url, errors, image_downloader=None):
     try:
-        response = requests.get(image_url, timeout=IMAGE_DOWNLOAD_TIMEOUT_SECONDS)
-        response.raise_for_status()
+        if image_downloader:
+            download = image_downloader(image_url)
+            content = download.get('content') or b''
+            detail = download.get('detail') or {}
+        else:
+            response = requests.get(image_url, timeout=IMAGE_DOWNLOAD_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            content = response.content
+            detail = {
+                'image_download_status': getattr(response, 'status_code', None),
+                'mime_type': response.headers.get('Content-Type', '').split(';')[0] if hasattr(response, 'headers') else '',
+                'image_size': len(content or b''),
+                'image_file_path': '',
+            }
     except Exception as exc:
-        errors.append(_summarize_error(exc))
+        errors.append(_error_detail('image_download_failed', image_url, _summarize_error(exc)))
         return b''
-    return response.content
+    if not content:
+        errors.append(_error_detail('empty_image', image_url, 'Downloaded image is empty.', detail=detail))
+        return b''
+    mime_type = detail.get('mime_type', '')
+    if mime_type and not mime_type.startswith('image/'):
+        errors.append(_error_detail('unsupported_image_format', image_url, f'Unsupported mime type: {mime_type}', detail=detail))
+        return b''
+    return content
 
 
 def _is_google_vision_enabled():
     return os.getenv('GOOGLE_VISION_ENABLED', '').strip().lower() in TRUE_VALUES
 
 
-def _result(provider, status, text='', error='', failed_count=0, boxes=None):
+def _result(provider, status, text='', error='', failed_count=0, boxes=None, error_type=''):
     return {
         'ocr_text': text,
         'ocr_boxes': boxes or [],
         'ocr_provider': provider,
         'ocr_status': status,
         'ocr_error': error,
+        'ocr_error_type': error_type or ('unknown' if status == 'failed' and error else ''),
         'ocr_failed_count': failed_count,
     }
 
@@ -309,3 +336,22 @@ def _summarize_error(exc, secret_values=None):
         if secret_value:
             message = message.replace(secret_value, '[redacted]')
     return message[:300]
+
+
+def _error_detail(error_type, image_url, message, detail=None):
+    payload = {
+        'error_type': error_type,
+        'image_url': image_url,
+        'message': message,
+    }
+    payload.update(detail or {})
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _first_error_type(errors):
+    for error in errors:
+        try:
+            return json.loads(error).get('error_type') or 'unknown'
+        except (TypeError, ValueError):
+            continue
+    return 'unknown'
