@@ -4,6 +4,7 @@ from django.http import Http404
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_POST
 
 from schedules.models import ScheduleEvent
@@ -22,6 +23,32 @@ from sync.services.manual_ocr_service import apply_manual_ocr_text
 
 
 @require_GET
+def raw_data_list(request):
+    queryset = RawSsafyData.objects.all().order_by('-collected_at')
+    source_type = request.GET.get('source_type')
+    category = request.GET.get('category')
+    if source_type:
+        queryset = queryset.filter(source_type=source_type)
+    if category:
+        queryset = queryset.filter(metadata_json__category=category)
+    return JsonResponse(
+        [
+            {
+                'id': raw_data.id,
+                'source_type': raw_data.source_type,
+                'source_url': raw_data.source_url,
+                'title': raw_data.title,
+                'category': (raw_data.metadata_json or {}).get('category'),
+                'document_type': (raw_data.metadata_json or {}).get('document_type'),
+                'ocr_status': (raw_data.metadata_json or {}).get('ocr_status'),
+                'ocr_text_length': (raw_data.metadata_json or {}).get('ocr_text_length', 0),
+            }
+            for raw_data in queryset[:100]
+        ],
+        safe=False,
+    )
+
+
 def notice_list(request):
     queryset = RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES)
     source_type = request.GET.get('source_type')

@@ -92,6 +92,7 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
 
 def _store_review_required_candidates(raw_data, grid_debug):
     metadata = dict(raw_data.metadata_json or {})
+    metadata.update(getattr(grid_debug, 'metadata_json', {}) or {})
     review_required_candidates = grid_debug.review_required_candidates or []
     metadata['review_required_candidate_count'] = len(review_required_candidates)
     metadata['review_required_candidates'] = review_required_candidates

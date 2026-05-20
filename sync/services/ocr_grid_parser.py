@@ -54,6 +54,7 @@ MIN_EXAM_OVERLAP_RATIO = 0.35
 REVIEW_REQUIRED_EXAM_FILTER_REASONS = {
     'review_required_exam_title',
     'low_overlap_exam',
+    'generic_exam_calendar_marker',
 }
 
 
@@ -343,21 +344,22 @@ def _assign_events_to_cells(boxes, cells):
         cell, overlap_ratio = (matched_cells[0] if matched_cells else (_find_cell_for_box(box, cells), None))
         if not cell:
             continue
-        candidates.append(
-            GridScheduleCandidate(
-                title=title,
-                event_date=cell['date'],
-                event_type=_event_type(title),
-                description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
-                source_text=box['text'],
-                source_box_count=1,
-                row_index=cell.get('row_index'),
-                col_index=cell.get('col_index'),
-                confidence=box.get('confidence'),
-                overlap_ratio=overlap_ratio,
-                reason='single_box_keyword_overlap',
+        for expanded_title in _expand_combined_exam_titles(title):
+            candidates.append(
+                GridScheduleCandidate(
+                    title=expanded_title,
+                    event_date=cell['date'],
+                    event_type=_event_type(expanded_title),
+                    description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                    source_text=box['text'],
+                    source_box_count=1,
+                    row_index=cell.get('row_index'),
+                    col_index=cell.get('col_index'),
+                    confidence=box.get('confidence'),
+                    overlap_ratio=overlap_ratio,
+                    reason='single_box_keyword_overlap',
+                )
             )
-        )
 
     for cell in cells:
         for title, row_boxes in _event_titles_from_cell(boxes, cell):
@@ -365,21 +367,22 @@ def _assign_events_to_cells(boxes, cells):
                 continue
             row_rect = _boxes_rect(row_boxes)
             overlap_ratio = _overlap_ratio(row_rect, cell)
-            candidates.append(
-                GridScheduleCandidate(
-                    title=title,
-                    event_date=cell['date'],
-                    event_type=_event_type(title),
-                    description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
-                    source_text=' '.join(box['text'] for box in row_boxes),
-                    source_box_count=len(row_boxes),
-                    row_index=cell.get('row_index'),
-                    col_index=cell.get('col_index'),
-                    confidence=_average_confidence(row_boxes),
-                    overlap_ratio=overlap_ratio,
-                    reason='cell_row_group_overlap',
+            for expanded_title in _expand_combined_exam_titles(title):
+                candidates.append(
+                    GridScheduleCandidate(
+                        title=expanded_title,
+                        event_date=cell['date'],
+                        event_type=_event_type(expanded_title),
+                        description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                        source_text=' '.join(box['text'] for box in row_boxes),
+                        source_box_count=len(row_boxes),
+                        row_index=cell.get('row_index'),
+                        col_index=cell.get('col_index'),
+                        confidence=_average_confidence(row_boxes),
+                        overlap_ratio=overlap_ratio,
+                        reason='cell_row_group_overlap',
+                    )
                 )
-            )
     return candidates
 
 
@@ -572,7 +575,9 @@ def _canonical_title(title):
     if 'SSAFYDAY' in compact:
         return 'SSAFY DAY'
     if '과목평가' in compact and '월말평가' in compact:
-        return '과목평가/월말평가'
+        suffix_match = re.search(r'(?:과목평가|월말평가)(\d+)', compact)
+        suffix = suffix_match.group(1) if suffix_match else ''
+        return f'과목평가{suffix}/월말평가{suffix}'
     if '과목평가' in compact:
         return '과목평가'
     if '월말평가' in compact:
@@ -588,6 +593,15 @@ def _canonical_title(title):
     if '관통프로젝트' in compact:
         return '관통 프로젝트'
     return title[:255]
+
+
+def _expand_combined_exam_titles(title):
+    compact = _compact_text(title)
+    if '과목평가' in compact and '월말평가' in compact:
+        suffix_match = re.search(r'(?:과목평가|월말평가)(\d+)$', compact)
+        suffix = suffix_match.group(1) if suffix_match else ''
+        return [f'과목평가{suffix}', f'월말평가{suffix}']
+    return [title]
 
 
 def _find_cell_for_box(box, cells):
@@ -657,6 +671,9 @@ def _filter_exam_false_positives(candidates):
         if _is_exam_candidate(candidate) and candidate.event_date in holiday_dates:
             filtered.append(_with_filtered_reason(candidate, 'holiday_exam_conflict'))
             continue
+        if _is_generic_exam_calendar_marker(candidate):
+            filtered.append(_with_filtered_reason(candidate, 'generic_exam_calendar_marker'))
+            continue
         if _is_exam_candidate(candidate) and not _is_clear_exam_title(candidate.source_text or candidate.title):
             filtered.append(_with_filtered_reason(candidate, 'review_required_exam_title'))
             continue
@@ -707,9 +724,9 @@ def _filter_consecutive_exam_runs(candidates, filtered):
 
 
 def _mark_long_exam_run(run, unique_by_date, remove_ids):
-    if len(run) < 3:
+    if len(run) < 4:
         return
-    for event_date in run[1:]:
+    for event_date in run[3:]:
         for candidate in unique_by_date[event_date]:
             remove_ids.add(id(candidate))
 
@@ -733,6 +750,13 @@ def _with_filtered_reason(candidate, reason):
 
 def _is_exam_candidate(candidate):
     return candidate.event_type == 'exam' or _is_exam_title_compact(_compact_text(candidate.title))
+
+
+def _is_generic_exam_calendar_marker(candidate):
+    compact_title = _normalize_exam_compact(_compact_text(candidate.title))
+    compact_source = _normalize_exam_compact(_compact_text(candidate.source_text or candidate.title))
+    generic_titles = {'과목평가', '월말평가'}
+    return compact_title in generic_titles and compact_source in generic_titles
 
 
 def _collect_review_required_candidates(filtered_candidates):
