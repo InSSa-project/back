@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
@@ -66,6 +67,10 @@ class SsafySessionExpiredError(SsafyCrawlerError):
     def __init__(self, message, collected_items=None):
         super().__init__(message)
         self.collected_items = collected_items or []
+
+
+class SsafySourceTimeoutError(SsafyCrawlerError):
+    pass
 
 
 def load_sample_notices(sample_path=None):
@@ -178,7 +183,7 @@ def load_ssafy_authenticated_documents(
             browser = playwright.chromium.launch(headless=True)
             context = browser.new_context()
             page = context.new_page()
-            page.set_default_timeout(15000)
+            page.set_default_timeout(_detail_timeout_ms())
             _login_ssafy(page, login_url, ssafy_id, ssafy_password)
 
             for source_type, list_url, link_extractor in _source_collection_specs(
@@ -215,6 +220,12 @@ def load_ssafy_authenticated_documents(
                         level='warning',
                     )
                     raise exc
+                except SsafySourceTimeoutError as exc:
+                    _record_collection_debug(
+                        f'failed_source={source_type} url={list_url} error_reason=timeout error={exc}',
+                        level='warning',
+                    )
+                    continue
                 except Exception as exc:
                     _record_collection_debug(
                         f'failed_source={source_type} url={list_url} error={exc}',
@@ -246,6 +257,7 @@ def _login_ssafy(page, login_url, ssafy_id, ssafy_password):
 
 def _collect_authenticated_list(page, list_url, source_type, link_extractor, login_url=None):
     max_pages = _crawler_max_pages()
+    source_deadline = _source_deadline()
     seen_page_urls = set()
     seen_detail_urls = set()
     seen_page_signatures = {}
@@ -258,6 +270,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
     requested_page = 1
 
     for page_index in range(1, max_pages + 1):
+        _raise_if_source_timed_out(source_type, source_deadline)
         _open_list_page(page, list_url, current_url, requested_page)
         session_reason = _session_expired_reason(page, login_url=login_url)
         if session_reason:
@@ -382,6 +395,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
     details = []
     failed_detail_count = 0
     for link in links:
+        _raise_if_source_timed_out(source_type, source_deadline)
         if isinstance(link, dict):
             detail_url = link['url']
             list_title = link.get('title', '')
@@ -435,6 +449,26 @@ def _crawler_max_pages():
         return max(1, int(os.getenv('SSAFY_NOTICE_MAX_PAGES') or os.getenv('SSAFY_CRAWLER_MAX_PAGES', '20')))
     except ValueError:
         return 20
+
+
+def _detail_timeout_ms():
+    try:
+        return max(1000, int(float(os.getenv('SSAFY_DETAIL_TIMEOUT') or '15') * 1000))
+    except ValueError:
+        return 15000
+
+
+def _source_deadline():
+    try:
+        seconds = float(os.getenv('SSAFY_SOURCE_TIMEOUT') or '0')
+    except ValueError:
+        seconds = 0
+    return time.monotonic() + seconds if seconds > 0 else 0
+
+
+def _raise_if_source_timed_out(source_type, deadline):
+    if deadline and time.monotonic() > deadline:
+        raise SsafySourceTimeoutError(f'source_timeout source_type={source_type}')
 
 
 def _open_list_page(page, list_url, current_url, page_number):
@@ -1005,7 +1039,7 @@ def _source_collection_specs(
     curriculum_url,
     learning_material_url,
 ):
-    return [
+    specs = [
         ('notice', notice_url, _extract_notice_link_items),
         ('academic_rule', academic_rule_url, _extract_academic_rule_links),
         ('faq', faq_url, _extract_faq_links),
@@ -1014,6 +1048,24 @@ def _source_collection_specs(
         ('curriculum', curriculum_url, _extract_curriculum_links),
         ('learning_material', learning_material_url, _extract_learning_material_links),
     ]
+    selected_sources = _env_source_set('SSAFY_CRAWLER_SOURCES')
+    skipped_sources = _env_source_set('SSAFY_CRAWLER_SKIP_SOURCES')
+    filtered = []
+    for spec in specs:
+        source_type = spec[0]
+        if selected_sources and source_type not in selected_sources:
+            _record_collection_debug(f'skipped_source={source_type} reason=source_filter')
+            continue
+        if source_type in skipped_sources:
+            _record_collection_debug(f'skipped_source={source_type} reason=skip_source_filter')
+            continue
+        filtered.append(spec)
+    return filtered
+
+
+def _env_source_set(name):
+    value = os.getenv(name, '')
+    return {item.strip() for item in value.split(',') if item.strip()}
 
 
 def extract_image_urls_from_html(raw_html, source_url):

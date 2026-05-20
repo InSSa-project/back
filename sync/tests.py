@@ -34,6 +34,7 @@ from sync.services.ssafy_crawler import (
     _extract_pagination_totals,
     _filter_controls_debug,
     _pagination_controls_debug,
+    _source_collection_specs,
 )
 
 
@@ -766,7 +767,46 @@ class SampleNoticeImportTests(TestCase):
             job_log = run_notice_import(mode='ssafy_notice')
 
         self.assertEqual(job_log.status, CrawlJobLog.STATUS_SUCCESS)
-        self.assertIn('source_results=notice:success', job_log.message)
+        self.assertIn('source_results=', job_log.message)
+        self.assertIn('notice:success', job_log.message)
+
+    def test_failed_source_debug_marks_partial_success(self):
+        item = _source_item('notice', 'https://example.com/notices/source-timeout', 'Notice', 'source-timeout')
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch(
+                'sync.services.import_service.get_last_collection_debug',
+                return_value=['failed_source=mentoring_notice url=https://example.com error_reason=timeout error=source_timeout'],
+            ):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_PARTIAL_SUCCESS)
+        self.assertIn('mentoring_notice:failed', job_log.message)
+        self.assertIn('error_type=timeout', job_log.message)
+
+    def test_source_filter_and_skip_source_env(self):
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,academic_rule'}, clear=False):
+            specs = _source_collection_specs('notice-url', 'rule-url', 'faq-url', '', '', '', '')
+        self.assertEqual([source for source, _, _ in specs], ['notice', 'academic_rule'])
+
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_SKIP_SOURCES': 'mentoring_notice'}, clear=False):
+            specs = _source_collection_specs('notice-url', 'rule-url', '', '', 'mentor-url', '', '')
+        self.assertNotIn('mentoring_notice', [source for source, _, _ in specs])
+
+    def test_crawl_command_sets_source_options(self):
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
+
+        with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
+            call_command('crawl_ssafy_notices', source='notice', max_pages=30, stdout=StringIO())
+
+        self.assertEqual(seen['sources'], 'notice')
+        self.assertEqual(seen['max_pages'], '30')
 
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):

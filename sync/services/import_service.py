@@ -75,7 +75,9 @@ def run_notice_import(mode=None):
         crawler_debug = get_last_collection_debug()
         summary = _import_raw_items(raw_items)
 
-        job_log.status = CrawlJobLog.STATUS_SUCCESS
+        job_log.status = (
+            CrawlJobLog.STATUS_PARTIAL_SUCCESS if _has_failed_source(crawler_debug) else CrawlJobLog.STATUS_SUCCESS
+        )
         job_log.message = _build_success_message(selected_mode, summary, crawler_debug=crawler_debug)
         job_log.raw_count = summary.raw_count
         job_log.event_count = summary.event_count
@@ -517,10 +519,15 @@ def _source_result_summary(summary, crawler_debug=None, failed_error=None):
         status = 'success' if summary.scanned_by_source.get(source_type, 0) else 'skipped'
         error_type = ''
         error_message = ''
+        debug_failure = _failed_source_from_debug(crawler_debug, source_type)
         if failed_error and f'source_type={source_type}' in str(failed_error):
             status = 'failed'
             error_type = 'session_expired'
             error_message = _truncate_log(str(failed_error))
+        elif debug_failure:
+            status = 'failed'
+            error_type = debug_failure.get('error_type', 'source_error')
+            error_message = debug_failure.get('error', '')
         collected_count = summary.scanned_by_source.get(source_type, 0)
         saved_count = _saved_count_for_source(summary, source_type)
         skipped_count = max(0, collected_count - saved_count)
@@ -540,6 +547,22 @@ def _sources_from_debug(crawler_debug):
             value = str(message).split(marker, 1)[1].split()[0]
             sources.add(value)
     return sources
+
+
+def _has_failed_source(crawler_debug):
+    return any('failed_source=' in str(message) for message in crawler_debug or [])
+
+
+def _failed_source_from_debug(crawler_debug, source_type):
+    for message in crawler_debug or []:
+        text = str(message)
+        if f'failed_source={source_type}' not in text:
+            continue
+        error_type = 'timeout' if 'error_reason=timeout' in text or 'source_timeout' in text else 'source_error'
+        if 'error_reason=session_expired' in text:
+            error_type = 'session_expired'
+        return {'error_type': error_type, 'error': _truncate_log(text)}
+    return {}
 
 
 def _saved_count_for_source(summary, source_type):
