@@ -2560,6 +2560,150 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(list(ScheduleEvent.objects.filter(start_at__date='2026-04-10').values_list('title', flat=True)), ['상반기 밋업'])
 
+    def test_repair_calendar_events_corrects_explicit_weekday_mismatch(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='학습 시간표', raw_text='화) HashSet / HashMap')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='화) HashSet / HashMap',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+
+        output = StringIO()
+        call_command('repair_calendar_events', stdout=output)
+
+        event = ScheduleEvent.objects.get()
+        self.assertEqual(timezone.localdate(event.start_at).isoformat(), '2026-05-19')
+        self.assertIn('weekday_corrected_count=1', output.getvalue())
+
+    def test_repair_calendar_events_keeps_date_without_explicit_weekday(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='학습 시간표', raw_text='HashSet / HashMap')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='HashSet / HashMap',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(timezone.localdate(ScheduleEvent.objects.get().start_at).isoformat(), '2026-05-20')
+
+    def test_repair_calendar_events_prefixes_all_track_titles(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='학습 시간표', raw_text='calendar')
+        tracks = ['Python', 'Java비전공', 'Java전공', 'Embedded', 'Mobile', 'Embedded Robot', 'Data', '마이스터고']
+        for index, track in enumerate(tracks, start=1):
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title='Front-End',
+                start_at=timezone.datetime(2026, 7, index, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 7, index + 1, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='study',
+                source_type='notice',
+                metadata_json={'track': track},
+            )
+
+        output = StringIO()
+        call_command('repair_calendar_events', stdout=output)
+
+        titles = set(ScheduleEvent.objects.values_list('title', flat=True))
+        for track in tracks:
+            self.assertIn(f'{track}) Front-End', titles)
+        self.assertIn('track_prefixed_count=8', output.getvalue())
+
+    def test_repair_calendar_events_does_not_prefix_common_event(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='학습 시간표', raw_text='calendar')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='과목평가',
+            start_at=timezone.datetime(2026, 4, 6, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 4, 7, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={'track': 'Python'},
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.get().title, '과목평가')
+
+    def test_repair_calendar_events_removes_manual_subject_exam_duplicate_when_ocr_exists(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='평가 안내', raw_text='과목평가')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='과목평가',
+            start_at=timezone.datetime(2026, 4, 6, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 4, 7, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='과목평가6',
+            start_at=timezone.datetime(2026, 4, 6, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 4, 7, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='repair',
+            metadata_json={'repair_source': 'manual_exam_correction'},
+        )
+
+        output = StringIO()
+        call_command('repair_calendar_events', stdout=output)
+
+        self.assertEqual(ScheduleEvent.objects.filter(start_at__date='2026-04-06', event_type='exam').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().title, '과목평가')
+        self.assertIn('semantic_exam_duplicate_removed_count=1', output.getvalue())
+
+    def test_repair_calendar_events_removes_manual_monthly_exam_duplicate_when_ocr_exists(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='평가 안내', raw_text='월말평가')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말평가',
+            start_at=timezone.datetime(2026, 4, 6, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 4, 7, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='월말평가3',
+            start_at=timezone.datetime(2026, 4, 6, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 4, 7, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='repair',
+            metadata_json={'repair_source': 'manual_exam_correction'},
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.filter(start_at__date='2026-04-06', event_type='exam').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().title, '월말평가')
+
+    def test_repair_calendar_events_keeps_manual_exam_without_ocr_duplicate(self):
+        ScheduleEvent.objects.create(
+            title='과목평가6',
+            start_at=timezone.datetime(2026, 4, 6, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 4, 7, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='repair',
+            metadata_json={'repair_source': 'manual_exam_correction'},
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='과목평가6').count(), 1)
+
 
 def _notice_item(source_url, notice_id):
     return {
