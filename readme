@@ -1,7 +1,7 @@
 open ai api 연동 채팅 사용법 : 
 1. ai_server 폴더 안의 requirements 패키지 설치
 2. .env 파일 > 구글 오오스 클라이언트 아이디, 비번, GOOGLE_REDIRECT_URI, 제미나이 api키 작성
-3. 터미널 분리하여 fast api, 장고 서버 실행
+3. 터미널 분리하여 fast api(명령어 : uvicorn ai_server.main:app --host 127.0.0.1 --port 8010 --reload), 장고 서버 실행
     .env 이 값들 맞아야함
 
     - 구글 오오스
