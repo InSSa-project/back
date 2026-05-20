@@ -249,6 +249,10 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
     seen_page_urls = set()
     seen_detail_urls = set()
     seen_page_signatures = {}
+    page_stats = []
+    total_notice_count = 0
+    last_page = 0
+    page_size = 0
     links = []
     current_url = list_url
     requested_page = 1
@@ -270,7 +274,12 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
 
         soup = BeautifulSoup(page.content(), 'html.parser')
         page_links = link_extractor(soup, current_url)
+        totals = _extract_pagination_totals(soup)
+        total_notice_count = total_notice_count or totals.get('total_notice_count', 0)
+        last_page = max(last_page, totals.get('last_page', 0))
+        page_size = page_size or totals.get('page_size', 0)
         page_signature = _page_link_signature(page_links)
+        row_count = _count_list_rows(soup)
         duplicate_url_count = sum(
             1
             for link in page_links
@@ -284,7 +293,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
             _record_collection_debug(
                 f'pagination_failed source_type={source_type} requested_page={requested_page} '
                 f'current_url={_page_url(page)} repeated_page={seen_page_signatures[page_signature]} '
-                f'row_count={_count_list_rows(soup)} extracted_item_count={len(page_links)}',
+                f'row_count={row_count} extracted_item_count={len(page_links)}',
                 level='warning',
             )
             if not page_links:
@@ -308,6 +317,15 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
                     f'evaluation_notice_candidate source_type={source_type} page={page_index} '
                     f'title={link_title or "-"} url={detail_url} detail=pending'
                 )
+        page_stats.append(
+            {
+                'page': page_index,
+                'row_count': row_count,
+                'extracted_count': len(page_links),
+                'duplicate_count': duplicate_url_count,
+                'unique_count': new_link_count,
+            }
+        )
 
         _record_source_page_debug(
             source_type=source_type,
@@ -322,10 +340,12 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         )
         _record_collection_debug(
             f'pagination_debug source_type={source_type} requested_page={requested_page} current_url={_page_url(page)} '
-            f'row_count={_count_list_rows(soup)} extracted_item_count={len(page_links)} '
+            f'row_count={row_count} extracted_item_count={len(page_links)} '
             f'first_title={first_title or "-"} last_title={last_title or "-"} '
             f'first_source_url={first_source_url or "-"} last_source_url={last_source_url or "-"} '
-            f'duplicate_url_count={duplicate_url_count} {_pagination_controls_debug(soup)}'
+            f'duplicate_url_count={duplicate_url_count} unique_count={new_link_count} '
+            f'total_notice_count={total_notice_count or "-"} last_page={last_page or "-"} page_size={page_size or "-"} '
+            f'{_pagination_controls_debug(soup)}'
         )
 
         seen_page_urls.add(_normalize_url_without_fragment(current_url))
@@ -398,9 +418,11 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         )
     _record_collection_debug(
         f'list_summary source_type={source_type} pages_scanned={len(seen_page_signatures)} '
-        f'total_rows_seen={sum(len(signature) for signature in seen_page_signatures)} '
-        f'unique_items_extracted={len(links)} duplicated_items={sum(len(signature) for signature in seen_page_signatures) - len(links)} '
-        f'details_fetched={len(details)}'
+        f'total_rows_seen={sum(stat["row_count"] for stat in page_stats)} '
+        f'unique_items_extracted={len(links)} duplicated_items={sum(stat["duplicate_count"] for stat in page_stats)} '
+        f'details_fetched={len(details)} target_total_notice_count={total_notice_count or "-"} '
+        f'last_page={last_page or "-"} page_size={page_size or "-"} '
+        f'pagination_gap={"|".join(_format_page_stat(stat) for stat in page_stats) or "none"}'
     )
     return details
 
@@ -416,6 +438,7 @@ def _open_list_page(page, list_url, current_url, page_number):
     page.goto(current_url, wait_until='networkidle')
     if page_number <= 1:
         return
+    submitted = False
     try:
         submitted = page.evaluate(
             """
@@ -444,6 +467,36 @@ def _open_list_page(page, list_url, current_url, page_number):
     except Exception as exc:
         _record_collection_debug(
             f'pagination_form_submit_failed url={list_url} page={page_number} error={exc}',
+            level='warning',
+        )
+    if submitted:
+        return
+    try:
+        clicked = page.evaluate(
+            """
+            (pageNumber) => {
+              const target = String(pageNumber);
+              const anchors = Array.from(document.querySelectorAll('a[href], a[onclick]'));
+              const anchor = anchors.find((node) => {
+                const text = (node.textContent || '').trim();
+                const onclick = node.getAttribute('onclick') || '';
+                const href = node.getAttribute('href') || '';
+                return text === target || onclick.includes(`'${target}'`) || onclick.includes(`(${target}`)
+                  || href.includes(`pageNo=${target}`) || href.includes(`pageIndex=${target}`);
+              });
+              if (!anchor) return false;
+              anchor.click();
+              return true;
+            }
+            """,
+            page_number,
+        )
+        if clicked:
+            page.wait_for_load_state('networkidle')
+            _record_collection_debug(f'pagination_click_fallback source_url={list_url} page={page_number}')
+    except Exception as exc:
+        _record_collection_debug(
+            f'pagination_click_failed url={list_url} page={page_number} error={exc}',
             level='warning',
         )
 
@@ -485,11 +538,15 @@ def _extract_next_page_number(soup, current_page):
 
 
 def _extract_page_number(text, href, onclick):
-    for value in (onclick, href, text):
-        match = re.search(r'(?:pageNo|pageIndex|currentPageNo|fn\w*Page|goPage|movePage)\D*(\d+)', value or '', re.I)
-        if match:
-            return int(match.group(1))
-    if text and text.isdigit():
+    onclick_match = re.search(r'(?:fn\w*Page|goPage|movePage|linkPage)\s*\(\s*[\'"]?(\d{1,3})', onclick or '', re.I)
+    if onclick_match:
+        return int(onclick_match.group(1))
+
+    href_match = re.search(r'[?&](?:pageNo|pageIndex|currentPageNo)=(\d{1,3})(?:&|$)', href or '', re.I)
+    if href_match:
+        return int(href_match.group(1))
+
+    if text and text.isdigit() and int(text) <= 500:
         return int(text)
     return None
 
@@ -539,6 +596,39 @@ def _pagination_controls_debug(soup):
     return (
         f'pagination_inputs={",".join(found_inputs) or "none"} '
         f'pagination_functions={",".join(functions) or "none"}'
+    )
+
+
+def _extract_pagination_totals(soup):
+    text = _clean_text(soup.get_text(' ', strip=True))
+    total_notice_count = 0
+    for pattern in [r'(?:총|total)\s*[:：]?\s*(\d{1,5})', r'(\d{1,5})\s*(?:건|개)']:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            total_notice_count = int(match.group(1))
+            break
+
+    page_numbers = []
+    for anchor in soup.select('a[href], a[onclick]'):
+        page_number = _extract_page_number(
+            _clean_text(anchor.get_text(' ', strip=True)),
+            anchor.get('href', '').strip(),
+            anchor.get('onclick', '').strip(),
+        )
+        if page_number:
+            page_numbers.append(page_number)
+
+    return {
+        'total_notice_count': total_notice_count,
+        'last_page': max(page_numbers) if page_numbers else 0,
+        'page_size': _count_list_rows(soup),
+    }
+
+
+def _format_page_stat(stat):
+    return (
+        f'p{stat["page"]}:rows={stat["row_count"]},'
+        f'extracted={stat["extracted_count"]},dup={stat["duplicate_count"]},unique={stat["unique_count"]}'
     )
 
 

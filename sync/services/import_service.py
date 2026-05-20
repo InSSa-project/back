@@ -53,6 +53,9 @@ class ImportSummary:
     excluded_items: list = field(default_factory=list)
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
+    duplicate_count: int = 0
+    duplicate_items: list = field(default_factory=list)
+    unique_notice_ids: set = field(default_factory=set)
 
 
 def run_sample_notice_import():
@@ -124,6 +127,9 @@ def _import_raw_items(raw_items):
             summary.excluded_items.append(_format_excluded_debug(excluded_debug))
             continue
         item = normalized_item
+        notice_id = _notice_id_from_item(item)
+        if item.get('source_type') == 'notice' and notice_id:
+            summary.unique_notice_ids.add(notice_id)
         if (item.get('metadata_json') or {}).get('document_type') == 'evaluation_notice':
             summary.keyword_candidate_count += 1
             summary.saved_evaluation_notice_count += 1
@@ -131,8 +137,14 @@ def _import_raw_items(raw_items):
             summary.keyword_candidates_by_source[item_source] = summary.keyword_candidates_by_source.get(item_source, 0) + 1
         _increment_detail_quality_counts(summary, item.get('metadata_json') or {})
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
-        if _find_existing_raw_data(item):
+        existing_raw_data = _find_existing_raw_data(item)
+        if existing_raw_data:
             summary.skipped_count += 1
+            summary.duplicate_count += 1
+            summary.duplicate_items.append(
+                f'brdItmSeq={notice_id or "-"} title={item.get("title", "")} '
+                f'source_url={item.get("source_url", "")} existing_id={existing_raw_data.id}'
+            )
             continue
 
         item = _apply_ocr_pipeline(item, summary)
@@ -242,6 +254,8 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f', raw_notice_count={RawSsafyData.objects.filter(source_type="notice").count()}'
         f', latest_notice_title={_latest_notice_title(raw_items=None)}'
         f', target_evaluation_10th_found={str(_target_evaluation_10th_found()).lower()}'
+        f', duplicate_count={summary.duplicate_count}'
+        f', unique_brdItmSeq_count={len(summary.unique_notice_ids)}'
         f', detail_success_count={summary.detail_success_count}, '
         f'real_content_count={summary.real_content_count}, '
         f'image_found_count={summary.image_found_count}, '
@@ -261,6 +275,8 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         message = f'{message}, no_schedule_by_type={no_schedule_detail}'
     if summary.failed_items:
         message = f'{message}, failed_items={";".join(summary.failed_items[:5])}'
+    if summary.duplicate_items:
+        message = f'{message}, duplicate_items={"; ".join(summary.duplicate_items[:20])}'
     debug_message = _format_crawler_debug(crawler_debug)
     if debug_message:
         message = f'{message}, crawler_debug={debug_message}'
@@ -395,6 +411,20 @@ def _latest_notice_title(raw_items=None):
 
 def _target_evaluation_10th_found():
     return RawSsafyData.objects.filter(title__contains='10회차').filter(title__contains='월말평가').exists()
+
+
+def _notice_id_from_item(item):
+    metadata = item.get('metadata_json') or {}
+    notice_id = metadata.get('notice_id')
+    if notice_id:
+        notice_id = str(notice_id)
+        if 'brdItmSeq=' in notice_id:
+            return notice_id.split('brdItmSeq=', 1)[1].split('&', 1)[0]
+        return notice_id
+    source_url = item.get('source_url', '')
+    if 'brdItmSeq=' in source_url:
+        return source_url.split('brdItmSeq=', 1)[1].split('&', 1)[0]
+    return ''
 
 
 def _increment_detail_quality_counts(summary, metadata):
