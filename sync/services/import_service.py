@@ -52,6 +52,8 @@ class ImportSummary:
     excluded_by_source: dict = field(default_factory=dict)
     keyword_candidates_by_source: dict = field(default_factory=dict)
     excluded_items: list = field(default_factory=list)
+    source_counts: dict = field(default_factory=dict)
+    collected_source_counts: dict = field(default_factory=dict)
     no_schedule_by_type: dict = field(default_factory=dict)
     failed_items: list = field(default_factory=list)
     duplicate_count: int = 0
@@ -213,6 +215,7 @@ def _import_raw_items(raw_items):
 
 
 def _increment_source_count(summary, source_type):
+    summary.source_counts[source_type] = summary.source_counts.get(source_type, 0) + 1
     if source_type == 'notice':
         summary.notice_count += 1
     elif source_type == 'academic_rule':
@@ -220,6 +223,7 @@ def _increment_source_count(summary, source_type):
 
 
 def _increment_collected_source_count(summary, source_type):
+    summary.collected_source_counts[source_type] = summary.collected_source_counts.get(source_type, 0) + 1
     if source_type == 'notice':
         summary.collected_notice_count += 1
     elif source_type == 'academic_rule':
@@ -285,6 +289,12 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         message = f'{message}, excluded_count={summary.excluded_count}'
     if summary.excluded_items:
         message = f'{message}, excluded_items={"; ".join(summary.excluded_items[:20])}'
+    if summary.source_counts:
+        source_detail = ','.join(f'{key}:{value}' for key, value in sorted(summary.source_counts.items()))
+        message = f'{message}, source_counts={source_detail}'
+    if summary.collected_source_counts:
+        collected_detail = ','.join(f'{key}:{value}' for key, value in sorted(summary.collected_source_counts.items()))
+        message = f'{message}, collected_source_counts={collected_detail}'
     if summary.no_schedule_by_type:
         no_schedule_detail = ','.join(
             f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())

@@ -2,6 +2,7 @@ from django.test import SimpleTestCase
 
 from ai_server.classification.query_classifier import QueryClassifier, QueryType
 from ai_server.policies.answer_policy import AnswerPolicy, AnswerPolicyRouter
+from ai_server.prompts.builder import PromptBuilder
 from ai_server.retrieval.policy_router import RetrievalPolicyRouter
 from ai_server.retrieval.query_parser import DateExtractor, ScheduleQueryParser, ScheduleQueryType
 from ai_server.retrievers.evaluator import RetrievalEvaluator
@@ -70,3 +71,23 @@ class RagFallbackPolicyTests(SimpleTestCase):
         finally:
             if index_path.exists():
                 index_path.unlink()
+
+    def test_prompt_builder_selects_tech_prompts_without_rag_policy(self):
+        result = PromptBuilder().build_messages(
+            question='Django에서 ForeignKey 뭐야?',
+            intent='general_tech',
+            query_type='GENERAL_TECH',
+            answer_policy='GENERAL_KNOWLEDGE_FALLBACK',
+            insufficient_context=True,
+            extracted_date='',
+            retrieval_status='NO_RETRIEVED_CHUNKS',
+            exact_match=False,
+            chunks=[],
+            user_context='{}',
+            memory_context='',
+            fallback_prefix='SSAFY 공식 자료 기준은 아니지만',
+        )
+        self.assertIn('styles/developer_tutor.md', result.metadata['used_prompt_files'])
+        self.assertIn('policies/general_tech_policy.md', result.metadata['used_prompt_files'])
+        self.assertNotIn('policies/schedule_policy.md', result.metadata['used_prompt_files'])
+        self.assertLessEqual(result.metadata['context_count'], 4)
