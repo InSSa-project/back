@@ -24,6 +24,15 @@ IGNORED_OCR_IMAGE_KEYWORDS = (
     'banner',
 )
 EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평가', '평가 안내', '1학기 평가')
+EVALUATION_NOTICE_KEYWORDS = EVALUATION_NOTICE_KEYWORDS + (
+    '과목월말평가',
+    '과목 평가',
+    '과목평가',
+    '월말평가',
+    '평가 안내',
+    '10회차 과목',
+    '5회차 월말평가',
+)
 
 _LOGGER = logging.getLogger(__name__)
 CRAWLER_DEBUG_DIR = settings.BASE_DIR / 'tmp' / 'ssafy_crawler_debug'

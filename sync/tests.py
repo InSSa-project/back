@@ -607,6 +607,21 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(raw_data.metadata_json['image_urls'], ['https://example.com/eval.png'])
         self.assertIn('keyword_candidates_by_source=notice:1', job_log.message)
 
+    def test_tenth_evaluation_notice_import_stores_exam_metadata(self):
+        item = _notice_item('https://example.com/notices/eval-10', 'eval-10')
+        item['title'] = '[평가] 10회차 과목 5회차 월말평가 안내'
+        item['raw_text'] = '과목평가 월말평가 평가 안내'
+        item['raw_html'] = '<img src="/eval-10.png" alt="10회차 과목 5회차 월말평가 안내">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['category'], 'exam')
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertTrue(raw_data.metadata_json['ocr_ready'])
+        self.assertIn('target_evaluation_10th_found=true', job_log.message)
+
     def test_image_url_item_with_short_content_is_saved(self):
         item = _notice_item('https://example.com/notices/image-only', 'image-only')
         item['title'] = '이미지 공지'
@@ -2245,10 +2260,32 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(title='SW역량테스트(IM형/A형)', start_at__date='2026-02-19').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='과목평가3(일타싸피)', start_at__date='2026-02-23').count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
-        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-27').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-27').count(), 1)
         exam = ScheduleEvent.objects.get(title='과목평가2')
         self.assertEqual(exam.metadata_json['repair_source'], 'manual_exam_correction')
         self.assertEqual(exam.metadata_json['source_reason'], 'evaluation_notice_missing_manual_mvp_seed')
+
+    def test_repair_calendar_events_dedupes_pjt_and_fills_project_focus_days(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['관통 PJT', '관통PJT']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 5, 22, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 5, 23, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='project',
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='관통 PJT', start_at__date='2026-05-22').count(), 1)
+        for day in [22, 23, 24]:
+            self.assertEqual(
+                ScheduleEvent.objects.filter(title='관통 프로젝트 집중기간', start_at__date=f'2026-06-{day}').count(),
+                1,
+            )
 
     def test_repair_calendar_events_reports_manual_ratio_and_raw_candidates(self):
         RawSsafyData.objects.create(
