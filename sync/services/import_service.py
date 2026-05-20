@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import os
 
 from django.db import transaction
 from django.utils import timezone
@@ -252,10 +253,14 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'saved_evaluation_notice_count={summary.saved_evaluation_notice_count}, '
         f'evaluation_raw_count={RawSsafyData.objects.filter(metadata_json__document_type="evaluation_notice").count()}'
         f', raw_notice_count={RawSsafyData.objects.filter(source_type="notice").count()}'
+        f', raw_all_notice_like_count={_raw_all_notice_like_count()}'
+        f', source_type_counts={_source_type_counts()}'
         f', latest_notice_title={_latest_notice_title(raw_items=None)}'
         f', target_evaluation_10th_found={str(_target_evaluation_10th_found()).lower()}'
         f', duplicate_count={summary.duplicate_count}'
         f', unique_brdItmSeq_count={len(summary.unique_notice_ids)}'
+        f', target_visible_count={_expected_notice_count() or "-"}'
+        f', inaccessible_or_unknown_gap={_expected_notice_gap()}'
         f', detail_success_count={summary.detail_success_count}, '
         f'real_content_count={summary.real_content_count}, '
         f'image_found_count={summary.image_found_count}, '
@@ -407,6 +412,30 @@ def _format_count_dict(values):
 def _latest_notice_title(raw_items=None):
     latest = RawSsafyData.objects.filter(source_type='notice').order_by('-collected_at', '-id').first()
     return latest.title if latest else 'none'
+
+
+def _source_type_counts():
+    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq']
+    return '|'.join(f'{source_type}:{RawSsafyData.objects.filter(source_type=source_type).count()}' for source_type in wanted)
+
+
+def _raw_all_notice_like_count():
+    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq']
+    return RawSsafyData.objects.filter(source_type__in=wanted).count()
+
+
+def _expected_notice_count():
+    try:
+        return int(os.getenv('SSAFY_NOTICE_EXPECTED_COUNT') or '0')
+    except ValueError:
+        return 0
+
+
+def _expected_notice_gap():
+    expected = _expected_notice_count()
+    if not expected:
+        return 'unknown'
+    return str(max(0, expected - RawSsafyData.objects.filter(source_type='notice').count()))
 
 
 def _target_evaluation_10th_found():

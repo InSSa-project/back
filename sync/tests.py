@@ -32,6 +32,7 @@ from sync.services.ssafy_crawler import (
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
     _extract_pagination_totals,
+    _filter_controls_debug,
     _pagination_controls_debug,
 )
 
@@ -717,6 +718,20 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('unique_brdItmSeq_count=2', job_log.message)
         self.assertEqual(RawSsafyData.objects.filter(title='Same title').count(), 2)
 
+    def test_expected_count_gap_and_source_counts_are_logged(self):
+        RawSsafyData.objects.create(source_type='notice', title='existing', raw_text='x')
+        items = [_source_item('notice', 'https://example.com/notices/new', 'new', 'new')]
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_EXPECTED_COUNT': '3'}):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertIn('raw_notice_count=2', job_log.message)
+        self.assertIn('raw_all_notice_like_count=2', job_log.message)
+        self.assertIn('source_type_counts=notice:2', job_log.message)
+        self.assertIn('target_visible_count=3', job_log.message)
+        self.assertIn('inaccessible_or_unknown_gap=1', job_log.message)
+
     def test_session_expired_job_fails_without_dropping_collected_items(self):
         collected_item = _source_item('notice', 'https://example.com/notices/1', 'Notice 1', 'notice-1')
 
@@ -1026,6 +1041,30 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('pageIndex', debug)
         self.assertIn('searchKeyword', debug)
         self.assertIn('linkPage', debug)
+
+    def test_filter_controls_debug_reports_form_select_and_tabs(self):
+        soup = BeautifulSoup(
+            '''
+            <form name="searchForm" method="post" action="/notice/list.do">
+              <input type="hidden" name="pageIndex" value="1">
+              <input type="hidden" name="searchBrdItmCdVal" value="NOTICE">
+              <select name="searchCondition">
+                <option value="">전체</option>
+                <option value="title">제목</option>
+              </select>
+              <button>검색</button>
+            </form>
+            <a href="#;" onclick="changeTab('exam')">평가</a>
+            ''',
+            'html.parser',
+        )
+
+        debug = _filter_controls_debug(soup)
+
+        self.assertIn('searchForm:post:/notice/list.do', debug)
+        self.assertIn('searchBrdItmCdVal=NOTICE', debug)
+        self.assertIn('searchCondition', debug)
+        self.assertIn('평가', debug)
 
     def test_pagination_total_count_is_extracted(self):
         soup = BeautifulSoup(
