@@ -12,6 +12,64 @@ from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
 
 
+CANONICAL_TRACKS = {
+    'python',
+    'java_non_major',
+    'java_major',
+    'embedded',
+    'mobile',
+    'embedded_robot',
+    'data',
+    'meister',
+}
+TRACK_ALIASES = {
+    'python': 'python',
+    '파이썬': 'python',
+    'java_non_major': 'java_non_major',
+    'java비전공': 'java_non_major',
+    'java_비전공': 'java_non_major',
+    'java(비전공)': 'java_non_major',
+    'java_major': 'java_major',
+    'java전공': 'java_major',
+    'java_전공': 'java_major',
+    'java(전공)': 'java_major',
+    'embedded': 'embedded',
+    '임베디드': 'embedded',
+    'mobile': 'mobile',
+    '모바일': 'mobile',
+    'embedded_robot': 'embedded_robot',
+    'embedded robot': 'embedded_robot',
+    '임베디드로봇': 'embedded_robot',
+    '임베디드 로봇': 'embedded_robot',
+    'data': 'data',
+    '데이터': 'data',
+    'meister': 'meister',
+    '마이스터고': 'meister',
+}
+COMMON_TRACK_VALUES = {'', 'common', 'all', '공통', '전체'}
+COMMON_TITLE_KEYWORDS = (
+    'SSAFY DAY',
+    '설날',
+    '온라인 위크',
+    '과목평가',
+    '월말평가',
+    '관통 프로젝트 집중기간',
+    '상반기 밋업',
+)
+OTHER_EVENT_TYPES = {
+    'study',
+    'assignment',
+    'lecture',
+    'deadline',
+    'notice',
+    'mentoring',
+    'unknown',
+    'other',
+    '기타',
+    'etc',
+}
+
+
 @csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def event_list(request):
@@ -28,7 +86,7 @@ def event_list(request):
         events = events.filter(start_at__lte=end_at)
     event_type = request.GET.get('event_type')
     if event_type:
-        events = events.filter(event_type=event_type)
+        events = _filter_queryset_by_event_type(events, event_type)
     events = filter_events_for_user_profile(list(events), _user_profile(request.user))
     events = _filter_events_by_audience_params(events, request.GET)
 
@@ -204,22 +262,76 @@ def _filter_events_by_audience_params(events, params):
     filtered = []
     for event in events:
         audience = (event.metadata_json or {}).get('audience') or {}
-        if _matches_audience_filters(event.metadata_json or {}, audience, filters):
+        if _matches_audience_filters(event, event.metadata_json or {}, audience, filters):
             filtered.append(event)
     return filtered
 
 
-def _matches_audience_filters(metadata, audience, filters):
+def _filter_queryset_by_event_type(events, event_type):
+    normalized_event_type = str(event_type or '').strip()
+    if normalized_event_type == 'other':
+        return events.filter(event_type__in=OTHER_EVENT_TYPES)
+    return events.filter(event_type=normalized_event_type)
+
+
+def _matches_audience_filters(event, metadata, audience, filters):
     for key, expected in filters.items():
+        if key == 'track':
+            if _matches_track_filter(event, metadata, audience, expected):
+                continue
+            return False
+
         actual = audience.get(key, metadata.get(key))
-        if key == 'track' and _is_common_track(actual):
+        if _is_blank(actual):
             continue
         if actual is None or str(actual).lower() != str(expected).lower():
             return False
     return True
 
 
-def _is_common_track(value):
-    if value is None or value == '':
+def _matches_track_filter(event, metadata, audience, expected):
+    expected_track = _normalize_track(expected)
+    if expected_track not in CANONICAL_TRACKS:
+        return False
+
+    actual_track = _event_track(metadata, audience)
+    if _is_common_event(event, metadata):
         return True
-    return str(value).lower() == 'common'
+    return _normalize_track(actual_track) == expected_track
+
+
+def _event_track(metadata, audience):
+    return audience.get('track') or metadata.get('track')
+
+
+def _is_common_event(event, metadata):
+    audience = metadata.get('audience') or {}
+    track = _event_track(metadata, audience)
+    if _is_common_track(track):
+        return True
+    if metadata.get('is_global') is True or getattr(event, 'is_global', False) is True:
+        return True
+    title = str(getattr(event, 'title', '') or metadata.get('title') or metadata.get('source_title') or '')
+    return any(keyword in title for keyword in COMMON_TITLE_KEYWORDS)
+
+
+def _is_common_track(value):
+    if _is_blank(value):
+        return True
+    return _normalize_track(value) in COMMON_TRACK_VALUES
+
+
+def _normalize_track(value):
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    lowered = text.lower().replace('-', '_')
+    compact = lowered.replace(' ', '').replace('_', '')
+    aliases = {key.lower().replace('-', '_'): track for key, track in TRACK_ALIASES.items()}
+    aliases.update({key.lower().replace(' ', '').replace('_', ''): track for key, track in TRACK_ALIASES.items()})
+    aliases.update({track: track for track in CANONICAL_TRACKS})
+    return aliases.get(lowered, aliases.get(compact, lowered))
+
+
+def _is_blank(value):
+    return value is None or str(value).strip() == ''
