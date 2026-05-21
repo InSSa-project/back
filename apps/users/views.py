@@ -5,7 +5,7 @@ from django.contrib.auth import login
 from django.conf import settings
 from django.http import JsonResponse
 from django.shortcuts import redirect
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from common.utils.api_response import error_response, success_response
 
@@ -57,7 +57,11 @@ class OAuthAuthorizeView(APIView):
 
     def get(self, request, provider):
         try:
-            authorization_url = self.service_class().build_authorization_url(request, provider)
+            authorization_url = self.service_class().build_authorization_url(
+                request,
+                provider,
+                frontend_next=request.query_params.get('next', ''),
+            )
         except OAuthError as exc:
             return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
         return redirect(authorization_url)
@@ -71,15 +75,34 @@ class OAuthCallbackView(APIView):
         code = request.query_params.get('code')
         state = request.query_params.get('state')
         if not code or not state:
-            return error_response('OAuth callback requires code and state.', code=status.HTTP_400_BAD_REQUEST)
+            return redirect(self._build_frontend_callback_url(error='oauth_failed'))
 
         try:
             result = self.service_class().login_with_authorization_code(request, provider, code, state)
         except OAuthError as exc:
-            return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
+            return redirect(self._build_frontend_callback_url(error='oauth_failed'))
 
         login(request, result['user'])
-        return redirect('index')
+        return redirect(self._build_frontend_callback_url(result))
+
+    def _build_frontend_callback_url(self, result=None, error=''):
+        frontend_base_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+        callback_path = '/auth/callback'
+
+        if error:
+            fragment = urlencode({'error': error})
+            return f'{frontend_base_url}{callback_path}#{fragment}'
+
+        # TODO: Replace URL fragment token handoff with httpOnly cookies before production.
+        fragment = urlencode(
+            {
+                'access_token': result['access_token'],
+                'refresh_token': result['refresh_token'],
+                'redirect': result.get('frontend_next') or '/calendar',
+                'is_created': 'true' if result.get('is_created') else 'false',
+            }
+        )
+        return f'{frontend_base_url}{callback_path}#{fragment}'
 
 
 class OAuthDebugView(APIView):

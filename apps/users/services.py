@@ -57,14 +57,17 @@ class OAuthLoginService:
             **tokens,
         }
 
-    def build_authorization_url(self, request, provider_name):
+    def build_authorization_url(self, request, provider_name, frontend_next=''):
         provider = self.provider_registry.get_provider(provider_name)
         redirect_uri = self._build_callback_uri(request, provider_name)
-        state = self._build_signed_state(provider_name, redirect_uri)
+        frontend_next = self._normalize_frontend_next(frontend_next)
+        state = self._build_signed_state(provider_name, redirect_uri, frontend_next)
         state_session_key = self._state_session_key(provider_name)
         redirect_uri_session_key = self._redirect_uri_session_key(provider_name)
+        frontend_next_session_key = self._frontend_next_session_key(provider_name)
         request.session[state_session_key] = state
         request.session[redirect_uri_session_key] = redirect_uri
+        request.session[frontend_next_session_key] = frontend_next
         request.session.modified = True
         authorization_url = provider.get_authorization_url(state, redirect_uri=redirect_uri)
         logger.info(
@@ -82,8 +85,10 @@ class OAuthLoginService:
     def login_with_authorization_code(self, request, provider_name, code, state):
         state_session_key = self._state_session_key(provider_name)
         redirect_uri_session_key = self._redirect_uri_session_key(provider_name)
+        frontend_next_session_key = self._frontend_next_session_key(provider_name)
         expected_state = request.session.pop(state_session_key, None)
         redirect_uri = request.session.pop(redirect_uri_session_key, None)
+        frontend_next = request.session.pop(frontend_next_session_key, '')
         signed_state_payload = self._load_signed_state(state)
         signed_state_valid = bool(
             signed_state_payload
@@ -91,6 +96,8 @@ class OAuthLoginService:
         )
         if not redirect_uri and signed_state_payload:
             redirect_uri = signed_state_payload.get('redirect_uri')
+        if not frontend_next and signed_state_payload:
+            frontend_next = signed_state_payload.get('frontend_next', '')
         request.session.modified = True
         logger.info(
             'OAuth callback received provider=%s host=%s session_key=%s state_key=%s expected_state=%s received_state=%s state_matched=%s signed_state_valid=%s redirect_uri=%s',
@@ -112,7 +119,10 @@ class OAuthLoginService:
         provider = self.provider_registry.get_provider(provider_name)
         access_token = provider.exchange_code(code, redirect_uri=redirect_uri)
         current_user = request.user if request.user.is_authenticated else None
-        return self.login(provider_name, access_token, current_user=current_user)
+        return {
+            **self.login(provider_name, access_token, current_user=current_user),
+            'frontend_next': self._normalize_frontend_next(frontend_next),
+        }
 
     def _build_callback_uri(self, request, provider_name):
         from django.conf import settings
@@ -123,11 +133,12 @@ class OAuthLoginService:
         callback_path = reverse('users-oauth-callback', kwargs={'provider': provider_name})
         return request.build_absolute_uri(callback_path)
 
-    def _build_signed_state(self, provider_name, redirect_uri):
+    def _build_signed_state(self, provider_name, redirect_uri, frontend_next=''):
         return signing.dumps(
             {
                 'provider': provider_name,
                 'redirect_uri': redirect_uri,
+                'frontend_next': self._normalize_frontend_next(frontend_next),
                 'nonce': get_random_string(32),
             },
             salt=OAUTH_STATE_SALT,
@@ -150,6 +161,16 @@ class OAuthLoginService:
 
     def _redirect_uri_session_key(self, provider_name):
         return f'oauth_redirect_uri_{provider_name}'
+
+    def _frontend_next_session_key(self, provider_name):
+        return f'oauth_frontend_next_{provider_name}'
+
+    def _normalize_frontend_next(self, frontend_next):
+        if not frontend_next or not isinstance(frontend_next, str):
+            return ''
+        if not frontend_next.startswith('/') or frontend_next.startswith('//'):
+            return ''
+        return frontend_next
 
     def _get_or_create_user(self, oauth_user, current_user=None):
         oauth_account = OAuthAccount.objects.select_related('user').filter(
