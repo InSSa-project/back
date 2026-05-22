@@ -48,8 +48,10 @@ class ImportSummary:
     real_content_count: int = 0
     image_found_count: int = 0
     menu_only_content_count: int = 0
+    updated_count: int = 0
     scanned_by_source: dict = field(default_factory=dict)
     skipped_by_source: dict = field(default_factory=dict)
+    updated_by_source: dict = field(default_factory=dict)
     failed_by_source: dict = field(default_factory=dict)
     excluded_by_source: dict = field(default_factory=dict)
     keyword_candidates_by_source: dict = field(default_factory=dict)
@@ -161,6 +163,8 @@ def _import_raw_items(raw_items):
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         existing_raw_data = _find_existing_raw_data(item)
         if existing_raw_data:
+            if _update_existing_academic_rule_images(existing_raw_data, item, summary):
+                continue
             summary.skipped_count += 1
             summary.duplicate_count += 1
             _increment_skipped_source(summary, item.get('source_type', 'notice'))
@@ -236,6 +240,10 @@ def _increment_skipped_source(summary, source_type):
     summary.skipped_by_source[source_type] = summary.skipped_by_source.get(source_type, 0) + 1
 
 
+def _increment_updated_source(summary, source_type):
+    summary.updated_by_source[source_type] = summary.updated_by_source.get(source_type, 0) + 1
+
+
 def _increment_collected_source_count(summary, source_type):
     summary.collected_source_counts[source_type] = summary.collected_source_counts.get(source_type, 0) + 1
     if source_type == 'notice':
@@ -270,7 +278,9 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'academic_rule_count={summary.academic_rule_count}, '
         f'no_schedule_candidates={summary.no_schedule_count}, '
         f'image_count={summary.image_count}, '
+        f'metadata_image_count={summary.image_count}, '
         f'ocr_processed_count={summary.ocr_processed_count}, '
+        f'ocr_target_image_count={summary.ocr_processed_count}, '
         f'ocr_text_length={summary.ocr_text_length}, '
         f'parse_candidate_count={summary.parse_candidate_count}, '
         f'ocr_failed_count={summary.ocr_failed_count}, '
@@ -295,7 +305,8 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'real_content_count={summary.real_content_count}, '
         f'image_found_count={summary.image_found_count}, '
         f'menu_only_content_count={summary.menu_only_content_count}, '
-        f'saved_count={summary.raw_count}'
+        f'saved_count={summary.raw_count}, '
+        f'updated_count={summary.updated_count}'
     )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
@@ -309,6 +320,9 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
     if summary.collected_source_counts:
         collected_detail = ','.join(f'{key}:{value}' for key, value in sorted(summary.collected_source_counts.items()))
         message = f'{message}, collected_source_counts={collected_detail}'
+    if summary.updated_by_source:
+        updated_detail = ','.join(f'{key}:{value}' for key, value in sorted(summary.updated_by_source.items()))
+        message = f'{message}, updated_by_source={updated_detail}'
     if summary.no_schedule_by_type:
         no_schedule_detail = ','.join(
             f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())
@@ -562,6 +576,7 @@ def _format_source_run_logs(summary, crawler_debug):
             f'status={source_run.get("status", "failed" if failure else "unknown")}:'
             f'collected_count={source_run.get("collected_count", _source_scanned_count(summary, source_type))}:'
             f'saved_count={_source_saved_count(summary, source_type)}:'
+            f'updated_count={_source_updated_count(summary, source_type)}:'
             f'skipped_count={_source_skipped_count(summary, source_type)}:'
             f'error_count={error_count}:'
             f'error={failure.get("error", "-") if failure else "-"}'
@@ -611,6 +626,12 @@ def _source_saved_count(summary, source_type):
     return summary.source_counts.get(source_type, 0)
 
 
+def _source_updated_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.updated_by_source.get(source_type, 0)
+
+
 def _source_skipped_count(summary, source_type):
     if not summary:
         return 0
@@ -638,10 +659,12 @@ def _source_result_summary(summary, crawler_debug=None, failed_error=None):
             error_message = debug_failure.get('error', '')
         collected_count = summary.scanned_by_source.get(source_type, 0)
         saved_count = _saved_count_for_source(summary, source_type)
-        skipped_count = max(0, collected_count - saved_count)
+        updated_count = summary.updated_by_source.get(source_type, 0)
+        skipped_count = max(0, collected_count - saved_count - updated_count)
         parts.append(
             f'{source_type}:{status}:collected={collected_count}:saved={saved_count}:'
-            f'skipped={skipped_count}:error_type={error_type or "-"}:error={error_message or "-"}'
+            f'updated={updated_count}:skipped={skipped_count}:'
+            f'error_type={error_type or "-"}:error={error_message or "-"}'
         )
     return f'source_results={";".join(parts) or "none"}'
 
@@ -724,6 +747,49 @@ def _apply_ocr_pipeline(item, summary):
     prepared['ocr_boxes'] = ocr_result.get('ocr_boxes') or []
     prepared['raw_text'] = _merge_ocr_text(prepared.get('raw_text', ''), ocr_text)
     return prepared
+
+
+def _update_existing_academic_rule_images(raw_data, item, summary):
+    if item.get('source_type') != 'academic_rule' or raw_data.source_type != 'academic_rule':
+        return False
+
+    incoming_image_urls = _item_image_urls(item)
+    existing_image_urls = list((raw_data.metadata_json or {}).get('image_urls') or [])
+    if incoming_image_urls == existing_image_urls:
+        return False
+
+    updated_item = _apply_ocr_pipeline(item, summary)
+    raw_data.title = updated_item.get('title', raw_data.title)
+    raw_data.raw_text = updated_item.get('raw_text', '')
+    raw_data.raw_html = updated_item.get('raw_html', '')
+    raw_data.ocr_boxes = updated_item.get('ocr_boxes') or []
+    raw_data.metadata_json = updated_item.get('metadata_json', {})
+    raw_data.collected_at = timezone.now()
+    raw_data.status = RawSsafyData.STATUS_PARSED
+    raw_data.save(
+        update_fields=[
+            'title',
+            'raw_text',
+            'raw_html',
+            'ocr_boxes',
+            'metadata_json',
+            'collected_at',
+            'status',
+        ]
+    )
+    summary.updated_count += 1
+    _increment_updated_source(summary, raw_data.source_type)
+    summary.no_schedule_count += 1
+    summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
+    return True
+
+
+def _item_image_urls(item):
+    metadata = item.get('metadata_json') or {}
+    image_urls = metadata.get('image_urls')
+    if image_urls is None:
+        image_urls = extract_image_urls_from_html(item.get('raw_html', ''), item.get('source_url', ''))
+    return list(image_urls or [])
 
 
 def _safe_extract_ocr_text(image_urls):

@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
     SsafySessionExpiredError,
+    extract_academic_rule_reply_image_urls_from_html,
     extract_image_urls_from_html,
     _extract_next_page_url,
     _extract_notice_links,
@@ -377,6 +378,48 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.filter(source_type='notice').count(), 1)
         self.assertEqual(RawSsafyData.objects.filter(source_type='academic_rule').count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_duplicate_academic_rule_updates_changed_image_urls_and_reprocesses_ocr(self):
+        source_url = 'https://edu.ssafy.com/edu/board/rule/list.do'
+        RawSsafyData.objects.create(
+            source_type='academic_rule',
+            source_url=source_url,
+            title='Old academic rule',
+            raw_text='old rule text',
+            raw_html='<main><img src="/old-rule.png"></main>',
+            metadata_json={'notice_id': 'rule-list', 'image_urls': ['https://edu.ssafy.com/old-rule.png']},
+        )
+        item = _academic_rule_item(source_url, 'rule-list')
+        item['raw_html'] = '<table><tr class="reply"><td><img src="/rule-1.png"><img src="/rule-2.png"></td></tr></table>'
+        item['metadata_json']['image_urls'] = [
+            'https://edu.ssafy.com/rule-1.png',
+            'https://edu.ssafy.com/rule-2.png',
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch(
+                'sync.services.import_service.extract_text_from_image_urls',
+                return_value={
+                    'ocr_text': 'updated academic OCR',
+                    'ocr_provider': 'mock',
+                    'ocr_status': 'success',
+                    'ocr_error': '',
+                    'ocr_error_type': '',
+                    'ocr_failed_count': 0,
+                    'ocr_boxes': [],
+                },
+            ) as ocr_mock:
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get(source_type='academic_rule')
+        self.assertEqual(RawSsafyData.objects.filter(source_type='academic_rule').count(), 1)
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.skipped_count, 0)
+        self.assertEqual(job_log.ocr_processed_count, 2)
+        self.assertIn('updated_count=1', job_log.message)
+        self.assertEqual(raw_data.metadata_json['image_urls'], item['metadata_json']['image_urls'])
+        self.assertIn('[OCR_TEXT]', raw_data.raw_text)
+        ocr_mock.assert_called_once_with(item['metadata_json']['image_urls'])
 
     def test_collect_authenticated_list_skips_failed_detail_pages(self):
         page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a></main>')
@@ -785,7 +828,7 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertIn('source_run_logs=', job_log.message)
         self.assertIn('source_type=notice:started_at=2026-05-22T10:00:00+09:00', job_log.message)
-        self.assertIn('saved_count=1:skipped_count=0:error_count=0', job_log.message)
+        self.assertIn('saved_count=1:updated_count=0:skipped_count=0:error_count=0', job_log.message)
 
     def test_failed_source_debug_marks_partial_success(self):
         item = _source_item('notice', 'https://example.com/notices/source-timeout', 'Notice', 'source-timeout')
@@ -1370,6 +1413,32 @@ class SampleNoticeImportTests(TestCase):
             ],
         )
 
+    def test_academic_rule_reply_image_urls_collect_six_reply_images_without_page_background(self):
+        html = '''
+        <main style="background-image: url('/assets/profile-background.png')">
+          <img src="/assets/header-logo.jpg">
+          <table class="accordian-list">
+            <tr class="reply"><td><img src="/rules/attendance.png"></td></tr>
+            <tr class="reply"><td><img src="/rules/life.png"></td></tr>
+            <tr class="reply"><td><img src="/rules/award.png"></td></tr>
+            <tr class="reply"><td><img src="/rules/security.png"></td></tr>
+            <tr class="reply"><td><img src="/rules/evaluation.png"></td></tr>
+            <tr class="reply"><td><img src="/rules/welfare.png"></td></tr>
+          </table>
+        </main>
+        '''
+
+        image_urls = extract_academic_rule_reply_image_urls_from_html(
+            html,
+            'https://edu.ssafy.com/edu/board/rule/list.do',
+        )
+
+        self.assertEqual(len(image_urls), 6)
+        self.assertEqual(image_urls[0], 'https://edu.ssafy.com/rules/attendance.png')
+        self.assertEqual(image_urls[-1], 'https://edu.ssafy.com/rules/welfare.png')
+        self.assertNotIn('https://edu.ssafy.com/assets/profile-background.png', image_urls)
+        self.assertNotIn('https://edu.ssafy.com/assets/header-logo.jpg', image_urls)
+
     def test_academic_toggle_opener_skips_already_open_buttons(self):
         page = _AcademicTogglePage(
             [
@@ -1378,9 +1447,10 @@ class SampleNoticeImportTests(TestCase):
             ]
         )
 
-        toggle_count = _open_academic_toggles(page, 'academic_rule')
+        toggle_count, opened_toggle_count = _open_academic_toggles(page, 'academic_rule')
 
         self.assertEqual(toggle_count, 2)
+        self.assertEqual(opened_toggle_count, 1)
         self.assertEqual([button.click_count for button in page.buttons], [1, 0])
         self.assertEqual(page.waits, [300])
 
