@@ -218,11 +218,25 @@ def load_ssafy_authenticated_documents(
                 learning_material_url=learning_material_url,
                 event_url=event_url,
             ):
+                source_started_at = _source_log_timestamp()
+                source_started_monotonic = time.monotonic()
                 env_name = SOURCE_LIST_URL_ENV_NAMES.get(source_type, '')
+                _record_collection_debug(
+                    f'source_run_start source_type={source_type} started_at={source_started_at} '
+                    f'env_var={env_name} url={list_url or "-"}',
+                    level='warning',
+                )
                 if not list_url:
                     _record_collection_debug(
                         f'skipped_source={source_type} reason=missing_url env_var={env_name}',
                         level='warning',
+                    )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='skipped',
+                        collected_count=0,
                     )
                     continue
                 _record_collection_debug(f'source_url source_type={source_type} env_var={env_name} url={list_url}')
@@ -236,11 +250,26 @@ def load_ssafy_authenticated_documents(
                     )
                     notices.extend(collected)
                     _record_collection_debug(f'collected_source={source_type} count={len(collected)}')
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='success',
+                        collected_count=len(collected),
+                    )
                 except SsafySessionExpiredError as exc:
                     exc.collected_items = notices
                     _record_collection_debug(
                         f'failed_source={source_type} url={list_url} error_reason=session_expired error={exc}',
                         level='warning',
+                    )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='failed',
+                        collected_count=0,
+                        error_count=1,
                     )
                     raise exc
                 except SsafySourceTimeoutError as exc:
@@ -248,11 +277,27 @@ def load_ssafy_authenticated_documents(
                         f'failed_source={source_type} url={list_url} error_reason=timeout error={exc}',
                         level='warning',
                     )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='timeout',
+                        collected_count=0,
+                        error_count=1,
+                    )
                     continue
                 except Exception as exc:
                     _record_collection_debug(
                         f'failed_source={source_type} url={list_url} error={exc}',
                         level='warning',
+                    )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='failed',
+                        collected_count=0,
+                        error_count=1,
                     )
             context.close()
             browser.close()
@@ -488,6 +533,27 @@ def _source_deadline():
     except ValueError:
         seconds = 0
     return time.monotonic() + seconds if seconds > 0 else 0
+
+
+def _source_log_timestamp():
+    return datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def _record_source_run_end(
+    source_type,
+    started_at,
+    started_monotonic,
+    status,
+    collected_count,
+    error_count=0,
+):
+    _record_collection_debug(
+        f'source_run_end source_type={source_type} started_at={started_at} '
+        f'ended_at={_source_log_timestamp()} elapsed_seconds={time.monotonic() - started_monotonic:.3f} '
+        f'status={status} collected_count={collected_count} saved_count=pending '
+        f'skipped_count=pending error_count={error_count}',
+        level='warning',
+    )
 
 
 def _raise_if_source_timed_out(source_type, deadline):

@@ -771,6 +771,22 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('source_results=', job_log.message)
         self.assertIn('notice:success', job_log.message)
 
+    def test_success_job_combines_source_timing_with_import_counts(self):
+        item = _source_item('notice', 'https://example.com/notices/source-run', 'Notice', 'source-run')
+        crawler_debug = [
+            'source_run_end source_type=notice started_at=2026-05-22T10:00:00+09:00 '
+            'ended_at=2026-05-22T10:00:02+09:00 elapsed_seconds=2.125 status=success '
+            'collected_count=1 saved_count=pending skipped_count=pending error_count=0',
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch('sync.services.import_service.get_last_collection_debug', return_value=crawler_debug):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertIn('source_run_logs=', job_log.message)
+        self.assertIn('source_type=notice:started_at=2026-05-22T10:00:00+09:00', job_log.message)
+        self.assertIn('saved_count=1:skipped_count=0:error_count=0', job_log.message)
+
     def test_failed_source_debug_marks_partial_success(self):
         item = _source_item('notice', 'https://example.com/notices/source-timeout', 'Notice', 'source-timeout')
 
@@ -801,13 +817,32 @@ class SampleNoticeImportTests(TestCase):
             import os
             seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
             seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            seen['source_timeout'] = os.environ.get('SSAFY_SOURCE_TIMEOUT')
             return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
 
         with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
-            call_command('crawl_ssafy_notices', source='notice', max_pages=30, stdout=StringIO())
+            call_command('crawl_ssafy_notices', source='notice', max_pages=30, timeout=12, stdout=StringIO())
 
         self.assertEqual(seen['sources'], 'notice')
         self.assertEqual(seen['max_pages'], '30')
+        self.assertEqual(seen['source_timeout'], '12')
+
+    def test_crawl_command_prints_source_run_logs(self):
+        output = StringIO()
+        message = (
+            'ok, source_run_logs=source_type=academic_rule:started_at=2026-05-22T10:00:00+09:00:'
+            'ended_at=2026-05-22T10:00:01+09:00:elapsed_seconds=1.000:status=success:'
+            'collected_count=1:saved_count=0:skipped_count=1:error_count=0:error=-'
+        )
+
+        with patch(
+            'sync.management.commands.crawl_ssafy_notices.run_notice_import',
+            return_value=CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message=message),
+        ):
+            call_command('crawl_ssafy_notices', stdout=output)
+
+        self.assertIn('Source run logs:', output.getvalue())
+        self.assertIn('source_type=academic_rule', output.getvalue())
 
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):
