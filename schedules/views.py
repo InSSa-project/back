@@ -96,6 +96,7 @@ def event_list(request):
     events = filter_events_for_user_profile(list(events), _user_profile(request.user))
     events = _filter_events_by_audience_params(events, request.GET)
 
+    events = sorted(events, key=_event_list_sort_key)
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
 
 
@@ -114,6 +115,7 @@ def _create_event(request):
         'deadline_at',
         'is_all_day',
         'is_global',
+        'is_important',
         'event_type',
         'metadata',
         'metadata_json',
@@ -158,6 +160,7 @@ def _create_event(request):
         metadata_json['track'] = payload['track']
     if payload.get('is_global') is not None:
         metadata_json['is_global'] = payload['is_global']
+    metadata_json['is_important'] = bool(payload.get('is_important', metadata_json.get('is_important', False)))
     if payload.get('deadline_at'):
         deadline_at = _parse_patch_datetime(payload['deadline_at'])
         if deadline_at is None:
@@ -267,6 +270,7 @@ def _serialize_event(event):
         'start_at': start_at.isoformat(),
         'end_at': end_at.isoformat(),
         'is_all_day': event.is_all_day,
+        'is_important': _is_important_event(event),
         'event_type': event.event_type,
         'source_type': event.source_type,
         'metadata': event.metadata_json,
@@ -275,6 +279,14 @@ def _serialize_event(event):
         'source_url': raw_data.source_url if raw_data else None,
         'source_title': raw_data.title if raw_data else None,
     }
+
+
+def _event_list_sort_key(event):
+    return (timezone.localdate(event.start_at), not _is_important_event(event), event.start_at, event.id)
+
+
+def _is_important_event(event):
+    return bool((event.metadata_json or {}).get('is_important', False))
 
 
 def _user_profile(user):

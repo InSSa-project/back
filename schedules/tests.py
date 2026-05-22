@@ -73,7 +73,7 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(event.title, 'Manual study session')
         self.assertEqual(event.source_type, 'manual')
         self.assertIsNone(event.raw_data)
-        self.assertEqual(event.metadata_json, {})
+        self.assertEqual(event.metadata_json, {'is_important': False})
         self.assertEqual(payload['event_type'], 'personal')
         self.assertIsNone(payload['source_url'])
         self.assertIsNone(payload['source_title'])
@@ -93,6 +93,7 @@ class ScheduleEventApiTests(TestCase):
                     'metadata_json': {'color': 'green'},
                     'source_type': 'manual',
                     'track': 'python',
+                    'is_important': True,
                 }
             ),
             content_type='application/json',
@@ -104,6 +105,8 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['source_type'], 'manual')
         self.assertEqual(payload['metadata_json']['track'], 'python')
         self.assertFalse(payload['metadata_json']['is_global'])
+        self.assertTrue(payload['metadata_json']['is_important'])
+        self.assertTrue(payload['is_important'])
         self.assertIn('deadline_at', payload['metadata_json'])
 
     def test_post_event_accepts_all_day_frontend_datetimes(self):
@@ -124,6 +127,8 @@ class ScheduleEventApiTests(TestCase):
         payload = response.json()
         self.assertTrue(payload['is_all_day'])
         self.assertEqual(payload['event_type'], 'personal')
+        self.assertFalse(payload['metadata_json']['is_important'])
+        self.assertFalse(payload['is_important'])
         self.assertIn('2026-05-22T00:00:00', payload['start_at'])
         self.assertIn('2026-05-22T23:59:59', payload['end_at'])
 
@@ -185,6 +190,28 @@ class ScheduleEventApiTests(TestCase):
 
         personal_response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
         self.assertEqual([item['title'] for item in personal_response.json()], ['Manual visible event'])
+
+    def test_event_list_returns_important_event_first_on_same_date(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 22, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Normal early event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            metadata_json={'is_important': False},
+        )
+        ScheduleEvent.objects.create(
+            title='Important later event',
+            start_at=start_at + timedelta(hours=2),
+            end_at=start_at + timedelta(hours=3),
+            event_type='personal',
+            metadata_json={'is_important': True},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['title'] for item in response.json()], ['Important later event', 'Normal early event'])
 
     def test_patch_event_updates_editable_fields(self):
         run_sample_notice_import()
