@@ -78,6 +78,88 @@ class ScheduleEventApiTests(TestCase):
         self.assertIsNone(payload['source_url'])
         self.assertIsNone(payload['source_title'])
 
+    def test_post_event_accepts_frontend_personal_event_payload(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Calendar payload event',
+                    'description': 'Created from frontend',
+                    'event_type': 'personal',
+                    'start_at': '2026-05-22 09:30:00',
+                    'end_at': '2026-05-22 10:30:00',
+                    'deadline_at': '2026-05-22T10:30',
+                    'is_global': False,
+                    'metadata_json': {'color': 'green'},
+                    'source_type': 'manual',
+                    'track': 'python',
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['event_type'], 'personal')
+        self.assertEqual(payload['source_type'], 'manual')
+        self.assertEqual(payload['metadata_json']['track'], 'python')
+        self.assertFalse(payload['metadata_json']['is_global'])
+        self.assertIn('deadline_at', payload['metadata_json'])
+
+    def test_post_event_accepts_all_day_frontend_datetimes(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'All day personal event',
+                    'start_at': '2026-05-22T00:00:00',
+                    'end_at': '2026-05-22T23:59:59',
+                    'is_all_day': True,
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertTrue(payload['is_all_day'])
+        self.assertEqual(payload['event_type'], 'personal')
+        self.assertIn('2026-05-22T00:00:00', payload['start_at'])
+        self.assertIn('2026-05-22T23:59:59', payload['end_at'])
+
+    def test_post_event_rejects_end_before_start(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Invalid personal event',
+                    'start_at': '2026-05-22T11:00:00',
+                    'end_at': '2026-05-22T10:00:00',
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'End time must be after start time.')
+
+    def test_post_event_rejects_unsupported_event_type(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Invalid event type',
+                    'start_at': '2026-05-22T10:00:00',
+                    'end_at': '2026-05-22T11:00:00',
+                    'event_type': 'surprise',
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'Unsupported event_type: surprise')
+
     def test_created_manual_event_is_returned_by_event_list(self):
         self.client.post(
             reverse('schedule-event-list'),
@@ -100,6 +182,9 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item['title'] for item in response.json()], ['Manual visible event'])
+
+        personal_response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
+        self.assertEqual([item['title'] for item in personal_response.json()], ['Manual visible event'])
 
     def test_patch_event_updates_editable_fields(self):
         run_sample_notice_import()

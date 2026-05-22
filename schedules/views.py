@@ -68,6 +68,12 @@ OTHER_EVENT_TYPES = {
     '기타',
     'etc',
 }
+ALLOWED_EVENT_TYPES = OTHER_EVENT_TYPES | {
+    'exam',
+    'project',
+    'personal',
+    'holiday',
+}
 
 
 @csrf_exempt
@@ -105,10 +111,14 @@ def _create_event(request):
         'description',
         'start_at',
         'end_at',
+        'deadline_at',
         'is_all_day',
+        'is_global',
         'event_type',
         'metadata',
         'metadata_json',
+        'source_type',
+        'track',
     }
     if invalid_fields:
         return JsonResponse(
@@ -116,12 +126,13 @@ def _create_event(request):
             status=400,
         )
 
-    missing_fields = [field for field in ['title', 'start_at', 'end_at'] if not payload.get(field)]
-    if missing_fields:
-        return JsonResponse(
-            {'detail': f'Missing required fields: {", ".join(missing_fields)}'},
-            status=400,
-        )
+    title = str(payload.get('title') or '').strip()
+    if not title:
+        return JsonResponse({'detail': 'Title is required.'}, status=400)
+    if not payload.get('start_at'):
+        return JsonResponse({'detail': 'Start time is required.'}, status=400)
+    if not payload.get('end_at'):
+        return JsonResponse({'detail': 'End time is required.'}, status=400)
 
     start_at = _parse_patch_datetime(payload['start_at'])
     end_at = _parse_patch_datetime(payload['end_at'])
@@ -130,7 +141,7 @@ def _create_event(request):
     if end_at is None:
         return JsonResponse({'detail': 'Invalid datetime format: end_at'}, status=400)
     if end_at < start_at:
-        return JsonResponse({'detail': 'end_at must be after start_at.'}, status=400)
+        return JsonResponse({'detail': 'End time must be after start time.'}, status=400)
 
     metadata_json = payload.get('metadata_json', payload.get('metadata', {}))
     if metadata_json is None:
@@ -138,14 +149,29 @@ def _create_event(request):
     if not isinstance(metadata_json, dict):
         return JsonResponse({'detail': 'metadata_json must be an object.'}, status=400)
 
+    event_type = str(payload.get('event_type') or 'personal').strip()
+    if event_type not in ALLOWED_EVENT_TYPES:
+        return JsonResponse({'detail': f'Unsupported event_type: {event_type}'}, status=400)
+
+    metadata_json = dict(metadata_json)
+    if payload.get('track') is not None:
+        metadata_json['track'] = payload['track']
+    if payload.get('is_global') is not None:
+        metadata_json['is_global'] = payload['is_global']
+    if payload.get('deadline_at'):
+        deadline_at = _parse_patch_datetime(payload['deadline_at'])
+        if deadline_at is None:
+            return JsonResponse({'detail': 'Invalid datetime format: deadline_at'}, status=400)
+        metadata_json['deadline_at'] = timezone.localtime(deadline_at).isoformat()
+
     event = ScheduleEvent.objects.create(
-        title=payload['title'],
+        title=title,
         description=payload.get('description', ''),
         start_at=start_at,
         end_at=end_at,
         is_all_day=payload.get('is_all_day', False),
-        event_type=payload.get('event_type', 'personal'),
-        source_type='manual',
+        event_type=event_type,
+        source_type=str(payload.get('source_type') or 'manual').strip() or 'manual',
         metadata_json=metadata_json,
     )
     return JsonResponse(_serialize_event(event), status=201)
@@ -216,6 +242,13 @@ def _parse_patch_datetime(value):
         return None
 
     parsed_datetime = parse_datetime(value)
+    if not parsed_datetime:
+        for datetime_format in ['%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d %H:%M:%S']:
+            try:
+                parsed_datetime = datetime.strptime(value, datetime_format)
+                break
+            except ValueError:
+                continue
     if not parsed_datetime:
         return None
     if timezone.is_naive(parsed_datetime):
