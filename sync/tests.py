@@ -28,6 +28,7 @@ from sync.services.ssafy_crawler import (
     _parse_detail_soup,
     _login_ssafy,
     _collect_authenticated_list,
+    _open_academic_toggles,
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
@@ -1305,6 +1306,48 @@ class SampleNoticeImportTests(TestCase):
         )
 
         self.assertEqual(image_urls, ['https://edu.ssafy.com/upload/notice/schedule.png'])
+
+    def test_extract_image_urls_from_html_collects_lazy_and_background_images(self):
+        html = '''
+        <article>
+            <img src="/upload/notice/a.png">
+            <img data-src="/upload/notice/lazy.png">
+            <img srcset="/upload/notice/srcset.png 1x, /upload/notice/a.png 2x">
+            <img data-srcset="images/month.png 640w">
+            <section style="background-image: url('../rules/rule-bg.png')"></section>
+            <div style="background: url('/upload/notice/lazy.png') center no-repeat"></div>
+        </article>
+        '''
+
+        image_urls = extract_image_urls_from_html(
+            html,
+            'https://edu.ssafy.com/edu/board/rule/list.do',
+        )
+
+        self.assertEqual(
+            image_urls,
+            [
+                'https://edu.ssafy.com/upload/notice/a.png',
+                'https://edu.ssafy.com/upload/notice/lazy.png',
+                'https://edu.ssafy.com/upload/notice/srcset.png',
+                'https://edu.ssafy.com/edu/board/rule/images/month.png',
+                'https://edu.ssafy.com/edu/board/rules/rule-bg.png',
+            ],
+        )
+
+    def test_academic_toggle_opener_skips_already_open_buttons(self):
+        page = _AcademicTogglePage(
+            [
+                _AcademicToggle(aria_expanded='false'),
+                _AcademicToggle(aria_expanded='true'),
+            ]
+        )
+
+        toggle_count = _open_academic_toggles(page, 'academic_rule')
+
+        self.assertEqual(toggle_count, 2)
+        self.assertEqual([button.click_count for button in page.buttons], [1, 0])
+        self.assertEqual(page.waits, [300])
 
     def test_ocr_mock_result_is_saved_to_metadata(self):
         item = _notice_item('https://example.com/notices/ocr-metadata', 'notice-ocr-metadata')
@@ -2869,6 +2912,42 @@ class _StaticLocator:
 
     def count(self):
         return self._count
+
+
+class _AcademicTogglePage:
+    def __init__(self, buttons):
+        self.buttons = buttons
+        self.waits = []
+
+    def locator(self, selector):
+        return _AcademicToggleLocator(self.buttons)
+
+    def wait_for_timeout(self, timeout):
+        self.waits.append(timeout)
+
+
+class _AcademicToggleLocator:
+    def __init__(self, buttons):
+        self.buttons = buttons
+
+    def count(self):
+        return len(self.buttons)
+
+    def nth(self, index):
+        return self.buttons[index]
+
+
+class _AcademicToggle:
+    def __init__(self, aria_expanded):
+        self.aria_expanded = aria_expanded
+        self.click_count = 0
+
+    def get_attribute(self, name):
+        return self.aria_expanded if name == 'aria-expanded' else ''
+
+    def click(self):
+        self.click_count += 1
+        self.aria_expanded = 'true'
 
 
 class _ImageResponse:
