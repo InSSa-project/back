@@ -49,6 +49,8 @@ class ImportSummary:
     image_found_count: int = 0
     menu_only_content_count: int = 0
     scanned_by_source: dict = field(default_factory=dict)
+    skipped_by_source: dict = field(default_factory=dict)
+    failed_by_source: dict = field(default_factory=dict)
     excluded_by_source: dict = field(default_factory=dict)
     keyword_candidates_by_source: dict = field(default_factory=dict)
     excluded_items: list = field(default_factory=list)
@@ -109,15 +111,20 @@ def run_notice_import(mode=None):
             )
             if debug_message:
                 message = f'{message}, crawler_debug={debug_message}'
+            message = _append_source_run_logs(message, partial_summary, crawler_debug)
             return _mark_job_partial_success(job_log, message, partial_summary)
-        return _mark_job_failed(job_log, message, summary=partial_summary)
+        return _mark_job_failed(
+            job_log,
+            _append_source_run_logs(message, partial_summary, crawler_debug),
+            summary=partial_summary,
+        )
     except (SsafyCrawlerError, ValueError) as exc:
         crawler_debug = get_last_collection_debug()
         debug_message = _format_crawler_debug(crawler_debug)
         message = f'{CRAWL_FAILED_MESSAGE} {exc}'
         if debug_message:
             message = f'{message}, crawler_debug={debug_message}'
-        return _mark_job_failed(job_log, message)
+        return _mark_job_failed(job_log, _append_source_run_logs(message, None, crawler_debug))
     except Exception as exc:
         return _mark_job_failed(job_log, str(exc))
 
@@ -134,6 +141,7 @@ def _import_raw_items(raw_items):
             summary.skipped_count += 1
             summary.excluded_count += 1
             excluded_source = excluded_debug['source_type']
+            _increment_skipped_source(summary, excluded_source)
             summary.excluded_by_source[excluded_source] = summary.excluded_by_source.get(excluded_source, 0) + 1
             if excluded_debug['keyword_candidate']:
                 summary.keyword_candidate_count += 1
@@ -155,6 +163,7 @@ def _import_raw_items(raw_items):
         if existing_raw_data:
             summary.skipped_count += 1
             summary.duplicate_count += 1
+            _increment_skipped_source(summary, item.get('source_type', 'notice'))
             summary.duplicate_items.append(
                 f'brdItmSeq={notice_id or "-"} title={item.get("title", "")} '
                 f'source_url={item.get("source_url", "")} existing_id={existing_raw_data.id}'
@@ -207,6 +216,7 @@ def _import_raw_items(raw_items):
             raw_data.save(update_fields=['status', 'metadata_json'])
         except Exception as exc:
             summary.failed_count += 1
+            summary.failed_by_source[raw_data.source_type] = summary.failed_by_source.get(raw_data.source_type, 0) + 1
             raw_data.status = RawSsafyData.STATUS_FAILED
             raw_data.save(update_fields=['status', 'metadata_json'])
             summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
@@ -220,6 +230,10 @@ def _increment_source_count(summary, source_type):
         summary.notice_count += 1
     elif source_type == 'academic_rule':
         summary.academic_rule_count += 1
+
+
+def _increment_skipped_source(summary, source_type):
+    summary.skipped_by_source[source_type] = summary.skipped_by_source.get(source_type, 0) + 1
 
 
 def _increment_collected_source_count(summary, source_type):
@@ -307,7 +321,7 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
     debug_message = _format_crawler_debug(crawler_debug)
     if debug_message:
         message = f'{message}, crawler_debug={debug_message}'
-    return message
+    return _append_source_run_logs(message, summary, crawler_debug)
 
 
 ALLOWED_SOURCE_TYPES = {
@@ -517,6 +531,90 @@ def _format_crawler_debug(crawler_debug):
     if not crawler_debug:
         return ''
     return ' | '.join(str(item) for item in crawler_debug[:20])
+
+
+def _append_source_run_logs(message, summary, crawler_debug):
+    source_run_logs = _format_source_run_logs(summary, crawler_debug)
+    if not source_run_logs:
+        return message
+    return f'{message}, source_run_logs={source_run_logs}'
+
+
+def _format_source_run_logs(summary, crawler_debug):
+    source_runs = _source_run_debug_by_type(crawler_debug)
+    if not source_runs:
+        return ''
+
+    source_types = sorted(set(source_runs) | set((summary.scanned_by_source if summary else {}) or {}))
+    logs = []
+    for source_type in source_types:
+        source_run = source_runs.get(source_type, {})
+        failure = _failed_source_from_debug(crawler_debug, source_type)
+        error_count = _int_debug_field(source_run.get('error_count')) + (
+            (summary.failed_by_source.get(source_type, 0) if summary else 0)
+        )
+        if failure and not error_count:
+            error_count = 1
+        logs.append(
+            f'source_type={source_type}:started_at={source_run.get("started_at", "-")}:'
+            f'ended_at={source_run.get("ended_at", "-")}:'
+            f'elapsed_seconds={source_run.get("elapsed_seconds", "-")}:'
+            f'status={source_run.get("status", "failed" if failure else "unknown")}:'
+            f'collected_count={source_run.get("collected_count", _source_scanned_count(summary, source_type))}:'
+            f'saved_count={_source_saved_count(summary, source_type)}:'
+            f'skipped_count={_source_skipped_count(summary, source_type)}:'
+            f'error_count={error_count}:'
+            f'error={failure.get("error", "-") if failure else "-"}'
+        )
+    return ';'.join(logs)
+
+
+def _source_run_debug_by_type(crawler_debug):
+    source_runs = {}
+    for message in crawler_debug or []:
+        text = str(message)
+        if not text.startswith('source_run_end '):
+            continue
+        fields = _debug_fields(text)
+        source_type = fields.get('source_type')
+        if source_type:
+            source_runs[source_type] = fields
+    return source_runs
+
+
+def _debug_fields(message):
+    fields = {}
+    for token in str(message).split():
+        if '=' not in token:
+            continue
+        key, value = token.split('=', 1)
+        fields[key] = value
+    return fields
+
+
+def _int_debug_field(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _source_scanned_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.scanned_by_source.get(source_type, 0)
+
+
+def _source_saved_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.source_counts.get(source_type, 0)
+
+
+def _source_skipped_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.skipped_by_source.get(source_type, 0)
 
 
 def _source_result_summary(summary, crawler_debug=None, failed_error=None):

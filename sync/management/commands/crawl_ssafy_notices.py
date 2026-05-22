@@ -19,9 +19,15 @@ class Command(BaseCommand):
         )
         parser.add_argument('--source', help='Comma-separated source list, e.g. notice,academic_rule.')
         parser.add_argument('--skip-source', help='Comma-separated source list to skip, e.g. mentoring_notice.')
-        parser.add_argument('--max-pages', type=int, help='Override SSAFY_NOTICE_MAX_PAGES for this run.')
+        parser.add_argument('--max-pages', type=int, help='Limit pages scanned per source for this run.')
         parser.add_argument('--detail-timeout', type=float, help='Per Playwright action timeout in seconds.')
         parser.add_argument('--source-timeout', type=float, help='Per source timeout in seconds.')
+        parser.add_argument(
+            '--timeout',
+            dest='source_timeout',
+            type=float,
+            help='Alias for --source-timeout. Limits each source independently.',
+        )
 
     def handle(self, *args, **options):
         with _temporary_crawler_env(options):
@@ -42,6 +48,11 @@ class Command(BaseCommand):
         self.stdout.write('RawSsafyData source counts:')
         for row in source_counts:
             self.stdout.write(f'{row["source_type"]}: {row["count"]}')
+        source_run_logs = _source_run_logs_from_message(job_log.message)
+        if source_run_logs:
+            self.stdout.write('Source run logs:')
+            for source_run_log in source_run_logs:
+                self.stdout.write(source_run_log)
 
 
 @contextmanager
@@ -65,4 +76,12 @@ def _temporary_crawler_env(options):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _source_run_logs_from_message(message):
+    marker = 'source_run_logs='
+    if marker not in (message or ''):
+        return []
+    source_run_logs = message.split(marker, 1)[1]
+    return [item for item in source_run_logs.split(';') if item]
 
