@@ -969,12 +969,19 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
 
     raw_html, raw_text = _clean_detail_html_and_text(content_node)
     image_urls = extract_image_urls_from_html(raw_html, detail_url)
+    if source_type == 'academic_rule':
+        reply_image_urls = extract_academic_rule_reply_image_urls_from_html(str(soup), detail_url)
+        if reply_image_urls:
+            image_urls = reply_image_urls
     if not image_urls:
         image_urls = extract_image_urls_from_html(str(soup), detail_url)
     if source_type == 'academic_rule':
+        content_image_urls = extract_image_urls_from_html(raw_html, detail_url)
         _record_collection_debug(
-            f'academic_collected_images source_type={source_type} count={len(image_urls)} '
-            f'urls={_format_debug_urls(image_urls)}'
+            f'academic_collected_images source_type={source_type} content_image_count={len(content_image_urls)} '
+            f'metadata_image_count={len(image_urls)} ocr_target_image_count={len(image_urls)} '
+            f'urls={_format_debug_urls(image_urls)}',
+            level='warning',
         )
     notice_id = _guess_notice_id(detail_url)
     published_at = _extract_published_at(soup)
@@ -1271,13 +1278,18 @@ def _prepare_academic_page_for_collection(page, source_type, source_url):
 
     before_html = _page_content(page)
     before_urls = extract_image_urls_from_html(before_html, source_url)
-    toggle_count = _open_academic_toggles(page, source_type)
+    toggle_count, opened_toggle_count = _open_academic_toggles(page, source_type)
     after_html = _page_content(page)
     after_urls = extract_image_urls_from_html(after_html, source_url)
+    reply_image_urls = extract_academic_rule_reply_image_urls_from_html(after_html, source_url)
+    reply_row_count = _academic_rule_reply_row_count(after_html)
     _record_collection_debug(
         f'academic_toggle_images source_type={source_type} toggle_count={toggle_count} '
-        f'before_count={len(before_urls)} after_count={len(after_urls)} '
-        f'iframe_count={_page_iframe_count(page)} urls={_format_debug_urls(after_urls)}'
+        f'opened_toggle_count={opened_toggle_count} reply_row_count={reply_row_count} '
+        f'reply_image_count={len(reply_image_urls)} page_total_image_count={len(after_urls)} '
+        f'content_image_count={len(reply_image_urls)} before_count={len(before_urls)} after_count={len(after_urls)} '
+        f'iframe_count={_page_iframe_count(page)} urls={_format_debug_urls(after_urls)}',
+        level='warning',
     )
     if _crawler_debug_html_enabled():
         debug_info = _save_crawler_debug_page(page, source_type, 'academic_toggles_opened')
@@ -1296,14 +1308,16 @@ def _open_academic_toggles(page, source_type):
             f'academic_toggle_scan_failed source_type={source_type} selector={ACADEMIC_TOGGLE_SELECTOR} error={exc}',
             level='warning',
         )
-        return 0
+        return 0, 0
 
+    opened_toggle_count = 0
     for index in range(toggle_count):
         button = toggle_buttons.nth(index)
         try:
             if _academic_toggle_is_open(button):
                 continue
             button.click()
+            opened_toggle_count += 1
             page.wait_for_timeout(ACADEMIC_TOGGLE_WAIT_MS)
         except Exception as exc:
             _record_collection_debug(
@@ -1311,13 +1325,32 @@ def _open_academic_toggles(page, source_type):
                 f'selector={ACADEMIC_TOGGLE_SELECTOR} error={exc}',
                 level='warning',
             )
-    return toggle_count
+    return toggle_count, opened_toggle_count
 
 
 def _academic_toggle_is_open(button):
     aria_expanded = _locator_attribute(button, 'aria-expanded').lower()
     if aria_expanded:
         return aria_expanded == 'true'
+
+    try:
+        button_state = button.evaluate(
+            """button => {
+                const classNames = button.innerHTML || '';
+                const label = (button.textContent || '').trim();
+                if (classNames.includes('accordian-arrow-down') || label.includes('열기')) {
+                    return 'closed';
+                }
+                if (classNames.includes('accordian-arrow-up') || label.includes('닫기')) {
+                    return 'open';
+                }
+                return '';
+            }"""
+        )
+        if button_state:
+            return button_state == 'open'
+    except Exception:
+        pass
 
     class_names = ' '.join(
         _locator_attribute(button, attribute)
@@ -1385,6 +1418,27 @@ def extract_image_urls_from_html(raw_html, source_url):
         for background_url in _extract_background_image_urls(styled_node.get('style', '')):
             _append_image_url(image_urls, seen, background_url, source_url)
     return image_urls
+
+
+def extract_academic_rule_reply_image_urls_from_html(raw_html, source_url):
+    if not raw_html:
+        return []
+
+    soup = BeautifulSoup(raw_html, 'html.parser')
+    image_urls = []
+    seen = set()
+    for image in soup.select('tr.reply img'):
+        for attribute in LAZY_IMAGE_ATTRIBUTES:
+            _append_image_url(image_urls, seen, image.get(attribute, ''), source_url)
+        _append_srcset_image_urls(image_urls, seen, image.get('srcset', ''), source_url)
+        _append_srcset_image_urls(image_urls, seen, image.get('data-srcset', ''), source_url)
+    return image_urls
+
+
+def _academic_rule_reply_row_count(raw_html):
+    if not raw_html:
+        return 0
+    return len(BeautifulSoup(raw_html, 'html.parser').select('tr.reply'))
 
 
 def _append_srcset_image_urls(image_urls, seen, srcset, source_url):
