@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from datetime import date, time, timedelta
 
@@ -14,6 +15,27 @@ from sync.services.reparse_service import reparse_raw_data_to_events
 REPAIR_SOURCE = 'manual_calendar_correction'
 MANUAL_EXAM_REPAIR_SOURCE = 'manual_exam_correction'
 MANUAL_EXAM_REASON = 'evaluation_notice_missing_manual_mvp_seed'
+TRACK_ALIASES = {
+    'Python': 'python',
+    'Java비전공': 'java_non_major',
+    'Java(비전공)': 'java_non_major',
+    'Java전공': 'java_major',
+    'Java(전공)': 'java_major',
+    'Embedded': 'embedded',
+    'Mobile': 'mobile',
+    'Embedded Robot': 'embedded_robot',
+    'Data': 'data',
+    '마이스터고': 'meister',
+}
+TRACK_DISPLAY_BY_KEY = {value: key for key, value in TRACK_ALIASES.items()}
+TRACK_DISPLAY_BY_KEY.update({key: key for key in TRACK_ALIASES})
+TRACK_DISPLAY_BY_KEY.update({'java_non_major': 'Java비전공', 'java_major': 'Java전공'})
+COMMON_TRACKS = {'', 'common', 'all', '공통'}
+COMMON_TITLE_KEYWORDS = [
+    '과목평가', '월말평가', 'SSAFY DAY', '설날', '온라인 위크', '관통', 'PJT',
+    '밋업', 'SW역량테스트', 'AI 강의', '캠프', '챌린지', '입학식', '시간표',
+]
+WEEKDAY_INDEX = {'월': 0, '화': 1, '수': 2, '목': 3, '금': 4, '토': 5, '일': 6}
 NOISE_TITLES = {'시간', 'ViewModel', 'without questions', 'Live 방송'}
 NOISE_TITLES.update({'운영자', '♥알림신청♥', '공지사항 상세', '목록'})
 PROMOTIONAL_TITLE_KEYWORDS = [
@@ -66,6 +88,9 @@ class RepairSummary:
     february_events: list = field(default_factory=list)
     ai_lecture_counts: list = field(default_factory=list)
     raw_candidates: list = field(default_factory=list)
+    weekday_corrected_count: int = 0
+    track_prefixed_count: int = 0
+    semantic_exam_duplicate_removed_count: int = 0
 
 
 class Command(BaseCommand):
@@ -103,6 +128,9 @@ class Command(BaseCommand):
                 f'manual_correction_ratio={summary.manual_correction_ratio:.2f}\n'
                 f'review_required_count={summary.review_required_count}\n'
                 f'missing_evaluation_notice_raw_data={str(summary.missing_evaluation_notice_raw_data).lower()}\n'
+                f'weekday_corrected_count={summary.weekday_corrected_count}\n'
+                f'track_prefixed_count={summary.track_prefixed_count}\n'
+                f'semantic_exam_duplicate_removed_count={summary.semantic_exam_duplicate_removed_count}\n'
                 f'deleted_titles={"; ".join(summary.deleted_titles[:20]) or "none"}\n'
                 f'key_events={"; ".join(summary.key_events[:40]) or "none"}\n'
                 f'february_events={"; ".join(summary.february_events[:40]) or "none"}\n'
@@ -125,6 +153,8 @@ def repair_calendar_events(dry_run=False, use_manual_fallback=False):
     _normalize_existing_titles(summary, dry_run=dry_run)
     _reparse_ocr_candidates(summary, candidate_qs, dry_run=dry_run)
     _normalize_existing_titles(summary, dry_run=dry_run)
+    _correct_weekday_mismatches(summary, dry_run=dry_run)
+    _prefix_track_titles(summary, dry_run=dry_run)
     _delete_false_positives(summary, dry_run=dry_run)
     if not evaluation_raw:
         summary.missing_evaluation_notice_raw_data = True
@@ -133,6 +163,7 @@ def repair_calendar_events(dry_run=False, use_manual_fallback=False):
         _upsert_exam_corrections(summary, evaluation_raw or base_raw, dry_run=dry_run)
 
     _apply_requested_calendar_repairs(summary, base_raw, dry_run=dry_run)
+    _remove_semantic_exam_duplicates(summary, dry_run=dry_run)
     _dedupe_generated(summary, dry_run=dry_run)
     _fill_metrics(summary)
     summary.key_events = _key_events()
@@ -206,6 +237,70 @@ def _normalize_existing_titles(summary, dry_run=False):
         if not dry_run:
             event.title = normalized_title
             event.save(update_fields=['title'])
+
+
+def _correct_weekday_mismatches(summary, dry_run=False):
+    candidates = (
+        ScheduleEvent.objects.filter(raw_data__isnull=False)
+        | ScheduleEvent.objects.filter(metadata_json__repair_source__in=[REPAIR_SOURCE, MANUAL_EXAM_REPAIR_SOURCE])
+    ).distinct()
+    for event in candidates:
+        target_weekday = _explicit_weekday_index(event)
+        if target_weekday is None:
+            continue
+        event_date = timezone.localdate(event.start_at)
+        if event_date.weekday() == target_weekday:
+            continue
+        corrected_date = _adjacent_date_for_weekday(event_date, target_weekday)
+        if not corrected_date:
+            continue
+        duration = event.end_at - event.start_at
+        new_start = _aware(corrected_date)
+        summary.weekday_corrected_count += 1
+        if not dry_run:
+            event.start_at = new_start
+            event.end_at = new_start + duration
+            event.save(update_fields=['start_at', 'end_at'])
+
+
+def _prefix_track_titles(summary, dry_run=False):
+    candidates = (
+        ScheduleEvent.objects.filter(raw_data__isnull=False)
+        | ScheduleEvent.objects.filter(metadata_json__repair_source=REPAIR_SOURCE)
+    ).distinct()
+    for event in candidates:
+        metadata = event.metadata_json or {}
+        normalized_title = _strip_weekday_marker(_normalize_event_title(event.title))
+        if _has_track_prefix(normalized_title) and (
+            not _is_track_timetable_event(event) or _is_common_event_title(normalized_title)
+        ):
+            unprefixed = _remove_track_prefix(normalized_title)
+            summary.updated_count += 1
+            if not dry_run:
+                event.title = unprefixed
+                event.metadata_json = {key: value for key, value in metadata.items() if key != 'track'}
+                event.save(update_fields=['title', 'metadata_json'])
+            continue
+        track_source = metadata.get('track')
+        if not track_source and _is_track_timetable_event(event):
+            track_source = _track_from_text(event.raw_data.title if event.raw_data_id and event.raw_data else '')
+        track_key = _normalize_track(track_source)
+        if not track_key or track_key in COMMON_TRACKS:
+            continue
+        display = TRACK_DISPLAY_BY_KEY.get(track_key, track_key)
+        if _is_common_event_title(normalized_title) or _has_track_prefix(normalized_title):
+            if metadata.get('track') == track_key:
+                continue
+            if not dry_run:
+                event.metadata_json = {**metadata, 'track': track_key}
+                event.save(update_fields=['metadata_json'])
+            continue
+        prefixed = f'{display}) {normalized_title}'
+        summary.track_prefixed_count += 1
+        if not dry_run:
+            event.title = prefixed
+            event.metadata_json = {**metadata, 'track': track_key}
+            event.save(update_fields=['title', 'metadata_json'])
 
 
 def _upsert_base_corrections(summary, raw_data, dry_run=False):
@@ -342,6 +437,31 @@ def _upsert_event(summary, raw_data, title, start_date, end_date, event_type, ex
     )
 
 
+def _remove_semantic_exam_duplicates(summary, dry_run=False):
+    manual_events = [
+        event for event in ScheduleEvent.objects.filter(event_type='exam').order_by('start_at', 'id')
+        if (event.metadata_json or {}).get('repair_source') == MANUAL_EXAM_REPAIR_SOURCE
+    ]
+    for manual in manual_events:
+        exam_kind = _exam_kind(manual.title)
+        if not exam_kind:
+            continue
+        event_date = timezone.localdate(manual.start_at)
+        ocr_events = ScheduleEvent.objects.filter(event_type='exam', raw_data__isnull=False)
+        if not any(
+            timezone.localdate(event.start_at) == event_date
+            and (event.metadata_json or {}).get('repair_source') != MANUAL_EXAM_REPAIR_SOURCE
+            and _exam_kind(event.title) == exam_kind
+            for event in ocr_events
+        ):
+            continue
+        summary.semantic_exam_duplicate_removed_count += 1
+        summary.deleted_count += 1
+        summary.deleted_titles.append(f'{event_date.isoformat()} {manual.title}')
+        if not dry_run:
+            manual.delete()
+
+
 def _dedupe_generated(summary, dry_run=False):
     seen = {}
     events = (
@@ -357,6 +477,11 @@ def _dedupe_generated(summary, dry_run=False):
         event_type = '' if event_date == date(2026, 1, 15) and normalized_title == '15기 SW AI 스타트 캠프' else event.event_type
         if normalized_title == 'AI 강의 Ⅱ':
             event_type = ''
+            track = ''
+        if normalized_title == 'AI 강의 1':
+            track = ''
+        if normalized_title == '관통 프로젝트 집중기간':
+            track = ''
         key = (event_date, event_type, normalized_title, track)
         if key not in seen:
             seen[key] = event.id
@@ -399,6 +524,83 @@ def _normalize_event_title(title):
     if compact in {'AI강의2', 'AI강의II'}:
         return 'AI 강의 Ⅱ'
     return normalized
+
+
+def _event_text(event):
+    raw_text = event.raw_data.raw_text if event.raw_data_id and event.raw_data else ''
+    return ' '.join([str(event.title or ''), str(event.description or ''), str(raw_text or '')])
+
+
+def _explicit_weekday_index(event):
+    text = _event_text(event)
+    for weekday, index in WEEKDAY_INDEX.items():
+        if re.search(rf'{weekday}\s*[)\]]', text):
+            return index
+        if re.search(rf'[{weekday}]요일', text):
+            return index
+    return None
+
+
+def _adjacent_date_for_weekday(event_date, target_weekday):
+    for offset in (-1, 1):
+        candidate = event_date + timedelta(days=offset)
+        if candidate.weekday() == target_weekday:
+            return candidate
+    return None
+
+
+def _track_from_text(text):
+    for display in sorted(TRACK_ALIASES, key=len, reverse=True):
+        if display in str(text or ''):
+            return display
+    return ''
+
+
+def _normalize_track(track):
+    text = str(track or '').strip()
+    if not text:
+        return ''
+    lowered = text.lower().replace('-', '_').replace(' ', '_')
+    alias_by_lower = {key.lower().replace(' ', '_'): value for key, value in TRACK_ALIASES.items()}
+    alias_by_lower.update({value.lower(): value for value in TRACK_ALIASES.values()})
+    if lowered in alias_by_lower:
+        return alias_by_lower[lowered]
+    return TRACK_ALIASES.get(text, text)
+
+
+def _strip_weekday_marker(title):
+    return re.sub(r'^\s*[월화수목금토일]\s*[)\]]\s*', '', str(title or '').strip())
+
+
+def _has_track_prefix(title):
+    return any(str(title or '').startswith(f'{display})') for display in TRACK_ALIASES)
+
+
+def _remove_track_prefix(title):
+    text = str(title or '').strip()
+    for display in sorted(TRACK_ALIASES, key=len, reverse=True):
+        prefix = f'{display})'
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def _is_track_timetable_event(event):
+    raw_title = event.raw_data.title if event.raw_data_id and event.raw_data else ''
+    return '시간표' in str(raw_title or '')
+
+
+def _is_common_event_title(title):
+    return any(keyword in str(title or '') for keyword in COMMON_TITLE_KEYWORDS)
+
+
+def _exam_kind(title):
+    compact = str(title or '').replace(' ', '')
+    if '과목평가' in compact:
+        return 'subject'
+    if '월말평가' in compact:
+        return 'monthly'
+    return ''
 
 
 def _ocr_candidate_queryset():

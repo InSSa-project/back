@@ -73,10 +73,97 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(event.title, 'Manual study session')
         self.assertEqual(event.source_type, 'manual')
         self.assertIsNone(event.raw_data)
-        self.assertEqual(event.metadata_json, {})
+        self.assertEqual(event.metadata_json, {'is_important': False})
         self.assertEqual(payload['event_type'], 'personal')
         self.assertIsNone(payload['source_url'])
         self.assertIsNone(payload['source_title'])
+
+    def test_post_event_accepts_frontend_personal_event_payload(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Calendar payload event',
+                    'description': 'Created from frontend',
+                    'event_type': 'personal',
+                    'start_at': '2026-05-22 09:30:00',
+                    'end_at': '2026-05-22 10:30:00',
+                    'deadline_at': '2026-05-22T10:30',
+                    'is_global': False,
+                    'metadata_json': {'color': 'green'},
+                    'source_type': 'manual',
+                    'track': 'python',
+                    'is_important': True,
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['event_type'], 'personal')
+        self.assertEqual(payload['source_type'], 'manual')
+        self.assertEqual(payload['metadata_json']['track'], 'python')
+        self.assertFalse(payload['metadata_json']['is_global'])
+        self.assertTrue(payload['metadata_json']['is_important'])
+        self.assertTrue(payload['is_important'])
+        self.assertIn('deadline_at', payload['metadata_json'])
+
+    def test_post_event_accepts_all_day_frontend_datetimes(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'All day personal event',
+                    'start_at': '2026-05-22T00:00:00',
+                    'end_at': '2026-05-22T23:59:59',
+                    'is_all_day': True,
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertTrue(payload['is_all_day'])
+        self.assertEqual(payload['event_type'], 'personal')
+        self.assertFalse(payload['metadata_json']['is_important'])
+        self.assertFalse(payload['is_important'])
+        self.assertIn('2026-05-22T00:00:00', payload['start_at'])
+        self.assertIn('2026-05-22T23:59:59', payload['end_at'])
+
+    def test_post_event_rejects_end_before_start(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Invalid personal event',
+                    'start_at': '2026-05-22T11:00:00',
+                    'end_at': '2026-05-22T10:00:00',
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'End time must be after start time.')
+
+    def test_post_event_rejects_unsupported_event_type(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Invalid event type',
+                    'start_at': '2026-05-22T10:00:00',
+                    'end_at': '2026-05-22T11:00:00',
+                    'event_type': 'surprise',
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'Unsupported event_type: surprise')
 
     def test_created_manual_event_is_returned_by_event_list(self):
         self.client.post(
@@ -100,6 +187,31 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item['title'] for item in response.json()], ['Manual visible event'])
+
+        personal_response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
+        self.assertEqual([item['title'] for item in personal_response.json()], ['Manual visible event'])
+
+    def test_event_list_returns_important_event_first_on_same_date(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 22, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Normal early event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            metadata_json={'is_important': False},
+        )
+        ScheduleEvent.objects.create(
+            title='Important later event',
+            start_at=start_at + timedelta(hours=2),
+            end_at=start_at + timedelta(hours=3),
+            event_type='personal',
+            metadata_json={'is_important': True},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['title'] for item in response.json()], ['Important later event', 'Normal early event'])
 
     def test_patch_event_updates_editable_fields(self):
         run_sample_notice_import()
@@ -177,6 +289,151 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual({item['title'] for item in response.json()}, {'Python event', 'Common event'})
+
+    def test_event_list_filters_by_top_level_metadata_track(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Meister event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'meister'},
+        )
+        ScheduleEvent.objects.create(
+            title='Python event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'python'},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'track': 'meister'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]['title'], 'Meister event')
+        self.assertEqual(payload[0]['metadata']['track'], 'meister')
+
+    def test_event_list_track_filter_keeps_common_title_events(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Meister event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'meister'},
+        )
+        ScheduleEvent.objects.create(
+            title='SSAFY DAY',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='etc',
+            metadata_json={'track': 'python'},
+        )
+        ScheduleEvent.objects.create(
+            title='Python only event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'python'},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'track': 'meister'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item['title'] for item in response.json()}, {'Meister event', 'SSAFY DAY'})
+
+    def test_event_list_other_event_type_includes_frontend_other_group(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        for index, event_type in enumerate(
+            ['study', 'assignment', 'lecture', 'deadline', 'notice', 'mentoring', 'unknown', 'other', '기타'],
+            start=1,
+        ):
+            ScheduleEvent.objects.create(
+                title=f'{event_type} event',
+                start_at=start_at + timedelta(minutes=index),
+                end_at=start_at + timedelta(minutes=index + 1),
+                event_type=event_type,
+            )
+        ScheduleEvent.objects.create(
+            title='Exam event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='exam',
+        )
+        ScheduleEvent.objects.create(
+            title='Project event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='project',
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'event_type': 'other'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {item['event_type'] for item in response.json()},
+            {'study', 'assignment', 'lecture', 'deadline', 'notice', 'mentoring', 'unknown', 'other', '기타'},
+        )
+
+    def test_event_list_exam_event_type_returns_only_exam_events(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Exam event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='exam',
+        )
+        ScheduleEvent.objects.create(
+            title='Study event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'event_type': 'exam'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['event_type'] for item in response.json()], ['exam'])
+
+    def test_event_list_combines_track_and_other_event_type_filters(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Meister study',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'meister'},
+        )
+        ScheduleEvent.objects.create(
+            title='온라인 위크',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'python'},
+        )
+        ScheduleEvent.objects.create(
+            title='Meister exam',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='exam',
+            metadata_json={'track': 'meister'},
+        )
+        ScheduleEvent.objects.create(
+            title='Python study',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'python'},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'track': 'meister', 'event_type': 'other'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual({item['title'] for item in payload}, {'Meister study', '온라인 위크'})
+        self.assertEqual({item['event_type'] for item in payload}, {'study'})
 
     def test_patch_event_rejects_source_fields(self):
         run_sample_notice_import()
