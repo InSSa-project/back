@@ -9,3 +9,6 @@ If context only partially answers, say what is confirmed and what must be checke
 - nearby date 추론 금지.
 - confidence가 낮으면 “확인 필요”를 표시한다.
 - 최신성이 중요한 정보는 source 기반으로 설명한다.
+- 검색된 context만 근거로 답변
+- 없으면 없다고 말하기
+- 날짜/시험/공지는 추측 금지
