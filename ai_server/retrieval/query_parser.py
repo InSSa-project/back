@@ -26,6 +26,15 @@ class DateExtractor:
 
     def extract(self, question: str) -> tuple[str, str, bool]:
         normalized = question.strip()
+        if '오늘' in normalized:
+            return self.today.isoformat(), self.today.isoformat(), True
+        if '내일' in normalized:
+            target = self.today + timedelta(days=1)
+            return target.isoformat(), target.isoformat(), True
+        if '어제' in normalized:
+            target = self.today - timedelta(days=1)
+            return target.isoformat(), target.isoformat(), True
+
         month_day = re.search(r'(?P<month>\d{1,2})\s*월\s*(?P<day>\d{1,2})\s*일', normalized)
         if month_day:
             parsed = date(self.today.year, int(month_day.group('month')), int(month_day.group('day')))
@@ -59,6 +68,11 @@ class DateExtractor:
         last_day = calendar.monthrange(year, month)[1]
         return date(year, month, 1).isoformat(), date(year, month, last_day).isoformat(), False
 
+    def broad_range(self, days: int = 365) -> tuple[str, str, bool]:
+        start = self.today - timedelta(days=days)
+        end = self.today + timedelta(days=days)
+        return start.isoformat(), end.isoformat(), False
+
 
 class ScheduleQueryParser:
     SCHEDULE_WORDS = ['일정', '언제', '마감', '제출', '평가', '시험', '월말평가', '프로젝트']
@@ -78,6 +92,9 @@ class ScheduleQueryParser:
             if start_date[:7] == end_date[:7] and start_date.endswith('-01'):
                 return ParsedQuery(ScheduleQueryType.SCHEDULE_MONTH, start_date, end_date, False)
             return ParsedQuery(ScheduleQueryType.SCHEDULE_RANGE, start_date, end_date, False)
+        if has_schedule_word:
+            start_date, end_date, exact = self.date_extractor.broad_range()
+            return ParsedQuery(ScheduleQueryType.SCHEDULE_RANGE, start_date, end_date, exact)
         if has_notice_word:
             return ParsedQuery(ScheduleQueryType.GENERAL_NOTICE)
         return ParsedQuery(ScheduleQueryType.GENERAL_CHAT)

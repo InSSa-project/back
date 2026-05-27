@@ -6,10 +6,13 @@ from ai_server.policies.answer_policy import AnswerPolicy, AnswerPolicyRouter
 from ai_server.prompts.builder import PromptBuilder
 from ai_server.retrieval.policy_router import RetrievalPolicyRouter
 from ai_server.retrieval.query_parser import DateExtractor, ScheduleQueryParser, ScheduleQueryType
+from ai_server.retrieval.schedule_retrieval import ScheduleRetrievalService
 from ai_server.retrievers.evaluator import RetrievalEvaluator
+from ai_server.rag.schemas.documents import RetrievedChunk
 from ai_server.vectorstores.faiss_store import FaissVectorStore
 
 from datetime import date
+import os
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -50,6 +53,21 @@ class RagFallbackPolicyTests(SimpleTestCase):
         self.assertEqual(parsed.start_date, '2026-05-18')
         self.assertTrue(parsed.exact_match_required)
 
+    def test_schedule_query_parser_extracts_relative_date(self):
+        parser = ScheduleQueryParser(DateExtractor(today=date(2026, 5, 27)))
+        parsed = parser.parse('내일 일정 알려줘')
+        self.assertEqual(parsed.query_type, ScheduleQueryType.SCHEDULE_EXACT_DATE)
+        self.assertEqual(parsed.start_date, '2026-05-28')
+        self.assertTrue(parsed.exact_match_required)
+
+    def test_schedule_query_parser_routes_schedule_without_date_to_upcoming_range(self):
+        parser = ScheduleQueryParser(DateExtractor(today=date(2026, 5, 27)))
+        parsed = parser.parse('개인 일정 알려줘')
+        self.assertEqual(parsed.query_type, ScheduleQueryType.SCHEDULE_RANGE)
+        self.assertEqual(parsed.start_date, '2025-05-27')
+        self.assertEqual(parsed.end_date, '2027-05-27')
+        self.assertFalse(parsed.exact_match_required)
+
     def test_schedule_policy_disables_semantic_fallback_for_exact_date(self):
         parser = ScheduleQueryParser(DateExtractor(today=date(2026, 5, 17)))
         parsed = parser.parse('5월 18일 일정 알려줘')
@@ -78,6 +96,46 @@ class RagFallbackPolicyTests(SimpleTestCase):
         finally:
             if index_path.exists():
                 index_path.unlink()
+
+    def test_schedule_retrieval_prioritizes_title_keyword_in_wide_range(self):
+        class StubVectorStore:
+            def search_by_metadata(self, **_kwargs):
+                return [
+                    RetrievedChunk(
+                        chunk_id='1:0',
+                        ai_document_id=1,
+                        raw_data_id=None,
+                        title='5월 18일 실습',
+                        content='practice',
+                        document_type='SCHEDULE_PRACTICE',
+                        metadata={'start_date': '2026-05-18', 'end_date': '2026-05-18'},
+                        score=1.0,
+                    ),
+                    RetrievedChunk(
+                        chunk_id='2:0',
+                        ai_document_id=2,
+                        raw_data_id=None,
+                        title='하하하ㅏ핳하ㅏ하핳',
+                        content='personal',
+                        document_type='SCHEDULE_PERSONAL',
+                        metadata={'start_date': '2026-05-24', 'end_date': '2026-05-24'},
+                        score=1.0,
+                    ),
+                ]
+
+        parsed = ScheduleQueryParser(DateExtractor(today=date(2026, 5, 27))).parse('하하하 일정 알려줘')
+        chunks = ScheduleRetrievalService(vectorstore=StubVectorStore()).retrieve(parsed, query='하하하 일정 알려줘')
+        self.assertEqual(chunks[0].title, '하하하ㅏ핳하ㅏ하핳')
+
+    def test_vectorstore_relative_path_is_project_root_based(self):
+        current_directory = Path.cwd()
+        nested_directory = Path(settings.BASE_DIR) / 'ai_server'
+        try:
+            os.chdir(nested_directory)
+            store = FaissVectorStore(path='var/test/faiss_relative_path.json')
+            self.assertEqual(store.path, Path(settings.BASE_DIR) / 'var' / 'test' / 'faiss_relative_path.json')
+        finally:
+            os.chdir(current_directory)
 
     def test_prompt_builder_selects_tech_prompts_without_rag_policy(self):
         result = PromptBuilder().build_messages(

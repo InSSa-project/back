@@ -162,6 +162,7 @@ def _import_raw_items(raw_items):
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         existing_raw_data = _find_existing_raw_data(item)
         if existing_raw_data:
+            summary.raw_data_ids.append(existing_raw_data.id)
             summary.skipped_count += 1
             summary.duplicate_count += 1
             summary.duplicate_items.append(

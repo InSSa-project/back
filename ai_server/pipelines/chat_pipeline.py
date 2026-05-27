@@ -150,6 +150,7 @@ class ChatPipeline:
 
     def _build_filters(self, request: ChatRequest) -> dict:
         return {
+            'user_id': request.user_context.user_id,
             'campus': request.user_context.campus,
             'generation': request.user_context.generation,
         }
@@ -164,8 +165,15 @@ class ChatPipeline:
 
     def _retrieve(self, question: str, parsed_query, retrieval_policy, filters: dict):
         if retrieval_policy.use_schedule_metadata:
-            return self.schedule_retrieval.retrieve(parsed_query, filters=filters)
+            filters = self._schedule_filters(question, filters)
+            return self.schedule_retrieval.retrieve(parsed_query, filters=filters, query=question)
         return self.retriever.retrieve(question, filters=filters)
+
+    def _schedule_filters(self, question: str, filters: dict) -> dict:
+        schedule_filters = dict(filters)
+        if '개인' in question or '내 일정' in question or '내일정' in question:
+            schedule_filters['event_type'] = 'personal'
+        return schedule_filters
 
     def _empty_schedule_response(self, intent: str, query_type: str, parsed_query, retrieval_evaluation) -> ChatResponse:
         return ChatResponse(

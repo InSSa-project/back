@@ -21,6 +21,13 @@ class AiDocument(models.Model):
         on_delete=models.CASCADE,
         related_name='ai_documents',
     )
+    schedule_event = models.ForeignKey(
+        'schedules.ScheduleEvent',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='ai_documents',
+    )
     title = models.CharField(max_length=255)
     content = models.TextField()
     document_type = models.CharField(max_length=50)

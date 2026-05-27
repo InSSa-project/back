@@ -1,10 +1,16 @@
 import json
 from datetime import timedelta
+from pathlib import Path
+from unittest.mock import patch
+from uuid import uuid4
 
+from django.conf import settings
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from ai_server.core.config import get_settings
+from apps.ai.models import AiDocument
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from sync.models import RawSsafyData
@@ -77,6 +83,45 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['event_type'], 'personal')
         self.assertIsNone(payload['source_url'])
         self.assertIsNone(payload['source_title'])
+
+    def test_post_event_ingests_personal_event_to_rag(self):
+        index_path = Path(settings.BASE_DIR) / 'var' / 'test' / f'{uuid4().hex}.json'
+        try:
+            with patch.dict(
+                'os.environ',
+                {
+                    'EMBEDDING_PROVIDER': 'local',
+                    'VECTORSTORE_PROVIDER': 'faiss',
+                    'VECTORSTORE_PATH': str(index_path),
+                },
+            ):
+                get_settings.cache_clear()
+                response = self.client.post(
+                    reverse('schedule-event-list'),
+                    data=json.dumps(
+                        {
+                            'title': 'Personal RAG study',
+                            'description': 'Review dynamic programming',
+                            'start_at': '2026-05-28T19:00:00+09:00',
+                            'end_at': '2026-05-28T20:00:00+09:00',
+                            'event_type': 'personal',
+                        }
+                    ),
+                    content_type='application/json',
+                )
+
+            self.assertEqual(response.status_code, 201)
+            event = ScheduleEvent.objects.get(title='Personal RAG study')
+            document = AiDocument.objects.get(schedule_event=event)
+            self.assertEqual(document.embedding_status, AiDocument.EMBEDDING_SUCCESS)
+            self.assertEqual(document.metadata_json['schedule_event_id'], event.id)
+            self.assertEqual(document.metadata_json['start_date'], '2026-05-28')
+            self.assertTrue(index_path.exists())
+            self.assertIn('Personal RAG study', index_path.read_text(encoding='utf-8'))
+        finally:
+            get_settings.cache_clear()
+            if index_path.exists():
+                index_path.unlink()
 
     def test_post_event_accepts_frontend_personal_event_payload(self):
         response = self.client.post(
