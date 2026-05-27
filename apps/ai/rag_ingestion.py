@@ -68,6 +68,7 @@ class RagIngestionService:
                 'raw_data_id': document.canonical_raw_data_id,
                 'sync_raw_data_id': document.sync_raw_data_id,
                 'notices_raw_data_id': document.raw_data_id,
+                'schedule_event_id': document.schedule_event_id,
                 'created_at': document.created_at.isoformat() if document.created_at else '',
             },
         )
