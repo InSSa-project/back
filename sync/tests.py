@@ -2,6 +2,7 @@ import json
 import tempfile
 import types
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -22,12 +23,18 @@ from sync.services.ssafy_crawler import (
     SsafyCrawlerError,
     SsafySessionExpiredError,
     extract_image_urls_from_html,
+    _extract_next_page_url,
     _extract_notice_links,
     _parse_detail_soup,
     _login_ssafy,
     _collect_authenticated_list,
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
+    _extract_detail_url_from_onclick,
+    _extract_pagination_totals,
+    _filter_controls_debug,
+    _pagination_controls_debug,
+    _source_collection_specs,
 )
 
 
@@ -547,6 +554,135 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.filter(source_type='learning_material').count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
+    def test_placeholder_notice_item_is_excluded(self):
+        items = [
+            _source_item('notice', 'https://example.com/notices/menu', '목록', 'notice-menu', 'HOME\nCopyright'),
+            _notice_item('https://example.com/notices/ok', 'notice-ok'),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(RawSsafyData.objects.get().source_url, 'https://example.com/notices/ok')
+        self.assertIn('excluded_count=1', job_log.message)
+
+    def test_evaluation_notice_import_stores_exam_metadata(self):
+        item = _notice_item('https://example.com/notices/eval', 'eval-1')
+        item['title'] = '1학기 과목월말평가 안내'
+        item['raw_text'] = '마이스터고 과목평가 월말평가'
+        item['raw_html'] = '<img src="/eval.png" alt="과목월말평가 안내">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['category'], 'exam')
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertTrue(raw_data.metadata_json['ocr_ready'])
+
+    def test_excluded_like_evaluation_notice_keyword_item_is_saved(self):
+        item = _notice_item('https://example.com/notices/eval-short', 'eval-short')
+        item['title'] = 'SSAFY document'
+        item['raw_text'] = '월말평가'
+        item['raw_html'] = ''
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertIn('keyword_candidate_count=1', job_log.message)
+        self.assertIn('saved_evaluation_notice_count=1', job_log.message)
+
+    def test_image_only_evaluation_notice_candidate_is_saved(self):
+        item = _notice_item('https://example.com/notices/eval-image', 'eval-image')
+        item['title'] = 'SSAFY document'
+        item['raw_text'] = ''
+        item['raw_html'] = '<img src="https://example.com/eval.png" alt="과목월말평가 안내">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertEqual(raw_data.metadata_json['image_urls'], ['https://example.com/eval.png'])
+        self.assertIn('keyword_candidates_by_source=notice:1', job_log.message)
+
+    def test_tenth_evaluation_notice_import_stores_exam_metadata(self):
+        item = _notice_item('https://example.com/notices/eval-10', 'eval-10')
+        item['title'] = '[평가] 10회차 과목 5회차 월말평가 안내'
+        item['raw_text'] = '과목평가 월말평가 평가 안내'
+        item['raw_html'] = '<img src="/eval-10.png" alt="10회차 과목 5회차 월말평가 안내">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        raw_data = RawSsafyData.objects.get()
+        self.assertEqual(raw_data.metadata_json['category'], 'exam')
+        self.assertEqual(raw_data.metadata_json['document_type'], 'evaluation_notice')
+        self.assertTrue(raw_data.metadata_json['ocr_ready'])
+        self.assertIn('target_evaluation_10th_found=true', job_log.message)
+
+    def test_image_url_item_with_short_content_is_saved(self):
+        item = _notice_item('https://example.com/notices/image-only', 'image-only')
+        item['title'] = '이미지 공지'
+        item['raw_text'] = ''
+        item['raw_html'] = '<img src="https://example.com/body.png" alt="notice image">'
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertIn('image_found_count=1', job_log.message)
+
+    def test_empty_detail_item_is_excluded(self):
+        item = {
+            'source_type': 'notice',
+            'source_url': 'https://example.com/notices/empty',
+            'title': '',
+            'raw_text': '',
+            'raw_html': '',
+            'metadata_json': {'notice_id': 'empty'},
+        }
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(RawSsafyData.objects.count(), 0)
+        self.assertIn('no_title_no_content_no_image', job_log.message)
+
+    def test_source_keyword_candidate_counts_are_reported(self):
+        items = [
+            _source_item('notice', 'https://example.com/notices/eval', '월말평가 안내', 'eval-1', '평가 안내'),
+            _source_item('quest', 'https://example.com/quest/eval', '과목평가 안내', 'quest-eval', '평가 안내'),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertIn('keyword_candidate_count=2', job_log.message)
+        self.assertIn('keyword_candidates_by_source=notice:1|quest:1', job_log.message)
+        self.assertIn('saved_evaluation_notice_count=2', job_log.message)
+
+    def test_raw_data_api_filters_exam_category(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/notices/eval',
+            title='1학기 과목월말평가 안내',
+            raw_text='evaluation',
+            metadata_json={'category': 'exam', 'document_type': 'evaluation_notice'},
+        )
+        RawSsafyData.objects.create(source_type='notice', title='일반 공지', raw_text='notice', metadata_json={'category': 'etc'})
+
+        response = self.client.get(reverse('sync-raw-data-list'), {'category': 'exam'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]['document_type'], 'evaluation_notice')
+
     def test_different_source_urls_with_same_generic_title_are_not_deduped(self):
         items = [
             _source_item('mentoring_notice', 'https://example.com/mentor/1', '멘토 스토리 상세', 'mentor-1'),
@@ -560,7 +696,44 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(job_log.skipped_count, 0)
         self.assertEqual(RawSsafyData.objects.filter(source_type='mentoring_notice').count(), 2)
 
-    def test_session_expired_job_fails_without_dropping_collected_items(self):
+    def test_same_title_different_brd_item_sequence_is_not_deduped(self):
+        items = [
+            _source_item(
+                'notice',
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1001',
+                'Same title',
+                '1001',
+            ),
+            _source_item(
+                'notice',
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1002',
+                'Same title',
+                '1002',
+            ),
+        ]
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 2)
+        self.assertIn('unique_brdItmSeq_count=2', job_log.message)
+        self.assertEqual(RawSsafyData.objects.filter(title='Same title').count(), 2)
+
+    def test_expected_count_gap_and_source_counts_are_logged(self):
+        RawSsafyData.objects.create(source_type='notice', title='existing', raw_text='x')
+        items = [_source_item('notice', 'https://example.com/notices/new', 'new', 'new')]
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_EXPECTED_COUNT': '3'}):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=items):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertIn('raw_notice_count=2', job_log.message)
+        self.assertIn('raw_all_notice_like_count=2', job_log.message)
+        self.assertIn('source_type_counts=notice:2', job_log.message)
+        self.assertIn('target_visible_count=3', job_log.message)
+        self.assertIn('inaccessible_or_unknown_gap=1', job_log.message)
+
+    def test_session_expired_job_partial_success_without_dropping_collected_items(self):
         collected_item = _source_item('notice', 'https://example.com/notices/1', 'Notice 1', 'notice-1')
 
         with patch(
@@ -569,10 +742,71 @@ class SampleNoticeImportTests(TestCase):
         ):
             job_log = run_notice_import(mode='ssafy_notice')
 
-        self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_PARTIAL_SUCCESS)
         self.assertIn('session_expired', job_log.message)
+        self.assertIn('source_results=', job_log.message)
+        self.assertIn('mentoring_notice:failed', job_log.message)
         self.assertEqual(job_log.raw_count, 1)
         self.assertEqual(RawSsafyData.objects.filter(source_url='https://example.com/notices/1').count(), 1)
+
+    def test_session_expired_without_collected_items_fails(self):
+        with patch(
+            'sync.services.import_service.load_notices_by_mode',
+            side_effect=SsafySessionExpiredError('session_expired source_type=notice', []),
+        ):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
+        self.assertIn('session_expired', job_log.message)
+        self.assertEqual(RawSsafyData.objects.count(), 0)
+
+    def test_success_job_records_source_summary(self):
+        item = _source_item('notice', 'https://example.com/notices/source-summary', 'Notice', 'source-summary')
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_SUCCESS)
+        self.assertIn('source_results=', job_log.message)
+        self.assertIn('notice:success', job_log.message)
+
+    def test_failed_source_debug_marks_partial_success(self):
+        item = _source_item('notice', 'https://example.com/notices/source-timeout', 'Notice', 'source-timeout')
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch(
+                'sync.services.import_service.get_last_collection_debug',
+                return_value=['failed_source=mentoring_notice url=https://example.com error_reason=timeout error=source_timeout'],
+            ):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_PARTIAL_SUCCESS)
+        self.assertIn('mentoring_notice:failed', job_log.message)
+        self.assertIn('error_type=timeout', job_log.message)
+
+    def test_source_filter_and_skip_source_env(self):
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,academic_rule'}, clear=False):
+            specs = _source_collection_specs('notice-url', 'rule-url', 'faq-url', '', '', '', '')
+        self.assertEqual([source for source, _, _ in specs], ['notice', 'academic_rule'])
+
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_SKIP_SOURCES': 'mentoring_notice'}, clear=False):
+            specs = _source_collection_specs('notice-url', 'rule-url', '', '', 'mentor-url', '', '')
+        self.assertNotIn('mentoring_notice', [source for source, _, _ in specs])
+
+    def test_crawl_command_sets_source_options(self):
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
+
+        with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
+            call_command('crawl_ssafy_notices', source='notice', max_pages=30, stdout=StringIO())
+
+        self.assertEqual(seen['sources'], 'notice')
+        self.assertEqual(seen['max_pages'], '30')
 
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):
@@ -726,6 +960,63 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(grid_debug.review_required_candidates[0]['title'], '배틀싸피과목평가')
         self.assertEqual(grid_debug.reason, 'review_required_candidates_only')
 
+    def test_parser_splits_subject_and_monthly_exam_on_same_date(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n1월\n20\n과목평가1/ 월말평가1',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_combined_exam_ocr_boxes(),
+        )
+        titles = [schedule.title for schedule in schedules]
+
+        self.assertIn('과목평가1', titles)
+        self.assertIn('월말평가1', titles)
+        self.assertEqual(len([schedule for schedule in schedules if schedule.start_at.date().isoformat() == '2026-01-20']), 2)
+
+    def test_parser_creates_meister_evaluation_notice_march_exams_only(self):
+        raw_text = '''
+        [OCR_TEXT]
+        15기 1학기 평가 안내
+        마이스터고 트랙
+        3월 3일 월말평가 알고리즘 기본
+        3월 16일 과목평가 알고리즘 응용
+        3월 26일 과목평가 AI
+        '''
+
+        schedules, grid_debug = parse_schedule_candidates_with_debug(raw_text, default_title='평가 안내')
+        result = [(schedule.start_at.date().isoformat(), schedule.title) for schedule in schedules]
+
+        self.assertEqual(
+            result,
+            [
+                ('2026-03-03', '월말평가: 알고리즘 기본'),
+                ('2026-03-16', '과목평가: 알고리즘 응용'),
+                ('2026-03-26', '과목평가: AI'),
+            ],
+        )
+        self.assertEqual(grid_debug.metadata_json['track'], '마이스터고')
+
+    def test_generic_four_day_exam_grid_goes_to_review_required(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n3월\n2\n3\n4\n5\n과목평가',
+            default_title='[학습] 15기 1학기 전체 일정',
+            ocr_boxes=_march_exam_run_ocr_boxes(day_count=4),
+        )
+
+        self.assertEqual(schedules, [])
+
+    def test_evaluation_notice_without_track_requires_review(self):
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n평가 안내\n3월 3일 월말평가 알고리즘 기본',
+            default_title='평가 안내',
+        )
+
+        self.assertEqual(schedules, [])
+        self.assertEqual(grid_debug.review_required_candidate_count, 1)
+        self.assertEqual(
+            grid_debug.review_required_candidates[0]['review_required_reason'],
+            'missing_or_ambiguous_track',
+        )
+
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):
             with patch('sync.services.import_service.parse_schedule_candidates_with_debug', side_effect=ValueError('bad date')):
@@ -754,6 +1045,117 @@ class SampleNoticeImportTests(TestCase):
             ],
         )
 
+    def test_pagination_next_url_uses_page_no(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="#;" onclick="fnPage('2')">2</a>
+            <a href="#;" onclick="fnPage('3')">3</a>
+            ''',
+            'html.parser',
+        )
+
+        next_url = _extract_next_page_url(
+            soup,
+            'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=1',
+            {'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=1'},
+        )
+
+        self.assertEqual(next_url, 'https://edu.ssafy.com/edu/board/docReq/list.do?pageNo=2')
+
+    def test_pagination_repeated_html_is_reported_as_failed(self):
+        page = _StaticPage(
+            '''
+            <table><tbody>
+              <tr><td><a href="#;" onclick="fnDetail('1')">공지 1</a></td></tr>
+            </tbody></table>
+            <a href="#;" onclick="fnPage('2')">2</a>
+            '''
+        )
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_MAX_PAGES': '3'}):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                return_value=_source_item('notice', 'https://example.com/detail/1', '공지 1', '1'),
+            ):
+                _collect_authenticated_list(
+                    page,
+                    'https://edu.ssafy.com/edu/board/notice/list.do',
+                    'notice',
+                    _extract_notice_links,
+                )
+
+        self.assertTrue(any('pagination_failed source_type=notice' in message for message in get_last_collection_debug()))
+
+    def test_pagination_debug_reports_hidden_inputs_and_functions(self):
+        soup = BeautifulSoup(
+            '''
+            <form name="searchForm">
+              <input type="hidden" name="pageIndex" value="1">
+              <input name="searchKeyword" value="">
+            </form>
+            <script>function linkPage(pageNo) {}</script>
+            ''',
+            'html.parser',
+        )
+
+        debug = _pagination_controls_debug(soup)
+
+        self.assertIn('pageIndex', debug)
+        self.assertIn('searchKeyword', debug)
+        self.assertIn('linkPage', debug)
+
+    def test_filter_controls_debug_reports_form_select_and_tabs(self):
+        soup = BeautifulSoup(
+            '''
+            <form name="searchForm" method="post" action="/notice/list.do">
+              <input type="hidden" name="pageIndex" value="1">
+              <input type="hidden" name="searchBrdItmCdVal" value="NOTICE">
+              <select name="searchCondition">
+                <option value="">전체</option>
+                <option value="title">제목</option>
+              </select>
+              <button>검색</button>
+            </form>
+            <a href="#;" onclick="changeTab('exam')">평가</a>
+            ''',
+            'html.parser',
+        )
+
+        debug = _filter_controls_debug(soup)
+
+        self.assertIn('searchForm:post:/notice/list.do', debug)
+        self.assertIn('searchBrdItmCdVal=NOTICE', debug)
+        self.assertIn('searchCondition', debug)
+        self.assertIn('평가', debug)
+
+    def test_pagination_total_count_is_extracted(self):
+        soup = BeautifulSoup(
+            '''
+            <div class="total">총 193건</div>
+            <table><tbody><tr><td>1</td></tr><tr><td>2</td></tr></tbody></table>
+            <a href="#;" onclick="fnPage('19')">19</a>
+            <a href="#;" onclick="fnPage('20')">20</a>
+            ''',
+            'html.parser',
+        )
+
+        totals = _extract_pagination_totals(soup)
+
+        self.assertEqual(totals['total_notice_count'], 193)
+        self.assertEqual(totals['last_page'], 20)
+        self.assertEqual(totals['page_size'], 2)
+
+    def test_pagination_page_number_ignores_detail_ids(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="/edu/board/notice/detail.do?brdItmSeq=1541431">detail</a>
+            <a href="#;" onclick="fnPage('2')">2</a>
+            ''',
+            'html.parser',
+        )
+
+        self.assertEqual(_extract_next_page_url(soup, 'https://edu.ssafy.com/edu/board/notice/list.do', set()), 'https://edu.ssafy.com/edu/board/notice/list.do?pageNo=2')
+
     def test_link_extractor_supports_fn_detail2_onclick(self):
         soup = BeautifulSoup(
             '''
@@ -768,6 +1170,85 @@ class SampleNoticeImportTests(TestCase):
             links,
             ['https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=119629'],
         )
+
+    def test_notice_links_use_brd_item_sequence_as_unique_source_url(self):
+        soup = BeautifulSoup(
+            '''
+            <a href="#;" onclick="fnDetail('101');">공지 A</a>
+            <a href="#;" onclick="fnDetail('102');">공지 B</a>
+            ''',
+            'html.parser',
+        )
+
+        links = _extract_notice_links(soup, 'https://edu.ssafy.com/edu/board/notice/list.do')
+
+        self.assertEqual(
+            links,
+            [
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=101',
+                'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=102',
+            ],
+        )
+
+    def test_detail_onclick_parser_supports_go_detail_and_location(self):
+        self.assertEqual(
+            _extract_detail_url_from_onclick("goDetail('12345')", 'https://edu.ssafy.com/edu/board/notice/list.do'),
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=12345',
+        )
+        self.assertEqual(
+            _extract_detail_url_from_onclick(
+                "location.href='/edu/board/notice/detail.do?brdItmSeq=54321'",
+                'https://edu.ssafy.com/edu/board/notice/list.do',
+            ),
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=54321',
+        )
+
+    def test_detail_parser_extracts_real_content_without_menu(self):
+        soup = BeautifulSoup(
+            '''
+            <html><body>
+              <nav>HOME Copyright 메뉴</nav>
+              <div class="view_content">
+                <h1>공지 제목</h1>
+                <p>실제 본문입니다. 평가와 무관한 일반 상세 내용입니다.</p>
+              </div>
+              <footer>Copyright SSAFY</footer>
+            </body></html>
+            ''',
+            'html.parser',
+        )
+
+        item = _parse_detail_soup(soup, 'https://example.com/detail.do?brdItmSeq=1', 'notice')
+
+        self.assertIn('실제 본문입니다', item['raw_text'])
+        self.assertNotIn('Copyright', item['raw_text'])
+        self.assertTrue(item['metadata_json']['real_content'])
+
+    def test_detail_parser_body_fallback_removes_menu_text(self):
+        soup = BeautifulSoup(
+            '''
+            <html><body>
+              <header>HOME 메뉴 Copyright</header>
+              <section><p>본문 fallback 내용입니다. 일정 설명 본문입니다.</p></section>
+              <footer>Copyright</footer>
+            </body></html>
+            ''',
+            'html.parser',
+        )
+
+        item = _parse_detail_soup(soup, 'https://example.com/detail.do?brdItmSeq=2', 'notice')
+
+        self.assertIn('본문 fallback 내용입니다', item['raw_text'])
+        self.assertNotIn('HOME', item['raw_text'])
+
+    def test_detail_debug_html_can_be_saved(self):
+        soup = BeautifulSoup('<html><body><div class="view_content">debug body</div></body></html>', 'html.parser')
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict('os.environ', {'SSAFY_CRAWLER_DEBUG_HTML': 'true'}):
+                with patch('sync.services.ssafy_crawler.DETAIL_DEBUG_DIR', Path(tmp_dir)):
+                    _parse_detail_soup(soup, 'https://example.com/detail.do?brdItmSeq=3', 'notice')
+
+            self.assertTrue(list(Path(tmp_dir).glob('notice_*.html')))
 
     def test_academic_rule_list_without_detail_links_is_collected_as_document(self):
         page = _StaticPage('<main><h1>학사규정</h1><p>규정 본문</p></main>')
@@ -880,8 +1361,26 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(result['ocr_provider'], 'google_vision')
         self.assertEqual(result['ocr_status'], 'failed')
+        self.assertEqual(result['ocr_error_type'], 'provider_auth_error')
         self.assertIn('credentials are not configured', result['ocr_error'])
         self.assertNotIn('GOOGLE_APPLICATION_CREDENTIALS=', result['ocr_error'])
+
+    def test_ocr_download_failure_is_classified(self):
+        with patch.dict(
+            'os.environ',
+            {
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': 'C:\\fake\\vision.json',
+            },
+        ):
+            with patch.dict('sys.modules', _google_vision_modules('ignored')):
+                with patch('sync.services.ocr_service.requests.get', side_effect=RuntimeError('download down')):
+                    result = extract_text_from_image_urls(['https://example.com/down.png'])
+
+        self.assertEqual(result['ocr_status'], 'failed')
+        self.assertEqual(result['ocr_error_type'], 'image_download_failed')
+        self.assertIn('image_download_failed', result['ocr_error'])
 
     def test_clova_provider_extracts_infer_text_lines(self):
         response_payload = {
@@ -1069,6 +1568,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(job_log.failed_count, 0)
         self.assertEqual(job_log.ocr_failed_count, 1)
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
+        self.assertEqual(raw_data.metadata_json['ocr_error_type'], 'image_download_failed')
 
     def test_ocr_text_is_merged_into_raw_text_before_parsing(self):
         item = _notice_item('https://example.com/notices/ocr-text', 'notice-ocr-text')
@@ -1481,6 +1981,7 @@ class SampleNoticeImportTests(TestCase):
                 'ocr_provider': 'google_vision',
                 'ocr_status': 'failed',
                 'ocr_error': 'Google Vision credentials are not configured.',
+                'ocr_error_type': 'provider_auth_error',
                 'ocr_failed_count': 1,
             },
         ):
@@ -1489,7 +1990,41 @@ class SampleNoticeImportTests(TestCase):
         raw_data.refresh_from_db()
         self.assertEqual(raw_data.raw_text, '공지 본문')
         self.assertEqual(raw_data.metadata_json['ocr_status'], 'failed')
+        self.assertEqual(raw_data.metadata_json['ocr_error_type'], 'provider_auth_error')
         self.assertIn('ocr_failed_count=1', output.getvalue())
+
+    def test_reprocess_ocr_filters_by_category_and_document_type_dry_run(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/eval',
+            title='evaluation',
+            raw_text='body',
+            raw_html='<main><img src="/eval.png"></main>',
+            metadata_json={'category': 'exam', 'document_type': 'evaluation_notice'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/study',
+            title='study',
+            raw_text='body',
+            raw_html='<main><img src="/study.png"></main>',
+            metadata_json={'category': 'study'},
+        )
+        output = StringIO()
+
+        with patch('sync.management.commands.backfill_raw_ocr.extract_text_from_image_urls') as extract_mock:
+            call_command(
+                'reprocess_ocr',
+                '--category=exam',
+                '--document-type=evaluation_notice',
+                '--limit=20',
+                '--dry-run',
+                stdout=output,
+            )
+
+        extract_mock.assert_not_called()
+        self.assertIn('raw_checked=1', output.getvalue())
+        self.assertIn('image_count=1', output.getvalue())
 
     def test_admin_manual_ocr_api_updates_raw_text_and_metadata(self):
         raw_data = RawSsafyData.objects.create(
@@ -1638,6 +2173,393 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.get().raw_data, raw_data)
         self.assertIn('reparse_created_count=1', output.getvalue())
 
+    def test_reparse_evaluation_exams_replaces_only_linked_exam_events(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/evaluation',
+            title='평가 안내',
+            raw_text=(
+                '[OCR_TEXT]\n'
+                '15기 1학기 평가 안내\n'
+                '마이스터고 트랙\n'
+                '3월 3일 월말평가 알고리즘 기본\n'
+                '3월 16일 과목평가 알고리즘 응용\n'
+                '3월 26일 과목평가 AI\n'
+            ),
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='잘못된 과목평가',
+            start_at=timezone.datetime(2026, 3, 1, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 3, 2, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+        )
+        ScheduleEvent.objects.create(
+            title='사용자 직접 시험',
+            start_at=timezone.datetime(2026, 3, 4, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 3, 5, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='manual',
+            source_id='manual',
+        )
+        output = StringIO()
+
+        call_command('reparse_evaluation_exams', stdout=output)
+
+        titles = list(ScheduleEvent.objects.order_by('start_at').values_list('title', flat=True))
+        self.assertNotIn('잘못된 과목평가', titles)
+        self.assertIn('사용자 직접 시험', titles)
+        self.assertIn('월말평가: 알고리즘 기본', titles)
+        self.assertIn('과목평가: 알고리즘 응용', titles)
+        self.assertIn('과목평가: AI', titles)
+        self.assertIn('deleted_count=1', output.getvalue())
+        self.assertIn('created_count=3', output.getvalue())
+
+    def test_reparse_evaluation_exams_aborts_without_evaluation_ocr_raw_data(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/full-calendar',
+            title='[학습] 15기 1학기 전체 일정',
+            raw_text='[OCR_TEXT]\n3월\n2\n3\n4\n과목평가',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='기존 시험',
+            start_at=timezone.datetime(2026, 3, 2, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 3, 3, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+        )
+        output = StringIO()
+
+        call_command('reparse_evaluation_exams', stdout=output)
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='기존 시험').count(), 1)
+        self.assertIn('evaluation_raw_count=0', output.getvalue())
+        self.assertIn('deleted_count=0', output.getvalue())
+        self.assertIn('abort_reason=no_evaluation_ocr_raw_data', output.getvalue())
+
+    def test_parser_filters_ocr_garbage_titles(self):
+        schedules = parse_schedule_candidates(
+            '시간 2026.05.20\nViewModel 2026.05.21\nwithout questions 2026.05.22\nLive 방송 2026.05.23',
+            default_title='공지사항 상세',
+        )
+
+        self.assertEqual(schedules, [])
+
+    def test_parser_filters_promotional_ocr_titles_but_keeps_valid_events(self):
+        schedules = parse_schedule_candidates(
+            '2026.02.19 운영자\n'
+            '2026.02.19 ♥알림신청♥\n'
+            '2026.02.23 [싸피티비] 박슬기랑 수다 타임 치킨세트 이벤트\n'
+            '2026.02.19 SW역량테스트(IM형/A형)\n'
+            '2026.02.23 과목평가3(일타싸피)',
+            default_title='공지사항 상세',
+        )
+        titles = [schedule.title for schedule in schedules]
+
+        self.assertNotIn('운영자', titles)
+        self.assertNotIn('♥알림신청♥', titles)
+        self.assertFalse(any('싸피티비' in title for title in titles))
+        self.assertTrue(any('SW역량테스트' in title for title in titles))
+        self.assertTrue(any('과목평가3' in title for title in titles))
+
+    def test_parser_keeps_meaningful_pjt_schedule(self):
+        schedules = parse_schedule_candidates('관통 PJT 2026.05.20', default_title='공지사항 상세')
+
+        self.assertEqual(len(schedules), 1)
+        self.assertEqual(schedules[0].title, '관통 PJT')
+
+    def test_repair_calendar_events_creates_january_camp_and_keeps_manual_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/full-calendar',
+            title='15기 1학기 전체 일정',
+            raw_text='calendar',
+        )
+        ScheduleEvent.objects.create(
+            title='사용자 직접 일정',
+            start_at=timezone.datetime(2026, 1, 7, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 1, 8, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='etc',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--use-manual-fallback', stdout=output)
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='15기 SW AI 캠프').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get(title='15기 SW AI 캠프').raw_data, raw_data)
+        self.assertEqual(ScheduleEvent.objects.filter(title='사용자 직접 일정').count(), 1)
+        self.assertIn('created_count=', output.getvalue())
+
+    def test_repair_calendar_events_removes_jan15_duplicates_and_jan31_notice(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['15기 SW AI 스타트 캠프', '공지 안내문', 'ViewModel']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 1, 15, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 1, 16, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='etc',
+                source_type='notice',
+            )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='1월 31일 공지용 설명 문장',
+            start_at=timezone.datetime(2026, 1, 31, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 2, 1, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+        )
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+
+        self.assertEqual(
+            list(ScheduleEvent.objects.filter(start_at__date='2026-01-15').values_list('title', flat=True)),
+            ['15기 SW AI 스타트 캠프'],
+        )
+        self.assertEqual(ScheduleEvent.objects.filter(start_at__date='2026-01-31').count(), 0)
+
+    def test_repair_calendar_events_normalizes_ai_lecture_and_online_week(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-16').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-21').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-01').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크', start_at__date='2026-06-03').count(), 0)
+
+    def test_repair_calendar_events_keeps_only_jan24_ssafy_day(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+        call_command('repair_calendar_events', '--use-manual-fallback')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date='2026-01-24').count(), 1)
+        for day in [25, 26, 27]:
+            self.assertEqual(ScheduleEvent.objects.filter(title='SSAFY DAY', start_at__date=f'2026-01-{day}').count(), 0)
+
+    def test_repair_calendar_events_dedupes_ai_lecture_roman_titles(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title, event_type in [('AI 강의 2', 'study'), ('AI 강의 II', 'lecture'), ('AI 강의 Ⅱ', 'study')]:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 3, 16, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 3, 17, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type=event_type,
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events')
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 2').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 II').count(), 0)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 Ⅱ', start_at__date='2026-03-16').count(), 1)
+
+    def test_repair_calendar_events_keeps_one_ai_lecture_per_api_date(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for event_type in ['lecture', 'study']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title='AI 강의 Ⅱ',
+                start_at=timezone.datetime(2026, 3, 17, 9, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 3, 17, 10, tzinfo=timezone.get_current_timezone()),
+                is_all_day=False,
+                event_type=event_type,
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events')
+
+        response = self.client.get('/api/schedules/events/?start=2026-03-01&end=2026-04-02')
+        ai_events = [
+            event for event in response.json()
+            if event['title'] == 'AI 강의 Ⅱ' and event['start_at'].startswith('2026-03-17')
+        ]
+        self.assertEqual(len(ai_events), 1)
+
+    def test_repair_calendar_events_creates_manual_exam_corrections_without_evaluation_raw(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--dry-run', stdout=output)
+        self.assertIn('use_manual_fallback=false', output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.filter(event_type='exam').count(), 0)
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+        first_count = ScheduleEvent.objects.filter(event_type='exam').count()
+        call_command('repair_calendar_events', '--use-manual-fallback')
+        second_count = ScheduleEvent.objects.filter(event_type='exam').count()
+
+        self.assertGreater(first_count, 0)
+        self.assertEqual(first_count, second_count)
+        self.assertEqual(ScheduleEvent.objects.filter(title='과목평가2', start_at__date='2026-02-09').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='SW역량테스트(IM형/A형)', start_at__date='2026-02-19').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='과목평가3(일타싸피)', start_at__date='2026-02-23').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-24').count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(title='AI 강의 1', start_at__date='2026-02-27').count(), 1)
+        exam = ScheduleEvent.objects.get(title='과목평가2')
+        self.assertEqual(exam.metadata_json['repair_source'], 'manual_exam_correction')
+        self.assertEqual(exam.metadata_json['source_reason'], 'evaluation_notice_missing_manual_mvp_seed')
+
+    def test_repair_calendar_events_dedupes_pjt_and_fills_project_focus_days(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['관통 PJT', '관통PJT']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 5, 22, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 5, 23, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='project',
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+
+        self.assertEqual(ScheduleEvent.objects.filter(title='관통 PJT', start_at__date='2026-05-22').count(), 1)
+        for day in [22, 23, 24]:
+            self.assertEqual(
+                ScheduleEvent.objects.filter(title='관통 프로젝트 집중기간', start_at__date=f'2026-06-{day}').count(),
+                1,
+            )
+
+    def test_repair_calendar_events_reports_manual_ratio_and_raw_candidates(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='학습 시간표',
+            raw_text='학습 시간표',
+            metadata_json={'ocr_text_length': 0},
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--dry-run', '--use-manual-fallback', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('raw_candidate_count=1', value)
+        self.assertIn('manual_correction_ratio=', value)
+        self.assertIn('parser_improvement_unavailable', value)
+        self.assertIn('use_manual_fallback=true', value)
+
+    def test_repair_calendar_events_ocr_candidate_creates_raw_linked_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/full-calendar',
+            title='15기 1학기 전체 일정',
+            raw_text='AI 강의 2026.03.16',
+            metadata_json={'ocr_text_length': len('AI 강의 2026.03.16')},
+        )
+
+        call_command('repair_calendar_events')
+
+        event = ScheduleEvent.objects.get(raw_data=raw_data)
+        self.assertEqual(event.source_id, str(raw_data.pk))
+        self.assertNotEqual(event.metadata_json.get('repair_source'), 'manual_calendar_correction')
+
+    def test_repair_calendar_events_detects_evaluation_notice_metadata(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/evaluation',
+            title='1학기 과목월말평가 안내',
+            raw_text='마이스터고 2026.03.03 월말평가 알고리즘 기본',
+            metadata_json={'category': 'exam', 'document_type': 'evaluation_notice', 'ocr_text_length': 20},
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('raw_candidate_count=1', value)
+        self.assertIn('missing_evaluation_notice_raw_data=false', value)
+
+    def test_repair_calendar_events_notice_sentence_is_not_created(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='전체 일정',
+            raw_text='공지 안내 문장입니다. 캘린더 일정으로 만들 내용이 아닙니다.',
+            metadata_json={'ocr_text_length': 30},
+        )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
+    def test_repair_calendar_events_february_items_are_in_api_response(self):
+        RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+
+        call_command('repair_calendar_events', '--use-manual-fallback')
+
+        response = self.client.get('/api/schedules/events/?start=2026-02-01&end=2026-03-01')
+        titles = {event['title'] for event in response.json()}
+        self.assertIn('과목평가2', titles)
+        self.assertIn('설날', titles)
+        self.assertIn('SW역량테스트(IM형/A형)', titles)
+        self.assertIn('과목평가3(일타싸피)', titles)
+        self.assertIn('AI 강의 1', titles)
+
+    def test_repair_calendar_events_removes_promotional_ocr_events(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15湲?1?숆린 ?꾩껜 ?쇱젙', raw_text='calendar')
+        for title in ['운영자', '♥알림신청♥', '[싸피티비] 박슬기랑 수다 타임', '치킨세트 이벤트 출연']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 2, 23, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 2, 24, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='notice',
+                source_type='notice',
+            )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='SW역량테스트(IM형/A형)',
+            start_at=timezone.datetime(2026, 2, 19, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 2, 20, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+        )
+
+        call_command('repair_calendar_events')
+
+        titles = set(ScheduleEvent.objects.values_list('title', flat=True))
+        self.assertIn('SW역량테스트(IM형/A형)', titles)
+        self.assertNotIn('운영자', titles)
+        self.assertNotIn('♥알림신청♥', titles)
+        self.assertFalse(any('싸피티비' in title or '치킨세트' in title for title in titles))
+
+    def test_repair_calendar_events_removes_meetup_duplicate(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='15기 1학기 전체 일정', raw_text='calendar')
+        for title in ['밋업', '상반기 밋업']:
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=title,
+                start_at=timezone.datetime(2026, 4, 10, tzinfo=timezone.get_current_timezone()),
+                end_at=timezone.datetime(2026, 4, 11, tzinfo=timezone.get_current_timezone()),
+                is_all_day=True,
+                event_type='etc',
+                source_type='notice',
+            )
+
+        call_command('repair_calendar_events')
+
+        self.assertEqual(list(ScheduleEvent.objects.filter(start_at__date='2026-04-10').values_list('title', flat=True)), ['상반기 밋업'])
+
 
 def _notice_item(source_url, notice_id):
     return {
@@ -1720,6 +2642,41 @@ def _calendar_ocr_boxes():
 def _review_required_exam_ocr_boxes():
     boxes = _calendar_ocr_boxes()
     boxes[-1] = {'text': '배틀싸피과목평가', 'x1': 500, 'y1': 212, 'x2': 600, 'y2': 232, 'confidence': 0.96}
+    return boxes
+
+
+def _combined_exam_ocr_boxes():
+    boxes = _calendar_ocr_boxes()
+    boxes[-1] = {'text': '과목평가1/ 월말평가1', 'x1': 505, 'y1': 212, 'x2': 610, 'y2': 232, 'confidence': 0.96}
+    return boxes
+
+
+def _march_exam_run_ocr_boxes(day_count=3):
+    boxes = [
+        {'text': '3', 'x1': 20, 'y1': 20, 'x2': 32, 'y2': 40},
+        {'text': '월', 'x1': 31, 'y1': 20, 'x2': 50, 'y2': 40},
+        {'text': 'SUN', 'x1': 10, 'y1': 60, 'x2': 40, 'y2': 80},
+        {'text': 'MON', 'x1': 110, 'y1': 60, 'x2': 140, 'y2': 80},
+        {'text': 'TUE', 'x1': 210, 'y1': 60, 'x2': 240, 'y2': 80},
+        {'text': 'WED', 'x1': 310, 'y1': 60, 'x2': 340, 'y2': 80},
+        {'text': 'THU', 'x1': 410, 'y1': 60, 'x2': 440, 'y2': 80},
+        {'text': 'FRI', 'x1': 510, 'y1': 60, 'x2': 540, 'y2': 80},
+        {'text': 'SAT', 'x1': 610, 'y1': 60, 'x2': 640, 'y2': 80},
+        {'text': '1', 'x1': 10, 'y1': 100, 'x2': 24, 'y2': 120},
+        {'text': '2', 'x1': 110, 'y1': 100, 'x2': 124, 'y2': 120},
+        {'text': '3', 'x1': 210, 'y1': 100, 'x2': 224, 'y2': 120},
+        {'text': '4', 'x1': 310, 'y1': 100, 'x2': 324, 'y2': 120},
+        {'text': '과목평가', 'x1': 110, 'y1': 132, 'x2': 170, 'y2': 152, 'confidence': 0.96},
+        {'text': '과목평가', 'x1': 210, 'y1': 132, 'x2': 270, 'y2': 152, 'confidence': 0.96},
+        {'text': '과목평가', 'x1': 310, 'y1': 132, 'x2': 370, 'y2': 152, 'confidence': 0.96},
+    ]
+    if day_count >= 4:
+        boxes.extend(
+            [
+                {'text': '5', 'x1': 410, 'y1': 100, 'x2': 424, 'y2': 120},
+                {'text': '과목평가', 'x1': 410, 'y1': 132, 'x2': 470, 'y2': 152, 'confidence': 0.96},
+            ]
+        )
     return boxes
 
 

@@ -1,4 +1,5 @@
-from django.test import SimpleTestCase
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase
 
 from ai_server.classification.query_classifier import QueryClassifier, QueryType
 from ai_server.policies.answer_policy import AnswerPolicy, AnswerPolicyRouter
@@ -10,9 +11,15 @@ from ai_server.vectorstores.faiss_store import FaissVectorStore
 
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.conf import settings
+
+from apps.ai.models import AiDocument
+from ai_server.core.config import get_settings
+from schedules.models import ScheduleEvent
+from sync.models import RawSsafyData
 
 
 class RagFallbackPolicyTests(SimpleTestCase):
@@ -91,3 +98,29 @@ class RagFallbackPolicyTests(SimpleTestCase):
         self.assertIn('policies/general_tech_policy.md', result.metadata['used_prompt_files'])
         self.assertNotIn('policies/schedule_policy.md', result.metadata['used_prompt_files'])
         self.assertLessEqual(result.metadata['context_count'], 4)
+
+
+class CrawledDataRagIngestionSmokeTests(TestCase):
+    def test_crawl_command_creates_raw_events_ai_documents_and_vectors(self):
+        index_path = Path(settings.BASE_DIR) / 'var' / 'test' / f'{uuid4().hex}.json'
+        try:
+            with patch.dict(
+                'os.environ',
+                {
+                    'EMBEDDING_PROVIDER': 'local',
+                    'VECTORSTORE_PROVIDER': 'faiss',
+                    'VECTORSTORE_PATH': str(index_path),
+                },
+            ):
+                get_settings.cache_clear()
+                call_command('crawl_ssafy_notices', '--mode', 'sample')
+
+            self.assertGreater(RawSsafyData.objects.count(), 0)
+            self.assertGreater(ScheduleEvent.objects.count(), 0)
+            self.assertGreater(AiDocument.objects.filter(sync_raw_data__isnull=False).count(), 0)
+            self.assertTrue(index_path.exists())
+            self.assertIn('"records"', index_path.read_text(encoding='utf-8'))
+        finally:
+            get_settings.cache_clear()
+            if index_path.exists():
+                index_path.unlink()

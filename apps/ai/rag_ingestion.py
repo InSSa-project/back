@@ -59,12 +59,15 @@ class RagIngestionService:
     def _to_rag_document(self, document: AiDocument) -> RagAiDocument:
         return RagAiDocument(
             id=document.id,
-            raw_data_id=document.raw_data_id,
+            raw_data_id=document.canonical_raw_data_id,
             title=document.title,
             content=document.content,
             document_type=document.document_type,
             metadata_json={
                 **(document.metadata_json or {}),
+                'raw_data_id': document.canonical_raw_data_id,
+                'sync_raw_data_id': document.sync_raw_data_id,
+                'notices_raw_data_id': document.raw_data_id,
                 'created_at': document.created_at.isoformat() if document.created_at else '',
             },
         )
