@@ -5,10 +5,21 @@ from datetime import date
 
 DEFAULT_YEAR = 2026
 WEEKDAY_HEADERS = {'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'}
+KOREAN_WEEKDAY_HEADERS = {'월', '화', '수', '목', '금', '토', '일'}
 MONTH_TOKENS = {'월', '¿ù'}
 MONTH_PATTERN = re.compile(r'^(?P<month>[1-9]|1[0-2])\s*월$')
 DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
+DATE_HEADER_PATTERN = re.compile(r'^(?:(?P<month>[1-9]|1[0-2])\s*월\s*)?(?P<day>\d{1,2})\s*일(?:\s*\([^)]*\))?$')
 INLINE_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
+TIME_TOKEN_PATTERN = r'\d{1,2}\s*:\s*\d{2}'
+TIME_ONLY_PATTERN = re.compile(
+    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*$',
+    re.IGNORECASE,
+)
+LEADING_TIME_RANGE_PATTERN = re.compile(
+    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*',
+    re.IGNORECASE,
+)
 EVENT_KEYWORDS = [
     '스타트캠프',
     '입학식',
@@ -50,6 +61,19 @@ REVIEW_REQUIRED_EXAM_FILTER_REASONS = {
     'low_overlap_exam',
     'generic_exam_calendar_marker',
 }
+TIMETABLE_NOISE_COMPACTS = {
+    '시간',
+    '시간표',
+    'LIVE',
+    '방송',
+    'VIEWMODEL',
+    'WITHOUTQUESTIONS',
+    'THEREISNOCHANGE',
+    'SWAISAMSUNGACADEMY',
+    'SWAISAMSUNG',
+    'SAMSUNGACADEMY',
+}
+TIMETABLE_LUNCH_COMPACTS = {'중식', '점심', '점심시간', 'LUNCH'}
 
 
 @dataclass
@@ -239,6 +263,10 @@ def _month_sections(boxes):
         if match:
             month_headers.append((int(match.group('month')), box))
             continue
+        date_header_match = DATE_HEADER_PATTERN.match(box['text'])
+        if date_header_match and date_header_match.group('month'):
+            month_headers.append((int(date_header_match.group('month')), box))
+            continue
         month = _month_from_split_boxes(box, boxes)
         if month:
             month_headers.append((month, box))
@@ -320,10 +348,14 @@ def _build_date_cells(month, boxes):
 
 
 def _day_from_box(box):
-    match = DAY_PATTERN.match(box['text'])
+    text = str(box['text'] or '').strip()
+    date_match = DATE_HEADER_PATTERN.match(text)
+    if date_match:
+        return int(date_match.group('day'))
+    match = DAY_PATTERN.match(text)
     if match:
         return int(match.group('day'))
-    inline_match = INLINE_DAY_PATTERN.match(box['text'])
+    inline_match = INLINE_DAY_PATTERN.match(text)
     if inline_match:
         return int(inline_match.group('day'))
     return None
@@ -553,9 +585,15 @@ def _is_structural_box(box):
     text = box['text']
     if text.upper() in WEEKDAY_HEADERS or text in MONTH_TOKENS:
         return True
+    if text in KOREAN_WEEKDAY_HEADERS:
+        return True
     if MONTH_PATTERN.match(text):
         return True
     if DAY_PATTERN.match(text):
+        return True
+    if DATE_HEADER_PATTERN.match(text):
+        return True
+    if _is_time_only_text(text):
         return True
     return False
 
@@ -572,16 +610,25 @@ def _event_title_from_box(text):
 
 
 def _clean_timetable_title(text, source_title=''):
-    text = re.sub(r'\s+', ' ', str(text or '')).strip(' :-|()~')
+    text = _normalize_timetable_spacing(text)
     inline_match = INLINE_DAY_PATTERN.match(text)
     if inline_match:
         text = inline_match.group('title').strip(' :-|()~')
+    text = _remove_leading_time_range(text)
     text = _remove_timetable_noise_prefixes(text)
     text = _normalize_timetable_spacing(text)
     if not text:
         return ''
     compact = _compact_text(text)
-    if compact in {'시간', '시간표', 'LIVE', '방송', 'VIEWMODEL', 'WITHOUTQUESTIONS'}:
+    if _is_time_only_text(text):
+        return ''
+    if _is_timetable_header_only(text):
+        return ''
+    if _is_lunch_title(text):
+        return ''
+    if compact in TIMETABLE_NOISE_COMPACTS:
+        return ''
+    if any(noise in compact for noise in TIMETABLE_NOISE_COMPACTS if len(noise) >= 8):
         return ''
     if len(compact) <= 1:
         return ''
@@ -589,16 +636,22 @@ def _clean_timetable_title(text, source_title=''):
 
 
 def _remove_timetable_noise_prefixes(text):
-    text = re.sub(r'^\s*\[?\s*LIVE\s*방송\s*\]?\s*', '', str(text or ''), flags=re.IGNORECASE)
-    text = re.sub(r'^\s*\[?\s*Live\s*방송\s*\]?\s*', '', text)
+    text = re.sub(r'^\s*\[\s*LIVE\s*방송\s*\]\s*', '', str(text or ''), flags=re.IGNORECASE)
+    text = re.sub(r'^\s*\[?\s*LIVE\s*방송\s*\]?\s*', '', text, flags=re.IGNORECASE)
     return text.strip(' :-|()~')
 
 
 def _normalize_timetable_spacing(text):
-    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    text = re.sub(r'\s+', ' ', str(text or '').replace('\n', ' ')).strip()
+    text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
     text = re.sub(r'\s*:\s*', ': ', text)
     text = re.sub(r'\s*/\s*', ' / ', text)
+    text = re.sub(r'\[\s*', '[', text)
+    text = re.sub(r'\s*\]', ']', text)
+    text = re.sub(r'\s*&\s*', '&', text)
+    text = re.sub(r'\b(JS|Django)\s+(?=[A-Za-z])', r'\1: ', text)
     text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
     return text.strip(' :-|')
 
 
@@ -615,11 +668,34 @@ def _has_timetable_non_learning_marker(text):
     compact = _compact_text(normalized)
     if normalized.startswith('[실습 및 Q&A]'):
         return True
-    if compact in {'중식', '점심', '점심시간'}:
-        return True
     if any(keyword in compact for keyword in ['과목평가', '월말평가', '역량테스트']):
         return True
     return False
+
+
+def _remove_leading_time_range(text):
+    return LEADING_TIME_RANGE_PATTERN.sub('', str(text or ''), count=1).strip(' :-|~')
+
+
+def _is_time_only_text(text):
+    return bool(TIME_ONLY_PATTERN.match(_normalize_time_text(text)))
+
+
+def _normalize_time_text(text):
+    return re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', str(text or '').strip())
+
+
+def _is_timetable_header_only(text):
+    normalized = str(text or '').strip()
+    if normalized.upper() in WEEKDAY_HEADERS or normalized in KOREAN_WEEKDAY_HEADERS:
+        return True
+    if MONTH_PATTERN.match(normalized) or DATE_HEADER_PATTERN.match(normalized):
+        return True
+    return False
+
+
+def _is_lunch_title(text):
+    return _compact_text(text) in TIMETABLE_LUNCH_COMPACTS
 
 
 def _looks_like_timetable(source_title):

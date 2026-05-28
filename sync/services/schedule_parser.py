@@ -148,6 +148,8 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
                 },
             )
         )
+    if grid_candidates and '시간표' in str(default_title or ''):
+        return _dedupe_schedules(schedules), grid_debug
 
     for line in _candidate_lines(raw_text):
         date_match = DATE_RANGE_PATTERN.search(line) or DATE_PATTERN.search(line)

@@ -1,7 +1,10 @@
 import logging
 import re
 
+from django.utils import timezone
+
 from schedules.utils import is_wrapper_schedule_title
+from sync.management.commands.seed_korean_holidays import get_korean_holidays
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -48,6 +51,8 @@ def validate_generated_schedule(raw_data, schedule):
 
     if getattr(schedule, 'end_at', None) and getattr(schedule, 'start_at', None) and schedule.end_at <= schedule.start_at:
         warnings.append('non_positive_duration')
+    if _is_generated_class_on_korean_holiday(schedule, parser):
+        warnings.append('generated_class_on_korean_holiday')
 
     for warning in warnings:
         logger.warning(
@@ -59,6 +64,22 @@ def validate_generated_schedule(raw_data, schedule):
             warning,
         )
     return warnings
+
+
+def _is_generated_class_on_korean_holiday(schedule, parser):
+    if getattr(schedule, 'event_type', '') == 'holiday':
+        return False
+    if parser not in {'ocr_timetable_grid', 'timetable_grid'}:
+        return False
+    start_at = getattr(schedule, 'start_at', None)
+    if not start_at:
+        return False
+    event_date = timezone.localdate(start_at)
+    try:
+        holidays = {holiday_date for _title, holiday_date in get_korean_holidays(event_date.year)}
+    except ValueError:
+        return False
+    return event_date in holidays
 
 
 def filter_events_for_user_profile(events, profile):

@@ -410,15 +410,15 @@ class SampleNoticeImportTests(TestCase):
 
         titles = list(ScheduleEvent.objects.order_by('start_at', 'id').values_list('title', flat=True))
         may_count = ScheduleEvent.objects.filter(start_at__date__gte='2026-05-01', start_at__date__lt='2026-06-01').count()
-        self.assertEqual(summary.created_count, 7)
+        self.assertEqual(summary.created_count, 6)
         self.assertEqual(summary.wrapper_skip_count, 0)
-        self.assertEqual(may_count, 7)
+        self.assertEqual(may_count, 6)
         self.assertIn('[학습] Django: DRF 1', titles)
         self.assertIn('[학습] Django: DRF 2', titles)
         self.assertIn('[학습] JS: DOM', titles)
         self.assertIn('[학습] JS: Basic Syntax 1', titles)
         self.assertIn('[실습 및 Q&A]', titles)
-        self.assertIn('중식', titles)
+        self.assertNotIn('중식', titles)
         self.assertIn('과목평가 9', titles)
         self.assertNotIn(source_title, titles)
 
@@ -437,6 +437,23 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(summary.created_count, 1)
         self.assertEqual(summary.wrapper_skip_count, 1)
         self.assertEqual(list(ScheduleEvent.objects.values_list('title', flat=True)), ['[학습] JS: DOM'])
+
+    def test_reparse_skips_timetable_class_on_korean_holiday(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/timetable-holiday',
+            title='[학습] 5월 1주차 Data 트랙 시간표',
+            raw_text='[OCR_TEXT]\n5월 5일\nDjango DRF',
+            ocr_boxes=_timetable_holiday_ocr_boxes(),
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        raw_data.refresh_from_db()
+        self.assertEqual(summary.created_count, 0)
+        self.assertEqual(summary.validation_skip_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertIn('generated_class_on_korean_holiday', raw_data.metadata_json['parser_warnings'])
 
     def test_reparse_source_type_filter_limits_checked_rows(self):
         _raw_data('https://example.com/raw/reparse-notice', 'Notice schedule 2026.05.20')
@@ -1375,7 +1392,43 @@ class SampleNoticeImportTests(TestCase):
             ocr_boxes=_timetable_non_learning_ocr_boxes(),
         )
 
-        self.assertEqual([schedule.title for schedule in schedules], ['중식', '과목평가'])
+        self.assertEqual([schedule.title for schedule in schedules], ['과목평가'])
+
+    def test_timetable_grid_skips_time_lunch_and_slogan_text(self):
+        schedules, _grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n13\n12:00 13:00\n중식\nLunch\nThere is no change',
+            default_title='[학습] 5월 2주차 Data 트랙 시간표',
+            ocr_boxes=_timetable_noise_ocr_boxes(),
+        )
+
+        self.assertEqual(schedules, [])
+
+    def test_timetable_grid_removes_time_prefix_and_keeps_class_title(self):
+        schedules, _grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n9: 00 10: 00 [ Live 방송 ] JS Basic Syntax1',
+            default_title='[학습] 5월 2주차 Data 트랙 시간표',
+            ocr_boxes=_timetable_time_prefixed_class_ocr_boxes(),
+        )
+
+        self.assertEqual([schedule.title for schedule in schedules], ['[학습] JS: Basic Syntax1'])
+
+    def test_timetable_grid_uses_date_header_boxes_for_mapping(self):
+        schedules, _grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월 11일\n5월 12일\n5월 13일\n5월 14일\n5월 15일\nDjango DRF',
+            default_title='[학습] 5월 2주차 Data 트랙 시간표',
+            ocr_boxes=_timetable_date_header_ocr_boxes(),
+        )
+
+        self.assertEqual(
+            [(schedule.start_at.date().isoformat(), schedule.title) for schedule in schedules],
+            [
+                ('2026-05-11', '[학습] Django: DRF 1'),
+                ('2026-05-12', '[학습] Django: DRF 2'),
+                ('2026-05-13', '[학습] JS: DOM'),
+                ('2026-05-14', '[학습] JS: Basic Syntax 1'),
+                ('2026-05-15', '과목평가 9'),
+            ],
+        )
 
     def test_timetable_grid_keeps_existing_practice_marker(self):
         schedules, _grid_debug = parse_schedule_candidates_with_debug(
@@ -3352,6 +3405,56 @@ def _timetable_practice_marker_ocr_boxes():
     boxes = _timetable_ocr_boxes()
     boxes[-1] = {'text': '[실습 및 Q&A] Django', 'x1': 205, 'y1': 132, 'x2': 330, 'y2': 152, 'confidence': 0.98}
     return boxes
+
+
+def _timetable_noise_ocr_boxes():
+    boxes = _timetable_ocr_boxes()[:-1]
+    boxes.extend(
+        [
+            {'text': '12:00 13:00', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 152, 'confidence': 0.98},
+            {'text': '중식', 'x1': 305, 'y1': 132, 'x2': 345, 'y2': 152, 'confidence': 0.98},
+            {'text': 'Lunch', 'x1': 405, 'y1': 132, 'x2': 455, 'y2': 152, 'confidence': 0.98},
+            {'text': 'There is no change', 'x1': 505, 'y1': 132, 'x2': 640, 'y2': 152, 'confidence': 0.98},
+        ]
+    )
+    return boxes
+
+
+def _timetable_time_prefixed_class_ocr_boxes():
+    boxes = _timetable_ocr_boxes()[:-1]
+    boxes.append(
+        {
+            'text': '9: 00 10: 00 [ Live 방송 ] JS Basic Syntax1',
+            'x1': 205,
+            'y1': 132,
+            'x2': 290,
+            'y2': 152,
+            'confidence': 0.98,
+        }
+    )
+    return boxes
+
+
+def _timetable_date_header_ocr_boxes():
+    return [
+        {'text': '5월 11일', 'x1': 110, 'y1': 100, 'x2': 170, 'y2': 120},
+        {'text': '5월 12일', 'x1': 210, 'y1': 100, 'x2': 270, 'y2': 120},
+        {'text': '5월 13일', 'x1': 310, 'y1': 100, 'x2': 370, 'y2': 120},
+        {'text': '5월 14일', 'x1': 410, 'y1': 100, 'x2': 470, 'y2': 120},
+        {'text': '5월 15일', 'x1': 510, 'y1': 100, 'x2': 570, 'y2': 120},
+        {'text': '[Live 방송]\nDjango :\nDRF 1', 'x1': 105, 'y1': 132, 'x2': 190, 'y2': 172, 'confidence': 0.98},
+        {'text': '[Live 방송]\nDjango :\nDRF 2', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 172, 'confidence': 0.98},
+        {'text': 'JS: DOM', 'x1': 305, 'y1': 132, 'x2': 370, 'y2': 152, 'confidence': 0.98},
+        {'text': 'JS: Basic Syntax 1', 'x1': 405, 'y1': 132, 'x2': 540, 'y2': 152, 'confidence': 0.98},
+        {'text': '과목평가 9', 'x1': 505, 'y1': 132, 'x2': 585, 'y2': 152, 'confidence': 0.98},
+    ]
+
+
+def _timetable_holiday_ocr_boxes():
+    return [
+        {'text': '5월 5일', 'x1': 210, 'y1': 100, 'x2': 270, 'y2': 120},
+        {'text': 'Django DRF', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 152, 'confidence': 0.98},
+    ]
 
 
 def _timetable_many_cell_ocr_boxes():
