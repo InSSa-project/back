@@ -191,6 +191,24 @@ class ScheduleEventApiTests(TestCase):
         personal_response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
         self.assertEqual([item['title'] for item in personal_response.json()], ['Manual visible event'])
 
+    def test_post_event_allows_personal_event_on_korean_holiday(self):
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Holiday personal plan',
+                    'start_at': '2026-05-05T09:00:00+09:00',
+                    'end_at': '2026-05-05T10:00:00+09:00',
+                    'event_type': 'personal',
+                    'is_all_day': False,
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ScheduleEvent.objects.get().title, 'Holiday personal plan')
+
     def test_event_list_returns_important_event_first_on_same_date(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 22, 9, 0))
         ScheduleEvent.objects.create(
