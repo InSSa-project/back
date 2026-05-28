@@ -18,7 +18,7 @@ from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.import_service import run_notice_import, run_sample_notice_import
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.reparse_service import reparse_raw_data_to_events
-from sync.services.schedule_parser import parse_schedule_candidates, parse_schedule_candidates_with_debug
+from sync.services.schedule_parser import ParsedSchedule, parse_schedule_candidates, parse_schedule_candidates_with_debug
 from bs4 import BeautifulSoup
 
 from sync.services.ssafy_crawler import (
@@ -699,6 +699,136 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn(str(second.id), value)
         self.assertNotIn(f'#{manual.id}#', value)
         self.assertEqual(ScheduleEvent.objects.count(), 3)
+
+    def test_repair_calendar_events_month_confirm_deletes_only_generated_holiday_events(self):
+        raw_data = _raw_data('https://example.com/raw/repair-confirm-holiday', 'repair holiday source')
+        generated = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='?붾쭚 ?됯?',
+            start_at=timezone.datetime(2026, 5, 5, 9, 0, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 5, 10, 0, tzinfo=timezone.get_current_timezone()),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={'source_title': '시간표 공지'},
+        )
+        metadata_generated = ScheduleEvent.objects.create(
+            title='월말 평가',
+            start_at=timezone.datetime(2026, 5, 5, 11, 0, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 5, 12, 0, tzinfo=timezone.get_current_timezone()),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={'raw_data_id': raw_data.id, 'source_title': '시간표 공지'},
+        )
+        manual = ScheduleEvent.objects.create(
+            title='개인 약속',
+            start_at=timezone.datetime(2026, 5, 5, 13, 0, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 5, 14, 0, tzinfo=timezone.get_current_timezone()),
+            is_all_day=False,
+            event_type='exam',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--month', '2026-05', '--confirm', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn(f'id={generated.id}', value)
+        self.assertIn(f'id={metadata_generated.id}', value)
+        self.assertIn('deleted_count=2', value)
+        self.assertFalse(ScheduleEvent.objects.filter(id=generated.id).exists())
+        self.assertFalse(ScheduleEvent.objects.filter(id=metadata_generated.id).exists())
+        self.assertTrue(ScheduleEvent.objects.filter(id=manual.id).exists())
+
+    def test_seed_june_online_week_2026_excludes_holiday_weekend_and_is_idempotent(self):
+        first_output = StringIO()
+        second_output = StringIO()
+
+        call_command('seed_june_online_week_2026', stdout=first_output)
+        call_command('seed_june_online_week_2026', stdout=second_output)
+
+        dates = list(
+            ScheduleEvent.objects.filter(title='온라인 위크')
+            .order_by('start_at')
+            .values_list('start_at__date', flat=True)
+        )
+        self.assertEqual(
+            [day.isoformat() for day in dates],
+            [
+                '2026-06-02',
+                '2026-06-05',
+                '2026-06-08',
+                '2026-06-09',
+                '2026-06-10',
+                '2026-06-11',
+                '2026-06-12',
+            ],
+        )
+        self.assertEqual(ScheduleEvent.objects.filter(title='온라인 위크').count(), 7)
+        self.assertIn('created_count=7', first_output.getvalue())
+        self.assertIn('skipped_count=7', second_output.getvalue())
+        self.assertFalse(ScheduleEvent.objects.filter(start_at__date='2026-06-03', title='온라인 위크').exists())
+        self.assertFalse(ScheduleEvent.objects.filter(start_at__date='2026-06-06', title='온라인 위크').exists())
+
+    def test_seed_june_online_week_2026_does_not_duplicate_existing_online_week(self):
+        ScheduleEvent.objects.create(
+            title='온라인 위크',
+            start_at=timezone.datetime(2026, 6, 2, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 6, 3, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+        stale_seed = ScheduleEvent.objects.create(
+            title='온라인 위크',
+            start_at=timezone.datetime(2026, 6, 2, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 6, 3, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='etc',
+            source_type='manual_seed',
+            metadata_json={'reason': 'online_week_recovery'},
+        )
+        output = StringIO()
+
+        call_command('seed_june_online_week_2026', stdout=output)
+
+        self.assertFalse(ScheduleEvent.objects.filter(id=stale_seed.id).exists())
+        self.assertEqual(ScheduleEvent.objects.filter(start_at__date='2026-06-02', title='온라인 위크').count(), 1)
+        self.assertIn('created_count=6', output.getvalue())
+        self.assertIn('duplicate_seed_removed_count=1', output.getvalue())
+
+    def test_reparse_blocks_fallback_week_timetable_candidates_by_default(self):
+        raw_data = _raw_data('https://example.com/raw/fallback-week-block', 'fallback source')
+        start_at = timezone.datetime(2026, 5, 5, 9, 0, tzinfo=timezone.get_current_timezone())
+        schedule = ParsedSchedule(
+            title='월말 평가',
+            description='fallback candidate',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='exam',
+            metadata_json={
+                'parser_type': 'timetable_grid',
+                'date_mapping_source': 'fallback_week',
+                'confidence': 0.4,
+            },
+        )
+        grid_debug = types.SimpleNamespace(
+            metadata_json={},
+            review_required_candidates=[],
+            as_dict=lambda: {},
+        )
+
+        with patch('sync.services.reparse_service.parse_schedule_candidates_with_debug', return_value=([schedule], grid_debug)):
+            summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        raw_data.refresh_from_db()
+        self.assertEqual(summary.created_count, 0)
+        self.assertEqual(summary.skipped_count, 1)
+        self.assertEqual(summary.validation_skip_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertIn('fallback_week_timetable_blocked', raw_data.metadata_json['parser_warnings'])
 
     def test_online_week_date_range_expands_to_weekdays_except_holidays(self):
         schedules = parse_schedule_candidates(
