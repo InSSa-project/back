@@ -5,10 +5,12 @@ from datetime import date, datetime, time, timedelta
 from django.utils import timezone
 
 from schedules.utils import normalize_schedule_display_title
+from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
 
 
 DEFAULT_YEAR = 2026
+ONLINE_WEEK_KEYWORDS = ('온라인 위크', 'online week', '?⑤씪???꾪겕')
 GENERIC_TITLES = {
     '공지사항 상세',
     '게시물 상세',
@@ -147,6 +149,11 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
                     'display_title': normalize_schedule_display_title(candidate.title),
                     'category_label': _category_label(candidate.event_type),
                     'track': _extract_track_from_title(default_title),
+                    'candidate_date': candidate.event_date.isoformat(),
+                    'date_mapping_source': 'ocr_header' if candidate.reason == 'timetable_cell_text' else 'explicit_text_date',
+                    'original_header_date': candidate.event_date.isoformat() if candidate.reason == 'timetable_cell_text' else '',
+                    'fallback_date': '',
+                    'skip_reason': '',
                     'row_index': candidate.row_index,
                     'col_index': candidate.col_index,
                     'confidence': candidate.confidence,
@@ -169,6 +176,9 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
 
         start_at, end_at, is_all_day = _parse_datetimes(line[date_match.end():], start_date, end_date)
         title = _parse_title(line, context_title)
+        if _looks_like_online_week(line):
+            schedules.extend(_build_online_week_schedules(line, default_title, start_date, end_date))
+            continue
 
         schedules.append(
             ParsedSchedule(
@@ -178,6 +188,17 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
                 end_at=end_at,
                 is_all_day=is_all_day,
                 event_type=_parse_event_type(line),
+                metadata_json={
+                    'parser': 'notice_text',
+                    'parser_type': 'text_date',
+                    'raw_title': title,
+                    'source_title': default_title,
+                    'display_title': normalize_schedule_display_title(title),
+                    'candidate_date': start_date.isoformat(),
+                    'date_mapping_source': 'explicit_text_date',
+                    'confidence': 0.85,
+                    'skip_reason': '',
+                },
             )
         )
 
@@ -229,6 +250,18 @@ def _parse_evaluation_notice(raw_text, default_title):
                 end_at=_aware(event_date, time.min) + timedelta(days=1),
                 is_all_day=True,
                 event_type='exam',
+                metadata_json={
+                    'parser': 'evaluation_notice_ocr',
+                    'parser_type': 'evaluation_notice',
+                    'raw_title': title,
+                    'source_title': default_title,
+                    'display_title': normalize_schedule_display_title(title),
+                    'track': track,
+                    'candidate_date': event_date.isoformat(),
+                    'date_mapping_source': 'explicit_text_date',
+                    'confidence': 0.9,
+                    'skip_reason': '',
+                },
             )
         )
 
@@ -378,9 +411,72 @@ def _build_calendar_schedules(month, day, line, inferred):
                 end_at=_aware(event_date, time.min) + timedelta(days=1),
                 is_all_day=True,
                 event_type=_parse_event_type(title),
+                metadata_json={
+                    'parser': 'calendar_ocr_text',
+                    'parser_type': 'calendar_text',
+                    'raw_title': title,
+                    'display_title': normalize_schedule_display_title(title),
+                    'candidate_date': event_date.isoformat(),
+                    'date_mapping_source': 'unknown' if inferred else 'explicit_text_date',
+                    'confidence': 0.55 if inferred else 0.75,
+                    'skip_reason': '',
+                },
             )
         )
     return schedules
+
+
+def _looks_like_online_week(line):
+    lowered = str(line or '').lower()
+    return any(keyword.lower() in lowered for keyword in ONLINE_WEEK_KEYWORDS)
+
+
+def _build_online_week_schedules(line, default_title, start_date, end_date):
+    holidays = _holiday_dates(start_date.year)
+    schedules = []
+    current = start_date
+    while current <= end_date:
+        if current.weekday() < 5 and current not in holidays:
+            title = _online_week_title(line)
+            schedules.append(
+                ParsedSchedule(
+                    title=title,
+                    description=f'SSAFY notice date range: {default_title}',
+                    start_at=_aware(current, time.min),
+                    end_at=_aware(current, time.min) + timedelta(days=1),
+                    is_all_day=True,
+                    event_type='study',
+                    metadata_json={
+                        'parser': 'notice_text_range',
+                        'parser_type': 'text_date_range',
+                        'raw_title': title,
+                        'source_title': default_title,
+                        'display_title': normalize_schedule_display_title(title),
+                        'candidate_date': current.isoformat(),
+                        'date_mapping_source': 'explicit_text_date',
+                        'confidence': 0.9,
+                        'skip_reason': '',
+                    },
+                )
+            )
+        current += timedelta(days=1)
+    return schedules
+
+
+def _online_week_title(line):
+    if '온라인 위크' in str(line or ''):
+        return '온라인 위크'
+    for keyword in ONLINE_WEEK_KEYWORDS:
+        if keyword.lower() in str(line or '').lower():
+            return keyword
+    return '온라인 위크'
+
+
+def _holiday_dates(year):
+    try:
+        return {holiday_date for _title, holiday_date in get_korean_holidays(year)}
+    except ValueError:
+        return set()
 
 
 def _extract_calendar_titles(line):

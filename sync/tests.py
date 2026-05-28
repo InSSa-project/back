@@ -618,6 +618,124 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('original_header_date=2026-05-12', value)
         self.assertIn('fallback_date=2026-05-05', value)
 
+    def test_debug_schedule_events_month_reports_suspicious_fallback_holiday_event(self):
+        raw_data = _raw_data('https://example.com/raw/debug-month-holiday', 'monthly exam source')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말 평가',
+            start_at=timezone.datetime(2026, 5, 5, 9, 0, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 5, 10, 0, tzinfo=timezone.get_current_timezone()),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={
+                'display_title': '월말 평가',
+                'parser_type': 'timetable_grid',
+                'date_mapping_source': 'fallback_week',
+                'original_header_date': '2026-05-12',
+                'fallback_date': '2026-05-05',
+            },
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--month', '2026-05', '--no-reparse', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('schedule_2026_05_count=1', value)
+        self.assertIn('suspicious_events=', value)
+        self.assertIn('holiday_generated', value)
+        self.assertIn('fallback_week', value)
+        self.assertIn('월말 평가', value)
+
+    def test_debug_schedule_events_month_reports_empty_weekdays(self):
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--month', '2026-05', '--no-reparse', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('suspicious_empty_weekdays=', value)
+        self.assertIn('2026-05-01', value)
+        self.assertNotIn('suspicious_empty_weekdays=2026-05-05', value)
+
+    def test_repair_calendar_events_month_dry_run_reports_duplicates_and_keeps_manual_out_of_scope(self):
+        raw_data = _raw_data('https://example.com/raw/repair-duplicate-month', 'repair duplicate source')
+        start_at = timezone.datetime(2026, 5, 26, tzinfo=timezone.get_current_timezone())
+        end_at = timezone.datetime(2026, 5, 27, tzinfo=timezone.get_current_timezone())
+        first = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말 평가',
+            start_at=start_at,
+            end_at=end_at,
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+        )
+        second = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말 평가',
+            start_at=start_at,
+            end_at=end_at,
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+        )
+        manual = ScheduleEvent.objects.create(
+            title='월말 평가',
+            start_at=start_at,
+            end_at=end_at,
+            is_all_day=True,
+            event_type='exam',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--month', '2026-05', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('dry_run=true', value)
+        self.assertIn('confirmed=false', value)
+        self.assertIn('duplicate_events=', value)
+        self.assertIn(str(first.id), value)
+        self.assertIn(str(second.id), value)
+        self.assertNotIn(f'#{manual.id}#', value)
+        self.assertEqual(ScheduleEvent.objects.count(), 3)
+
+    def test_online_week_date_range_expands_to_weekdays_except_holidays(self):
+        schedules = parse_schedule_candidates(
+            '2026.06.02~06.13 온라인 위크',
+            default_title='온라인 위크 공지',
+        )
+
+        dates = [schedule.start_at.date().isoformat() for schedule in schedules]
+        self.assertEqual(
+            dates,
+            [
+                '2026-06-02',
+                '2026-06-04',
+                '2026-06-05',
+                '2026-06-08',
+                '2026-06-09',
+                '2026-06-10',
+                '2026-06-11',
+                '2026-06-12',
+            ],
+        )
+        self.assertTrue(all(schedule.title == '온라인 위크' for schedule in schedules))
+        self.assertTrue(all(schedule.metadata_json['date_mapping_source'] == 'explicit_text_date' for schedule in schedules))
+
+    def test_timetable_header_candidates_store_ocr_header_date_mapping(self):
+        schedules = parse_schedule_candidates(
+            '[OCR_TEXT]\n5월 2주차 시간표',
+            default_title='[학습] 5월 2주차 Data 트랙 시간표',
+            ocr_boxes=_timetable_date_header_ocr_boxes(),
+        )
+
+        dates = [schedule.start_at.date().isoformat() for schedule in schedules]
+        self.assertIn('2026-05-11', dates)
+        self.assertIn('2026-05-15', dates)
+        self.assertTrue(all(schedule.metadata_json['date_mapping_source'] == 'ocr_header' for schedule in schedules))
+        self.assertTrue(all(schedule.metadata_json['original_header_date'] for schedule in schedules))
+
     def test_reparse_command_can_target_id_and_replace_existing_events(self):
         raw_data = _raw_data('https://example.com/raw/reparse-replace', '월말평가 2026.05.20')
         ScheduleEvent.objects.create(

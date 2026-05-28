@@ -34,6 +34,8 @@ def build_generated_event_metadata(raw_data, schedule):
     metadata.update(getattr(schedule, 'metadata_json', None) or {})
     if raw_data and raw_data.title:
         metadata.setdefault('source_title', raw_data.title)
+    if raw_data:
+        metadata.setdefault('raw_data_id', raw_data.id)
     warnings = validate_generated_schedule(raw_data, schedule)
     if warnings:
         metadata['parser_warnings'] = warnings
