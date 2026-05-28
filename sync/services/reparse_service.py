@@ -74,6 +74,11 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 summary.empty_title_skip_count += 1
                 _store_parser_warning(raw_data, ['empty_schedule_title'])
                 continue
+            if _should_skip_fallback_week_timetable(schedule):
+                summary.skipped_count += 1
+                summary.validation_skip_count += 1
+                _store_parser_warning(raw_data, ['fallback_week_timetable_blocked'])
+                continue
             warnings = validate_generated_schedule(raw_data, schedule)
             if warnings:
                 _store_parser_warning(raw_data, warnings)
@@ -115,6 +120,14 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
     if dry_run:
         transaction.set_rollback(True)
     return summary
+
+
+def _should_skip_fallback_week_timetable(schedule):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    if metadata.get('allow_fallback_week'):
+        return False
+    parser_type = metadata.get('parser_type') or metadata.get('parser')
+    return parser_type in {'timetable_grid', 'ocr_timetable_grid'} and metadata.get('date_mapping_source') == 'fallback_week'
 
 
 def _store_review_required_candidates(raw_data, grid_debug):

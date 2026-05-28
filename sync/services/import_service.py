@@ -211,6 +211,10 @@ def _import_raw_items(raw_items):
                     _store_parser_warning(raw_data, ['empty_schedule_title'])
                     _mark_event_skipped(summary, 'empty_title')
                     continue
+                if _should_skip_fallback_week_timetable(schedule):
+                    _store_parser_warning(raw_data, ['fallback_week_timetable_blocked'])
+                    _mark_event_skipped(summary, 'validation')
+                    continue
                 warnings = validate_generated_schedule(raw_data, schedule)
                 if warnings:
                     _store_parser_warning(raw_data, warnings)
@@ -309,6 +313,14 @@ def _mark_event_skipped(summary, reason):
         summary.validation_event_skipped_count += 1
     elif reason == 'empty_title':
         summary.empty_title_event_skipped_count += 1
+
+
+def _should_skip_fallback_week_timetable(schedule):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    if metadata.get('allow_fallback_week'):
+        return False
+    parser_type = metadata.get('parser_type') or metadata.get('parser')
+    return parser_type in {'timetable_grid', 'ocr_timetable_grid'} and metadata.get('date_mapping_source') == 'fallback_week'
 
 
 def _build_success_message(selected_mode, summary, crawler_debug=None):

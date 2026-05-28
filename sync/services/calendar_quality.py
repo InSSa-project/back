@@ -105,7 +105,16 @@ def korean_holiday_dates(year):
 
 def is_generated_event(event):
     metadata = event.metadata_json or {}
-    return bool(event.raw_data_id or metadata.get('repair_source') in GENERATED_REPAIR_SOURCES)
+    return bool(
+        event.raw_data_id
+        or metadata.get('raw_data_id')
+        or metadata.get('repair_source') in GENERATED_REPAIR_SOURCES
+    )
+
+
+def is_deletable_generated_event(event):
+    metadata = event.metadata_json or {}
+    return bool(event.raw_data_id or metadata.get('raw_data_id'))
 
 
 def is_manual_event(event):

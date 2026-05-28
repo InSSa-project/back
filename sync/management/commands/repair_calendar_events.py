@@ -12,6 +12,7 @@ from schedules.models import ScheduleEvent
 from sync.services.calendar_quality import (
     build_month_quality_report,
     format_suspicious_events,
+    is_deletable_generated_event,
     parse_month_option,
     suspicious_events_by_reason,
 )
@@ -117,15 +118,15 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if options.get('month'):
-            _print_month_quality_report(
+            deleted_count = _repair_month_quality_report(
                 self.stdout,
                 options['month'],
                 options['year'],
                 confirmed=options['confirm'],
                 dry_run=options['dry_run'] or not options['confirm'],
             )
-            if not options['confirm']:
-                return
+            self.stdout.write(f'deleted_count={deleted_count}')
+            return
 
         summary = repair_calendar_events(
             dry_run=options['dry_run'],
@@ -162,9 +163,10 @@ class Command(BaseCommand):
         )
 
 
-def _print_month_quality_report(stdout, month_option, year_option, confirmed=False, dry_run=True):
+def _repair_month_quality_report(stdout, month_option, year_option, confirmed=False, dry_run=True):
     year, month = parse_month_option(month_option, year_option)
     report = build_month_quality_report(year, month)
+    targets = _month_delete_targets(report)
     stdout.write(f'month={year}-{month:02d}')
     stdout.write(f'dry_run={str(dry_run).lower()}')
     stdout.write(f'confirmed={str(confirmed).lower()}')
@@ -185,6 +187,34 @@ def _print_month_quality_report(stdout, month_option, year_option, confirmed=Fal
         'meaningless_title_events='
         f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "meaningless_title"))}'
     )
+    for event in targets:
+        metadata = event.metadata_json or {}
+        stdout.write(
+            'delete_target '
+            f'id={event.id} '
+            f'title={_safe_log(event.title)} '
+            f'start_at={timezone.localtime(event.start_at).isoformat()} '
+            f'source_title={_safe_log(metadata.get("source_title"))}'
+        )
+    if confirmed and not dry_run and targets:
+        ScheduleEvent.objects.filter(id__in=[event.id for event in targets]).delete()
+    return len(targets)
+
+
+def _month_delete_targets(report):
+    targets = []
+    for item in report.suspicious_events:
+        if not {'holiday_generated', 'fallback_week', 'meaningless_title'} & set(item.reasons):
+            continue
+        event = item.event
+        if event.event_type == 'holiday' or not is_deletable_generated_event(event):
+            continue
+        targets.append(event)
+    return targets
+
+
+def _safe_log(value):
+    return str(value if value is not None else '').replace('\n', ' ').replace('\r', ' ')
 
 
 @transaction.atomic

@@ -32,6 +32,7 @@
 4. 출처 불명: `unknown`
 
 날짜 헤더가 있는 시간표는 fallback 날짜로 덮어쓰지 않는다. 헤더 목록에 없는 날짜로 생성된 후보는 warning 또는 suspicious 대상으로 남긴다.
+`fallback_week` 기반 시간표 수업/평가 후보는 기본적으로 `ScheduleEvent`에 저장하지 않는다. 명확한 기간형 공지 또는 관리자가 명시적으로 허용한 후보만 저장한다.
 
 ## 공휴일/주말 처리
 
@@ -71,11 +72,22 @@ python manage.py repair_calendar_events --month 2026-05 --dry-run
 python manage.py repair_calendar_events --month 2026-06 --dry-run
 ```
 
+실제 복구 순서:
+
+```bash
+python manage.py repair_calendar_events --month 2026-05 --dry-run
+python manage.py repair_calendar_events --month 2026-05 --confirm
+python manage.py seed_june_online_week_2026
+python manage.py debug_schedule_events --month 2026-05
+python manage.py debug_schedule_events --month 2026-06
+```
+
 데이터 재생성 기본 순서:
 
 ```bash
 python manage.py reset_generated_schedule_events --confirm
 python manage.py seed_korean_holidays --year 2026
+python manage.py seed_june_online_week_2026
 python manage.py reparse_raw_ssafy_data --source-type notice
 python manage.py debug_schedule_events --month 2026-05
 ```
