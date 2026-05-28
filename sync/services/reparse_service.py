@@ -15,6 +15,10 @@ class ReparseSummary:
     candidate_count: int = 0
     created_count: int = 0
     skipped_count: int = 0
+    duplicate_skip_count: int = 0
+    wrapper_skip_count: int = 0
+    validation_skip_count: int = 0
+    empty_title_skip_count: int = 0
     no_schedule_count: int = 0
     failed_count: int = 0
     replaced_event_count: int = 0
@@ -60,13 +64,26 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 existing_events.delete()
 
         for schedule in parsed_schedules:
-            if not replace_events and find_existing_schedule_event(schedule, raw_data):
+            title = str(getattr(schedule, 'title', '') or '').strip()
+            if not title:
                 summary.skipped_count += 1
+                summary.empty_title_skip_count += 1
+                _store_parser_warning(raw_data, ['empty_schedule_title'])
                 continue
             warnings = validate_generated_schedule(raw_data, schedule)
             if 'timetable_title_equals_source_title' in warnings:
                 summary.skipped_count += 1
+                summary.wrapper_skip_count += 1
                 _store_parser_warning(raw_data, warnings)
+                continue
+            if warnings:
+                summary.skipped_count += 1
+                summary.validation_skip_count += 1
+                _store_parser_warning(raw_data, warnings)
+                continue
+            if not replace_events and find_existing_schedule_event(schedule, raw_data):
+                summary.skipped_count += 1
+                summary.duplicate_skip_count += 1
                 continue
 
             summary.created_count += 1
