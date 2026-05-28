@@ -2,6 +2,7 @@ from datetime import datetime
 
 from django.core.management.base import BaseCommand
 from django.db.models import Count
+from django.utils.dateparse import parse_date
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
@@ -17,6 +18,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--year', type=int, default=2026, help='Calendar year to inspect.')
         parser.add_argument('--month', type=int, default=5, help='Calendar month to inspect.')
+        parser.add_argument('--date', help='Print ScheduleEvent rows overlapping one date in YYYY-MM-DD format.')
         parser.add_argument(
             '--reparse-source-type',
             default='notice',
@@ -30,6 +32,14 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get('date'):
+            target_date = parse_date(options['date'])
+            if target_date is None:
+                self.stderr.write(self.style.ERROR('Invalid --date value. Use YYYY-MM-DD.'))
+                return
+            _print_events_for_date(self.stdout, target_date)
+            return
+
         year = options['year']
         month = options['month']
         start_at = _aware(datetime(year, month, 1))
@@ -113,3 +123,34 @@ def _existing_event_dates():
     for event in ScheduleEvent.objects.order_by('start_at', 'id')[:20]:
         dates.append(f'{timezone.localdate(event.start_at).isoformat()}:{event.title}')
     return '|'.join(dates) or 'none'
+
+
+def _print_events_for_date(stdout, target_date):
+    start_at = timezone.make_aware(datetime.combine(target_date, datetime.min.time()), timezone.get_current_timezone())
+    end_at = timezone.make_aware(datetime.combine(target_date, datetime.max.time()), timezone.get_current_timezone())
+    events = ScheduleEvent.objects.filter(start_at__lte=end_at, end_at__gte=start_at).order_by('start_at', 'id')
+    stdout.write(f'date={target_date.isoformat()}')
+    stdout.write(f'event_count={events.count()}')
+    for event in events:
+        metadata = event.metadata_json or {}
+        stdout.write(
+            'event '
+            f'id={event.id} '
+            f'title={_safe(event.title)} '
+            f'display_title={_safe(metadata.get("display_title"))} '
+            f'event_type={_safe(event.event_type)} '
+            f'start_at={timezone.localtime(event.start_at).isoformat()} '
+            f'end_at={timezone.localtime(event.end_at).isoformat()} '
+            f'raw_data_id={event.raw_data_id or ""} '
+            f'source_type={_safe(event.source_type)} '
+            f'source_title={_safe(metadata.get("source_title"))} '
+            f'raw_title={_safe(metadata.get("raw_title"))} '
+            f'parser_type={_safe(metadata.get("parser_type"))} '
+            f'date_mapping_source={_safe(metadata.get("date_mapping_source"))} '
+            f'original_header_date={_safe(metadata.get("original_header_date"))} '
+            f'fallback_date={_safe(metadata.get("fallback_date"))}'
+        )
+
+
+def _safe(value):
+    return str(value if value is not None else '').replace('\n', ' ').replace('\r', ' ')
