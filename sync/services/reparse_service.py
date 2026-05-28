@@ -3,7 +3,11 @@ from dataclasses import dataclass
 from django.db import transaction
 
 from schedules.models import ScheduleEvent
-from schedules.services import build_generated_event_metadata, validate_generated_schedule
+from schedules.services import (
+    build_generated_event_metadata,
+    is_blocking_generated_schedule_warning,
+    validate_generated_schedule,
+)
 from sync.models import RawSsafyData
 from sync.services.import_service import find_existing_schedule_event
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
@@ -71,15 +75,16 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 _store_parser_warning(raw_data, ['empty_schedule_title'])
                 continue
             warnings = validate_generated_schedule(raw_data, schedule)
-            if 'timetable_title_equals_source_title' in warnings:
+            if warnings:
+                _store_parser_warning(raw_data, warnings)
+            blocking_warnings = [warning for warning in warnings if is_blocking_generated_schedule_warning(warning)]
+            if 'timetable_title_equals_source_title' in blocking_warnings:
                 summary.skipped_count += 1
                 summary.wrapper_skip_count += 1
-                _store_parser_warning(raw_data, warnings)
                 continue
-            if warnings:
+            if blocking_warnings:
                 summary.skipped_count += 1
                 summary.validation_skip_count += 1
-                _store_parser_warning(raw_data, warnings)
                 continue
             if not replace_events and find_existing_schedule_event(schedule, raw_data):
                 summary.skipped_count += 1

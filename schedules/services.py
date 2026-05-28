@@ -66,6 +66,10 @@ def validate_generated_schedule(raw_data, schedule):
     return warnings
 
 
+def is_blocking_generated_schedule_warning(warning):
+    return warning in {'timetable_title_equals_source_title', 'non_positive_duration'}
+
+
 def _is_generated_class_on_korean_holiday(schedule, parser):
     if getattr(schedule, 'event_type', '') == 'holiday':
         return False

@@ -438,7 +438,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(summary.wrapper_skip_count, 1)
         self.assertEqual(list(ScheduleEvent.objects.values_list('title', flat=True)), ['[학습] JS: DOM'])
 
-    def test_reparse_skips_timetable_class_on_korean_holiday(self):
+    def test_reparse_warns_timetable_class_on_korean_holiday_without_blocking(self):
         raw_data = RawSsafyData.objects.create(
             source_type='notice',
             source_url='https://example.com/raw/timetable-holiday',
@@ -450,10 +450,11 @@ class SampleNoticeImportTests(TestCase):
         summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
 
         raw_data.refresh_from_db()
-        self.assertEqual(summary.created_count, 0)
-        self.assertEqual(summary.validation_skip_count, 1)
-        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(summary.validation_skip_count, 0)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
         self.assertIn('generated_class_on_korean_holiday', raw_data.metadata_json['parser_warnings'])
+        self.assertIn('generated_class_on_korean_holiday', ScheduleEvent.objects.get().metadata_json['parser_warnings'])
 
     def test_reparse_source_type_filter_limits_checked_rows(self):
         _raw_data('https://example.com/raw/reparse-notice', 'Notice schedule 2026.05.20')

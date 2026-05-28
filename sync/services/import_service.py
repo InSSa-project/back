@@ -5,7 +5,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
-from schedules.services import build_generated_event_metadata, validate_generated_schedule
+from schedules.services import (
+    build_generated_event_metadata,
+    is_blocking_generated_schedule_warning,
+    validate_generated_schedule,
+)
 from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
@@ -208,12 +212,13 @@ def _import_raw_items(raw_items):
                     _mark_event_skipped(summary, 'empty_title')
                     continue
                 warnings = validate_generated_schedule(raw_data, schedule)
-                if 'timetable_title_equals_source_title' in warnings:
-                    _store_parser_warning(raw_data, warnings)
-                    _mark_event_skipped(summary, 'wrapper')
-                    continue
                 if warnings:
                     _store_parser_warning(raw_data, warnings)
+                blocking_warnings = [warning for warning in warnings if is_blocking_generated_schedule_warning(warning)]
+                if 'timetable_title_equals_source_title' in blocking_warnings:
+                    _mark_event_skipped(summary, 'wrapper')
+                    continue
+                if blocking_warnings:
                     _mark_event_skipped(summary, 'validation')
                     continue
                 if find_existing_schedule_event(schedule, raw_data):
