@@ -490,6 +490,61 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('duplicate_skip_count=0', value)
         self.assertIn('wrapper_skip_count=0', value)
 
+    def test_reparse_command_warns_when_target_raw_data_is_low(self):
+        _raw_data('https://example.com/raw/reparse-low-count', 'Low count schedule 2026.05.20')
+        output = StringIO()
+
+        call_command('reparse_raw_ssafy_data', '--source-type', 'notice', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('WARNING: only 1 RawSsafyData rows matched', value)
+        self.assertIn('target_raw_count=1', value)
+
+    def test_reparse_command_prints_duplicate_reason_and_existing_dates(self):
+        raw_data = _raw_data('https://example.com/raw/reparse-duplicate-command', 'Duplicate schedule 2026.05.20')
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+        self.assertEqual(summary.created_count, 1)
+        output = StringIO()
+
+        call_command('reparse_raw_ssafy_data', '--id', raw_data.id, stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('created_count=0', value)
+        self.assertIn('skip_reasons=duplicate:1|wrapper:0|validation:0|empty_title:0', value)
+        self.assertIn('existing_duplicate_event_dates=2026-05-20:Duplicate schedule', value)
+
+    def test_restore_calendar_data_aborts_when_raw_data_is_insufficient(self):
+        _raw_data('https://example.com/raw/restore-low-count', 'Restore schedule 2026.05.20')
+
+        with self.assertRaisesMessage(CommandError, 'Not enough RawSsafyData rows'):
+            call_command('restore_calendar_data', stdout=StringIO())
+
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
+    def test_restore_calendar_data_dry_run_does_not_delete_existing_generated_events(self):
+        raw_rows = [
+            _raw_data(f'https://example.com/raw/restore-{index}', f'Restore schedule {index} 2026.05.2{index}')
+            for index in range(3)
+        ]
+        ScheduleEvent.objects.create(
+            raw_data=raw_rows[0],
+            title='Existing generated schedule',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+        output = StringIO()
+
+        call_command('restore_calendar_data', '--dry-run', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('Calendar restore preflight.', value)
+        self.assertIn('Generated schedule reset completed.', value)
+        self.assertIn('dry_run=true', value)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
     def test_debug_schedule_events_command_outputs_calendar_counts(self):
         _raw_data('https://example.com/raw/debug-command', 'Debug schedule 2026.05.20')
         output = StringIO()
@@ -500,7 +555,12 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('schedule_total=0', value)
         self.assertIn('schedule_2026_05_count=0', value)
         self.assertIn('generated_schedule_count=0', value)
+        self.assertIn('manual_schedule_count=0', value)
+        self.assertIn('monthly_schedule_counts=none', value)
+        self.assertIn('raw_total=1', value)
         self.assertIn('raw_source_type_counts=notice:1', value)
+        self.assertIn('reparse_target_count=1', value)
+        self.assertIn('WARNING: reparse target RawSsafyData count is low', value)
         self.assertIn('reparse_dry_run=raw_checked:1|candidate:1|created:1', value)
 
     def test_reparse_command_can_target_id_and_replace_existing_events(self):
@@ -546,10 +606,49 @@ class SampleNoticeImportTests(TestCase):
         )
         output = StringIO()
 
-        call_command('reset_generated_schedule_events', stdout=output)
+        call_command('reset_generated_schedule_events', '--confirm', stdout=output)
 
         self.assertIn('delete_count=1', output.getvalue())
+        self.assertIn('confirmed=true', output.getvalue())
         self.assertEqual(list(ScheduleEvent.objects.values_list('title', flat=True)), ['Manual personal schedule'])
+
+    def test_reset_generated_schedule_events_requires_confirm(self):
+        raw_data = _raw_data('https://example.com/raw/generated-reset-safe', 'Generated schedule 2026.05.20')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated schedule',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+        output = StringIO()
+
+        call_command('reset_generated_schedule_events', stdout=output)
+
+        self.assertIn('Reset aborted', output.getvalue())
+        self.assertIn('confirmed=false', output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_reset_generated_schedule_events_dry_run_does_not_delete(self):
+        raw_data = _raw_data('https://example.com/raw/generated-reset-dry-run', 'Generated schedule 2026.05.20')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated schedule',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+        output = StringIO()
+
+        call_command('reset_generated_schedule_events', '--dry-run', stdout=output)
+
+        self.assertIn('target_count=1', output.getvalue())
+        self.assertIn('dry_run=true', output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
 
     def test_seed_korean_holidays_creates_childrens_day_on_may_5(self):
         output = StringIO()
