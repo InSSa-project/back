@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
+from schedules.utils import normalize_schedule_display_title
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
 
 
@@ -139,8 +140,13 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
                 event_type=candidate.event_type,
                 metadata_json={
                     'parser': 'ocr_timetable_grid' if candidate.reason == 'timetable_cell_text' else 'ocr_calendar_grid',
+                    'parser_type': 'timetable_grid' if candidate.reason == 'timetable_cell_text' else 'calendar_grid',
+                    'raw_title': candidate.source_text or candidate.title,
                     'source_title': default_title,
                     'source_text': candidate.source_text,
+                    'display_title': normalize_schedule_display_title(candidate.title),
+                    'category_label': _category_label(candidate.event_type),
+                    'track': _extract_track_from_title(default_title),
                     'row_index': candidate.row_index,
                     'col_index': candidate.col_index,
                     'confidence': candidate.confidence,
@@ -267,6 +273,35 @@ def _extract_clear_track(text):
         if re.search(re.escape(keyword), text, re.I):
             found.append(keyword)
     return found[0] if len(set(found)) == 1 else ''
+
+
+def _extract_track_from_title(title):
+    text = str(title or '')
+    track_map = [
+        ('Python', 'Python'),
+        ('Data', 'Data'),
+        ('마이스터고', '마이스터고'),
+        ('Java', 'Java'),
+        ('Embedded Robot', 'Embedded Robot'),
+        ('Embedded', 'Embedded'),
+        ('Mobile', 'Mobile'),
+    ]
+    for keyword, label in track_map:
+        if keyword.lower() in text.lower():
+            return label
+    return ''
+
+
+def _category_label(event_type):
+    labels = {
+        'exam': '평가',
+        'project': '프로젝트',
+        'study': '학습',
+        'lecture': '학습',
+        'notice': '기타',
+        'assignment': '기타',
+    }
+    return labels.get(event_type, '기타')
 
 
 def _candidate_lines_for_evaluation(text):

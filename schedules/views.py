@@ -10,6 +10,7 @@ from django.views.decorators.http import require_http_methods
 
 from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
+from .utils import normalize_schedule_display_title
 
 
 CANONICAL_TRACKS = {
@@ -273,9 +274,12 @@ def _serialize_event(event):
     start_at = timezone.localtime(event.start_at)
     end_at = timezone.localtime(event.end_at)
     raw_data = event.raw_data
+    metadata = event.metadata_json or {}
+    source_title = metadata.get('source_title') or (raw_data.title if raw_data else None)
     return {
         'id': event.id,
         'title': event.title,
+        'display_title': _event_display_title(event, metadata),
         'description': event.description,
         'start_at': start_at.isoformat(),
         'end_at': end_at.isoformat(),
@@ -283,12 +287,19 @@ def _serialize_event(event):
         'is_important': _is_important_event(event),
         'event_type': event.event_type,
         'source_type': event.source_type,
-        'metadata': event.metadata_json,
-        'metadata_json': event.metadata_json,
-        'audience': (event.metadata_json or {}).get('audience', {}),
+        'metadata': metadata,
+        'metadata_json': metadata,
+        'audience': metadata.get('audience', {}),
         'source_url': raw_data.source_url if raw_data else None,
-        'source_title': raw_data.title if raw_data else None,
+        'source_title': source_title,
     }
+
+
+def _event_display_title(event, metadata):
+    metadata_display_title = str(metadata.get('display_title') or '').strip()
+    if metadata_display_title:
+        return metadata_display_title
+    return normalize_schedule_display_title(event.title) or event.title
 
 
 def _event_list_sort_key(event):

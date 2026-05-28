@@ -7,9 +7,24 @@ from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
+from schedules.utils import normalize_schedule_display_title
 from sync.models import RawSsafyData
 from sync.services.import_service import run_sample_notice_import
 from sync.services.schedule_parser import parse_schedule_candidates
+
+
+class ScheduleDisplayTitleTests(TestCase):
+    def test_normalize_schedule_display_title_examples(self):
+        cases = {
+            '[학습] 9:00 10:00 [Live 방송] JS Basic Syntax1': 'Basic Syntax',
+            '[학습] 10:00 11:00 [실습 및 Q&A]': '실습 Q&A',
+            '[학습] 9:00 10:00 과목 평가': '과목 평가',
+            '[학습] Django: DRF 1': 'Django: DRF 1',
+        }
+
+        for raw_title, expected in cases.items():
+            with self.subTest(raw_title=raw_title):
+                self.assertEqual(normalize_schedule_display_title(raw_title), expected)
 
 
 class ScheduleEventApiTests(TestCase):
@@ -29,6 +44,7 @@ class ScheduleEventApiTests(TestCase):
         self.assertIn('source_url', payload[0])
         self.assertIn('source_title', payload[0])
         self.assertIn('audience', payload[0])
+        self.assertIn('display_title', payload[0])
         self.assertTrue(payload[0]['source_url'])
         self.assertTrue(payload[0]['source_title'])
 
@@ -77,6 +93,44 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['event_type'], 'personal')
         self.assertIsNone(payload['source_url'])
         self.assertIsNone(payload['source_title'])
+        self.assertEqual(payload['display_title'], 'Manual study session')
+
+    def test_event_list_prefers_metadata_display_title(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='[학습] 9:00 10:00 [Live 방송] JS Basic Syntax1',
+            description='OCR source text',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='study',
+            metadata_json={'display_title': 'Basic Syntax', 'raw_title': '[학습] 9:00 10:00 [Live 방송] JS Basic Syntax1'},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()[0]
+        self.assertEqual(payload['title'], '[학습] 9:00 10:00 [Live 방송] JS Basic Syntax1')
+        self.assertEqual(payload['display_title'], 'Basic Syntax')
+        self.assertEqual(payload['metadata_json']['raw_title'], '[학습] 9:00 10:00 [Live 방송] JS Basic Syntax1')
+
+    def test_event_list_normalizes_display_title_without_metadata(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='[학습] 9:00 10:00 [Live 방송] JS Basic Syntax1',
+            description='OCR source text',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='study',
+        )
+
+        response = self.client.get(reverse('schedule-event-list'))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()[0]
+        self.assertEqual(payload['display_title'], 'Basic Syntax')
 
     def test_post_event_accepts_frontend_personal_event_payload(self):
         response = self.client.post(
