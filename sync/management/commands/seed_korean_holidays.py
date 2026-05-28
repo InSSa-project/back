@@ -7,24 +7,41 @@ from django.utils import timezone
 from schedules.models import ScheduleEvent
 
 
-HOLIDAYS_BY_YEAR = {
+SUPPORTED_KOREAN_HOLIDAYS = {
     2026: [
-        ('신정', date(2026, 1, 1)),
-        ('설날 연휴', date(2026, 2, 16)),
-        ('설날', date(2026, 2, 17)),
-        ('설날 연휴', date(2026, 2, 18)),
-        ('삼일절 대체공휴일', date(2026, 3, 2)),
-        ('어린이날', date(2026, 5, 5)),
-        ('부처님 오신 날 대체공휴일', date(2026, 5, 25)),
-        ('전국동시지방선거', date(2026, 6, 3)),
-        ('현충일', date(2026, 6, 6)),
-        ('광복절', date(2026, 8, 15)),
-        ('추석 연휴', date(2026, 9, 24)),
-        ('추석', date(2026, 9, 25)),
-        ('추석 연휴', date(2026, 9, 26)),
-        ('개천절', date(2026, 10, 3)),
-        ('한글날', date(2026, 10, 9)),
-        ('성탄절', date(2026, 12, 25)),
+        ('신정', 1, 1),
+        ('설날 연휴', 2, 16),
+        ('설날', 2, 17),
+        ('설날 연휴', 2, 18),
+        ('삼일절 대체공휴일', 3, 2),
+        ('어린이날', 5, 5),
+        ('부처님 오신 날 대체공휴일', 5, 25),
+        ('전국동시지방선거', 6, 3),
+        ('현충일', 6, 6),
+        ('광복절', 8, 15),
+        ('추석 연휴', 9, 24),
+        ('추석', 9, 25),
+        ('추석 연휴', 9, 26),
+        ('개천절', 10, 3),
+        ('한글날', 10, 9),
+        ('성탄절', 12, 25),
+    ],
+    2027: [
+        ('신정', 1, 1),
+        ('설날 연휴', 2, 6),
+        ('설날', 2, 7),
+        ('설날 연휴', 2, 8),
+        ('삼일절', 3, 1),
+        ('어린이날', 5, 5),
+        ('부처님 오신 날', 5, 13),
+        ('현충일', 6, 6),
+        ('광복절 대체공휴일', 8, 16),
+        ('추석 연휴', 9, 14),
+        ('추석', 9, 15),
+        ('추석 연휴', 9, 16),
+        ('개천절 대체공휴일', 10, 4),
+        ('한글날', 10, 9),
+        ('성탄절', 12, 25),
     ],
 }
 
@@ -39,9 +56,10 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         year = options['year']
-        holidays = HOLIDAYS_BY_YEAR.get(year)
-        if holidays is None:
-            raise CommandError(f'Unsupported holiday year: {year}')
+        try:
+            holidays = get_korean_holidays(year)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from exc
 
         created_count = 0
         skipped_count = 0
@@ -83,6 +101,14 @@ class Command(BaseCommand):
                 f'dry_run={str(options["dry_run"]).lower()}'
             )
         )
+
+
+def get_korean_holidays(year):
+    fixtures = SUPPORTED_KOREAN_HOLIDAYS.get(year)
+    if fixtures is None:
+        supported_years = ', '.join(str(value) for value in sorted(SUPPORTED_KOREAN_HOLIDAYS))
+        raise ValueError(f'Unsupported Korean holiday year: {year}. Supported years: {supported_years}')
+    return [(title, date(year, month, day)) for title, month, day in fixtures]
 
 
 def _aware(day):

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.core.management import call_command
+from django.core.management import call_command, CommandError
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -396,6 +396,17 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(holiday.event_type, 'holiday')
         self.assertEqual(holiday.source_type, 'seed')
         self.assertIn('created_count=', output.getvalue())
+
+    def test_seed_korean_holidays_uses_requested_year_fixture(self):
+        call_command('seed_korean_holidays', '--year', '2027')
+
+        holiday = ScheduleEvent.objects.get(title='어린이날')
+        self.assertEqual(timezone.localdate(holiday.start_at).isoformat(), '2027-05-05')
+        self.assertTrue(ScheduleEvent.objects.filter(title='설날', start_at__date='2027-02-07').exists())
+
+    def test_seed_korean_holidays_rejects_unsupported_year(self):
+        with self.assertRaisesMessage(CommandError, 'Unsupported Korean holiday year: 2028'):
+            call_command('seed_korean_holidays', '--year', '2028')
 
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
@@ -1073,12 +1084,43 @@ class SampleNoticeImportTests(TestCase):
             ocr_boxes=_timetable_ocr_boxes(),
         )
 
-        self.assertEqual([schedule.title for schedule in schedules], ['Pandas 실습'])
+        self.assertEqual([schedule.title for schedule in schedules], ['[학습] Pandas 실습'])
         self.assertEqual(schedules[0].metadata_json['source_title'], source_title)
         self.assertEqual(schedules[0].metadata_json['parser'], 'ocr_timetable_grid')
         self.assertIn(source_title, schedules[0].description)
         self.assertEqual(schedules[0].start_at.date().isoformat(), '2026-05-12')
         self.assertEqual(grid_debug.candidates[0]['source_text'], 'Pandas 실습')
+
+    def test_timetable_grid_normalizes_learning_titles(self):
+        source_title = '[학습] 5월 2주차 Data 트랙 시간표'
+
+        schedules, _grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\nDjango DRF',
+            default_title=source_title,
+            ocr_boxes=_timetable_multiline_ocr_boxes(),
+        )
+
+        self.assertEqual([schedule.title for schedule in schedules], ['[학습] Django: DRF 1'])
+
+    def test_timetable_grid_does_not_prefix_clear_non_learning_items(self):
+        source_title = '[학습] 5월 2주차 마이스터고 트랙 시간표'
+
+        schedules, _grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\n중식\n과목평가',
+            default_title=source_title,
+            ocr_boxes=_timetable_non_learning_ocr_boxes(),
+        )
+
+        self.assertEqual([schedule.title for schedule in schedules], ['중식', '과목평가'])
+
+    def test_timetable_grid_keeps_existing_practice_marker(self):
+        schedules, _grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n13\n[실습 및 Q&A] Django',
+            default_title='[학습] 5월 2주차 Data 트랙 시간표',
+            ocr_boxes=_timetable_practice_marker_ocr_boxes(),
+        )
+
+        self.assertEqual([schedule.title for schedule in schedules], ['[실습 및 Q&A] Django'])
 
     def test_timetable_grid_rejects_notice_title_as_cell_title(self):
         source_title = '[학습] 5월 2주차 Data 트랙 시간표'
@@ -3022,6 +3064,29 @@ def _timetable_ocr_boxes():
 def _timetable_notice_title_ocr_boxes(source_title):
     boxes = _timetable_ocr_boxes()
     boxes[-1] = {'text': source_title, 'x1': 205, 'y1': 132, 'x2': 260, 'y2': 152, 'confidence': 0.98}
+    return boxes
+
+
+def _timetable_multiline_ocr_boxes():
+    boxes = _timetable_ocr_boxes()
+    boxes[-1] = {'text': '[Live 방송]\nDjango :\nDRF 1', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 172, 'confidence': 0.98}
+    return boxes
+
+
+def _timetable_non_learning_ocr_boxes():
+    boxes = _timetable_ocr_boxes()[:-1]
+    boxes.extend(
+        [
+            {'text': '중식', 'x1': 205, 'y1': 132, 'x2': 245, 'y2': 152, 'confidence': 0.98},
+            {'text': '과목평가', 'x1': 305, 'y1': 132, 'x2': 370, 'y2': 152, 'confidence': 0.98},
+        ]
+    )
+    return boxes
+
+
+def _timetable_practice_marker_ocr_boxes():
+    boxes = _timetable_ocr_boxes()
+    boxes[-1] = {'text': '[실습 및 Q&A] Django', 'x1': 205, 'y1': 132, 'x2': 330, 'y2': 152, 'confidence': 0.98}
     return boxes
 
 

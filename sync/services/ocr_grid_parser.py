@@ -129,7 +129,7 @@ def parse_grid_schedule_candidates(ocr_boxes, source_title=''):
         all_section_boxes.extend(section_boxes)
         debug.date_cell_count += len(cells)
         if timetable_mode:
-            candidates.extend(_assign_timetable_events_to_cells(section_boxes, cells))
+            candidates.extend(_assign_timetable_events_to_cells(section_boxes, cells, source_title=source_title))
         else:
             candidates.extend(_assign_events_to_cells(section_boxes, cells))
 
@@ -390,10 +390,10 @@ def _assign_events_to_cells(boxes, cells):
     return candidates
 
 
-def _assign_timetable_events_to_cells(boxes, cells):
+def _assign_timetable_events_to_cells(boxes, cells, source_title=''):
     candidates = []
     for cell in cells:
-        for title, row_boxes in _timetable_titles_from_cell(boxes, cell):
+        for title, row_boxes in _timetable_titles_from_cell(boxes, cell, source_title=source_title):
             row_rect = _boxes_rect(row_boxes)
             candidates.append(
                 GridScheduleCandidate(
@@ -428,7 +428,7 @@ def _event_titles_from_cell(boxes, cell):
     return titles
 
 
-def _timetable_titles_from_cell(boxes, cell):
+def _timetable_titles_from_cell(boxes, cell, source_title=''):
     cell_boxes = [
         box for box in boxes
         if _overlap_ratio(_box_rect(box), cell) >= 0.5
@@ -437,7 +437,7 @@ def _timetable_titles_from_cell(boxes, cell):
     titles = []
     for row in _group_rows(cell_boxes):
         phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
-        title = _clean_timetable_title(phrase)
+        title = _clean_timetable_title(phrase, source_title=source_title)
         if title:
             titles.append((title, row))
     return titles
@@ -571,11 +571,13 @@ def _event_title_from_box(text):
     return ''
 
 
-def _clean_timetable_title(text):
-    text = re.sub(r'\s+', ' ', str(text or '')).strip(' :-|[]()~')
+def _clean_timetable_title(text, source_title=''):
+    text = re.sub(r'\s+', ' ', str(text or '')).strip(' :-|()~')
     inline_match = INLINE_DAY_PATTERN.match(text)
     if inline_match:
-        text = inline_match.group('title').strip(' :-|[]()~')
+        text = inline_match.group('title').strip(' :-|()~')
+    text = _remove_timetable_noise_prefixes(text)
+    text = _normalize_timetable_spacing(text)
     if not text:
         return ''
     compact = _compact_text(text)
@@ -583,7 +585,41 @@ def _clean_timetable_title(text):
         return ''
     if len(compact) <= 1:
         return ''
-    return text[:255]
+    return _prefix_timetable_title(text)[:255]
+
+
+def _remove_timetable_noise_prefixes(text):
+    text = re.sub(r'^\s*\[?\s*LIVE\s*방송\s*\]?\s*', '', str(text or ''), flags=re.IGNORECASE)
+    text = re.sub(r'^\s*\[?\s*Live\s*방송\s*\]?\s*', '', text)
+    return text.strip(' :-|()~')
+
+
+def _normalize_timetable_spacing(text):
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    text = re.sub(r'\s*:\s*', ': ', text)
+    text = re.sub(r'\s*/\s*', ' / ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip(' :-|')
+
+
+def _prefix_timetable_title(text):
+    if _has_timetable_non_learning_marker(text):
+        return text
+    if text.startswith('[학습]'):
+        return text
+    return f'[학습] {text}'
+
+
+def _has_timetable_non_learning_marker(text):
+    normalized = str(text or '').strip()
+    compact = _compact_text(normalized)
+    if normalized.startswith('[실습 및 Q&A]'):
+        return True
+    if compact in {'중식', '점심', '점심시간'}:
+        return True
+    if any(keyword in compact for keyword in ['과목평가', '월말평가', '역량테스트']):
+        return True
+    return False
 
 
 def _looks_like_timetable(source_title):
