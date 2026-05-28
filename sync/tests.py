@@ -581,6 +581,43 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('WARNING: reparse target RawSsafyData count is low', value)
         self.assertIn('reparse_dry_run=raw_checked:1|candidate:1|created:1', value)
 
+    def test_debug_schedule_events_date_outputs_event_source_metadata(self):
+        raw_data = _raw_data('https://example.com/raw/debug-date', '월말 평가 source 2026.05.05')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말 평가',
+            start_at=timezone.datetime(2026, 5, 5, 9, 0, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 5, 10, 0, tzinfo=timezone.get_current_timezone()),
+            is_all_day=False,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={
+                'display_title': '월말평가',
+                'source_title': '[학습] 5월 2주차 Data 트랙 시간표',
+                'raw_title': '월말 평가 OCR',
+                'parser_type': 'timetable_grid',
+                'date_mapping_source': 'fallback',
+                'original_header_date': '2026-05-12',
+                'fallback_date': '2026-05-05',
+            },
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--date', '2026-05-05', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('date=2026-05-05', value)
+        self.assertIn('event_count=1', value)
+        self.assertIn('title=월말 평가', value)
+        self.assertIn('display_title=월말평가', value)
+        self.assertIn(f'raw_data_id={raw_data.id}', value)
+        self.assertIn('source_title=[학습] 5월 2주차 Data 트랙 시간표', value)
+        self.assertIn('raw_title=월말 평가 OCR', value)
+        self.assertIn('parser_type=timetable_grid', value)
+        self.assertIn('date_mapping_source=fallback', value)
+        self.assertIn('original_header_date=2026-05-12', value)
+        self.assertIn('fallback_date=2026-05-05', value)
+
     def test_reparse_command_can_target_id_and_replace_existing_events(self):
         raw_data = _raw_data('https://example.com/raw/reparse-replace', '월말평가 2026.05.20')
         ScheduleEvent.objects.create(
