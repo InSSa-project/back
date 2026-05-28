@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from django.db import transaction
 
 from schedules.models import ScheduleEvent
-from schedules.services import build_event_metadata_from_raw_data
+from schedules.services import build_generated_event_metadata, validate_generated_schedule
 from sync.models import RawSsafyData
 from sync.services.import_service import find_existing_schedule_event
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
@@ -63,6 +63,11 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
             if not replace_events and find_existing_schedule_event(schedule, raw_data):
                 summary.skipped_count += 1
                 continue
+            warnings = validate_generated_schedule(raw_data, schedule)
+            if 'timetable_title_equals_source_title' in warnings:
+                summary.skipped_count += 1
+                _store_parser_warning(raw_data, warnings)
+                continue
 
             summary.created_count += 1
             if dry_run:
@@ -78,7 +83,7 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 event_type=schedule.event_type,
                 source_type=raw_data.source_type,
                 source_id=str(raw_data.pk),
-                metadata_json=build_event_metadata_from_raw_data(raw_data),
+                metadata_json=build_generated_event_metadata(raw_data, schedule),
             )
 
         if not dry_run:
@@ -93,7 +98,14 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
 def _store_review_required_candidates(raw_data, grid_debug):
     metadata = dict(raw_data.metadata_json or {})
     metadata.update(getattr(grid_debug, 'metadata_json', {}) or {})
+    metadata['ocr_parse_debug'] = getattr(grid_debug, 'as_dict', lambda: {})()
     review_required_candidates = grid_debug.review_required_candidates or []
     metadata['review_required_candidate_count'] = len(review_required_candidates)
     metadata['review_required_candidates'] = review_required_candidates
+    raw_data.metadata_json = metadata
+
+
+def _store_parser_warning(raw_data, warnings):
+    metadata = dict(raw_data.metadata_json or {})
+    metadata['parser_warnings'] = list(dict.fromkeys([*(metadata.get('parser_warnings') or []), *warnings]))
     raw_data.metadata_json = metadata

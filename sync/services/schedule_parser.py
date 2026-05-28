@@ -27,7 +27,6 @@ CONTEXT_KEYWORDS = ['15기', '1학기', '진행일정', '전체 일정', '일정
 META_LINE_KEYWORDS = ['운영팀', '목록', '공지사항 상세', '메뉴 네비게이션', 'HOME', 'Copyright']
 WEEKDAY_HEADERS = {'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'}
 CALENDAR_KEYWORDS = [
-    '신정',
     '15기 SW. AI 스타트캠프',
     '15기 SW-AI 스타트캠프',
     '15기 SW - AI 스타트캠프',
@@ -40,14 +39,9 @@ CALENDAR_KEYWORDS = [
     'AI 강의',
     'AI 챌린지',
     '상반기 밋업',
-    '어린이날',
-    '근로자의 날',
-    '부처님 오신날',
-    '현충일',
     '온라인 위크',
     '관통 프로젝트 집중기간',
     '관통PJT 경진대회',
-    '지방선거',
 ]
 
 DATE_PATTERN = re.compile(
@@ -116,6 +110,7 @@ class ParsedSchedule:
     end_at: datetime
     is_all_day: bool
     event_type: str
+    metadata_json: dict = None
 
 
 def parse_schedule_candidates(raw_text, default_title='SSAFY 일정', ocr_boxes=None):
@@ -131,17 +126,26 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
     if evaluation_schedules or evaluation_debug.review_required_candidate_count:
         return _dedupe_schedules(evaluation_schedules), evaluation_debug
 
-    grid_candidates, grid_debug = parse_grid_schedule_candidates(ocr_boxes or [])
+    grid_candidates, grid_debug = parse_grid_schedule_candidates(ocr_boxes or [], source_title=default_title)
     for candidate in grid_candidates:
         start_at = _aware(candidate.event_date, time.min)
         schedules.append(
             ParsedSchedule(
                 title=candidate.title,
-                description=candidate.description,
+                description=f'{candidate.description}\n원본 공지: {default_title}'.strip(),
                 start_at=start_at,
                 end_at=start_at + timedelta(days=1),
                 is_all_day=True,
                 event_type=candidate.event_type,
+                metadata_json={
+                    'parser': 'ocr_timetable_grid' if candidate.reason == 'timetable_cell_text' else 'ocr_calendar_grid',
+                    'source_title': default_title,
+                    'source_text': candidate.source_text,
+                    'row_index': candidate.row_index,
+                    'col_index': candidate.col_index,
+                    'confidence': candidate.confidence,
+                    'overlap_ratio': candidate.overlap_ratio,
+                },
             )
         )
 
@@ -567,8 +571,6 @@ def _parse_event_type(line):
         return 'project'
     if any(keyword in line for keyword in ['강의', '특강', '캠프', '?밴컯']):
         return 'lecture'
-    if any(keyword in line for keyword in ['공휴일', '신정', '어린이날', '근로자의 날', '부처님', '현충일', '지방선거']):
-        return 'holiday'
     if any(keyword in line for keyword in ['SSAFY DAY', '입학식', '밋업']):
         return 'event'
     return 'notice'

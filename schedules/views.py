@@ -181,13 +181,16 @@ def _create_event(request):
 
 
 @csrf_exempt
-@require_http_methods(['PATCH'])
+@require_http_methods(['PATCH', 'DELETE'])
 def event_detail(request, event_id):
     # TODO: Require authentication and per-user/admin permission before production use.
     try:
         event = ScheduleEvent.objects.get(pk=event_id)
     except ScheduleEvent.DoesNotExist:
         return JsonResponse({'detail': 'Schedule event not found.'}, status=404)
+
+    if request.method == 'DELETE':
+        return _delete_event(event)
 
     try:
         payload = json.loads(request.body.decode('utf-8') or '{}')
@@ -217,6 +220,13 @@ def event_detail(request, event_id):
         setattr(event, field, value)
     event.save(update_fields=[*payload.keys(), 'updated_at'])
     return JsonResponse(_serialize_event(event))
+
+
+def _delete_event(event):
+    if event.raw_data_id:
+        return JsonResponse({'detail': 'Generated schedule events cannot be deleted from the personal event API.'}, status=403)
+    event.delete()
+    return JsonResponse({'detail': 'Schedule event deleted.'})
 
 
 def _parse_boundary(value, is_end):

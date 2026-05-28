@@ -1,7 +1,9 @@
 import re
+import logging
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
+logger = logging.getLogger(__name__)
 
 
 def build_event_metadata_from_raw_data(raw_data):
@@ -20,6 +22,43 @@ def build_event_metadata_from_raw_data(raw_data):
     metadata['audience']['class_number'] = metadata['audience']['class_number'] or _infer_class_number(source_text)
     metadata['audience']['campus'] = metadata['audience']['campus'] or _infer_campus(source_text)
     return metadata
+
+
+def build_generated_event_metadata(raw_data, schedule):
+    metadata = build_event_metadata_from_raw_data(raw_data)
+    metadata.update(getattr(schedule, 'metadata_json', None) or {})
+    if raw_data and raw_data.title:
+        metadata.setdefault('source_title', raw_data.title)
+    warnings = validate_generated_schedule(raw_data, schedule)
+    if warnings:
+        metadata['parser_warnings'] = warnings
+    return metadata
+
+
+def validate_generated_schedule(raw_data, schedule):
+    warnings = []
+    source_title = str(getattr(raw_data, 'title', '') or '').strip()
+    title = str(getattr(schedule, 'title', '') or '').strip()
+    parser = (getattr(schedule, 'metadata_json', None) or {}).get('parser')
+
+    if parser == 'ocr_timetable_grid' and source_title and title == source_title:
+        warnings.append('timetable_title_equals_source_title')
+    elif source_title and '시간표' in source_title and '시간표' in title:
+        warnings.append('timetable_title_equals_source_title')
+
+    if getattr(schedule, 'end_at', None) and getattr(schedule, 'start_at', None) and schedule.end_at <= schedule.start_at:
+        warnings.append('non_positive_duration')
+
+    for warning in warnings:
+        logger.warning(
+            'schedule_parser_warning raw_data_id=%s parser=%s title=%r source_title=%r warning=%s',
+            getattr(raw_data, 'id', None),
+            parser,
+            title,
+            source_title,
+            warning,
+        )
+    return warnings
 
 
 def filter_events_for_user_profile(events, profile):
