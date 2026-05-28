@@ -1,6 +1,7 @@
-import re
 import logging
-from difflib import SequenceMatcher
+import re
+
+from schedules.utils import is_wrapper_schedule_title
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -42,7 +43,7 @@ def validate_generated_schedule(raw_data, schedule):
     title = str(getattr(schedule, 'title', '') or '').strip()
     parser = (getattr(schedule, 'metadata_json', None) or {}).get('parser')
 
-    if parser == 'ocr_timetable_grid' and _is_bad_timetable_title(title, source_title):
+    if is_wrapper_schedule_title(title, {'parser': parser, 'source_title': source_title}):
         warnings.append('timetable_title_equals_source_title')
 
     if getattr(schedule, 'end_at', None) and getattr(schedule, 'start_at', None) and schedule.end_at <= schedule.start_at:
@@ -58,26 +59,6 @@ def validate_generated_schedule(raw_data, schedule):
             warning,
         )
     return warnings
-
-
-def _is_bad_timetable_title(title, source_title):
-    compact_title = _compact_for_compare(title)
-    compact_source = _compact_for_compare(source_title)
-    if not compact_title:
-        return True
-    if any(marker in compact_title for marker in ['5월2주차', '주차', '트랙시간표', '시간표', '커리큘럼']):
-        return True
-    if not compact_source:
-        return False
-    if compact_title == compact_source:
-        return True
-    if len(compact_title) >= 8 and compact_title in compact_source:
-        return True
-    return SequenceMatcher(None, compact_title, compact_source).ratio() >= 0.8
-
-
-def _compact_for_compare(value):
-    return re.sub(r'[\s.()\-_/\]:\[]+', '', str(value or '')).upper()
 
 
 def filter_events_for_user_profile(events, profile):

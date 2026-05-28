@@ -6,6 +6,7 @@ from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from schedules.services import build_generated_event_metadata, validate_generated_schedule
+from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
@@ -843,20 +844,69 @@ def _create_raw_data(item):
 
 
 def find_existing_schedule_event(schedule, raw_data):
-    event_filter = {
-        'title': schedule.title,
-        'start_at': schedule.start_at,
-        'end_at': schedule.end_at,
-        'event_type': schedule.event_type,
-        'source_type': raw_data.source_type,
-    }
-
+    normalized_title = normalize_event_title_for_dedupe(schedule.title)
+    schedule_track = _schedule_track(schedule, raw_data)
+    candidates = ScheduleEvent.objects.filter(
+        start_at=schedule.start_at,
+        end_at=schedule.end_at,
+        event_type=schedule.event_type,
+        source_type=raw_data.source_type,
+    )
     if raw_data.pk:
-        existing_for_raw_data = ScheduleEvent.objects.filter(raw_data=raw_data, **event_filter).first()
-        if existing_for_raw_data:
-            return existing_for_raw_data
+        raw_match = _first_matching_event(candidates.filter(raw_data=raw_data), normalized_title, schedule_track)
+        if raw_match:
+            return raw_match
+    return _first_matching_event(candidates, normalized_title, schedule_track)
 
-    return ScheduleEvent.objects.filter(**event_filter).first()
+
+def _first_matching_event(events, normalized_title, schedule_track):
+    for event in events:
+        if normalize_event_title_for_dedupe(event.title) != normalized_title:
+            continue
+        if _event_track(event) != schedule_track:
+            continue
+        return event
+    return None
+
+
+def _schedule_track(schedule, raw_data):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    if metadata.get('track'):
+        return _normalize_track_value(metadata.get('track'))
+    raw_metadata = raw_data.metadata_json or {}
+    audience = raw_metadata.get('audience') or {}
+    return _normalize_track_value(
+        raw_metadata.get('track')
+        or audience.get('track')
+        or _infer_track_from_text(f'{getattr(schedule, "title", "")} {raw_data.title} {raw_data.raw_text}')
+    )
+
+
+def _event_track(event):
+    metadata = event.metadata_json or {}
+    audience = metadata.get('audience') or {}
+    return _normalize_track_value(metadata.get('track') or audience.get('track') or _infer_track_from_text(event.title))
+
+
+def _normalize_track_value(value):
+    return str(value or '').strip().lower()
+
+
+def _infer_track_from_text(text):
+    text = str(text or '')
+    if 'Data' in text or '데이터' in text:
+        return 'data'
+    if 'Python' in text:
+        return 'python'
+    if 'Java' in text:
+        return 'java'
+    if '마이스터고' in text:
+        return 'meister'
+    if 'AI' in text:
+        return 'AI'
+    if 'SW' in text:
+        return 'SW'
+    return ''
 
 
 def _find_existing_raw_data(item):

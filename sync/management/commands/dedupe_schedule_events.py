@@ -1,10 +1,7 @@
 from django.core.management.base import BaseCommand
-from django.db.models import Count, Min
 
 from schedules.models import ScheduleEvent
-
-
-DEDUP_FIELDS = ['title', 'start_at', 'end_at', 'event_type', 'source_type']
+from schedules.utils import normalize_event_title_for_dedupe
 
 
 class Command(BaseCommand):
@@ -18,22 +15,8 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        duplicate_groups = (
-            ScheduleEvent.objects.values(*DEDUP_FIELDS)
-            .annotate(keep_id=Min('id'), duplicate_count=Count('id'))
-            .filter(duplicate_count__gt=1)
-        )
-
-        groups = list(duplicate_groups)
-        delete_ids = []
-        for group in groups:
-            group_filter = {field: group[field] for field in DEDUP_FIELDS}
-            ids = list(
-                ScheduleEvent.objects.filter(**group_filter)
-                .exclude(id=group['keep_id'])
-                .values_list('id', flat=True)
-            )
-            delete_ids.extend(ids)
+        groups = _duplicate_groups()
+        delete_ids = [event.id for group in groups for event in group[1:]]
 
         if options['dry_run']:
             self.stdout.write(
@@ -52,3 +35,24 @@ class Command(BaseCommand):
                 f'duplicate_groups={len(groups)}, deleted_count={deleted_count}'
             )
         )
+
+
+def _duplicate_groups():
+    grouped = {}
+    for event in ScheduleEvent.objects.filter(raw_data__isnull=False).order_by('id'):
+        key = (
+            normalize_event_title_for_dedupe(event.title),
+            event.start_at,
+            event.end_at,
+            event.event_type,
+            _event_track(event),
+            event.source_type,
+        )
+        grouped.setdefault(key, []).append(event)
+    return [events for events in grouped.values() if len(events) > 1]
+
+
+def _event_track(event):
+    metadata = event.metadata_json or {}
+    audience = metadata.get('audience') or {}
+    return str(metadata.get('track') or audience.get('track') or '').strip().lower()
