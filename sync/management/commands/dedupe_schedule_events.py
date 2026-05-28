@@ -40,8 +40,11 @@ class Command(BaseCommand):
 def _duplicate_groups():
     grouped = {}
     for event in ScheduleEvent.objects.filter(raw_data__isnull=False).order_by('id'):
+        normalized_title = normalize_event_title_for_dedupe(event.title)
+        if not normalized_title:
+            continue
         key = (
-            normalize_event_title_for_dedupe(event.title),
+            normalized_title,
             event.start_at,
             event.end_at,
             event.event_type,

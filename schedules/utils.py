@@ -35,7 +35,11 @@ def is_wrapper_schedule_title(title, metadata=None):
         return True
     if _has_wrapper_phrase(text):
         return True
-    if _looks_like_timetable_parser(metadata) and _looks_like_source_title(compact_title, compact_source):
+    if _looks_like_timetable_parser(metadata) and _looks_like_source_title(
+        compact_title,
+        compact_source,
+        source_title,
+    ):
         return True
     return False
 
@@ -45,14 +49,14 @@ def _looks_like_timetable_parser(metadata):
     return parser in {'ocr_timetable_grid', 'timetable_grid'}
 
 
-def _looks_like_source_title(compact_title, compact_source):
+def _looks_like_source_title(compact_title, compact_source, source_title=''):
     if not compact_source:
         return False
     if compact_title == compact_source:
         return True
-    if len(compact_title) >= 8 and compact_title in compact_source:
-        return True
-    return SequenceMatcher(None, compact_title, compact_source).ratio() >= 0.8
+    if not _has_wrapper_phrase(source_title):
+        return False
+    return SequenceMatcher(None, compact_title, compact_source).ratio() >= 0.9
 
 
 def _has_wrapper_phrase(title):

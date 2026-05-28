@@ -1,6 +1,7 @@
 import json
 import tempfile
 import types
+from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -298,6 +299,27 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(raw_data__isnull=False).count(), 1)
         self.assertEqual(ScheduleEvent.objects.filter(raw_data__isnull=True).count(), 1)
 
+    def test_dedupe_schedule_events_keeps_repeated_title_on_different_times(self):
+        raw_data = _raw_data('https://example.com/raw/dedupe-repeated-practice', 'practice timetable')
+        for day in [12, 13]:
+            start_at = timezone.datetime(2026, 5, day, tzinfo=timezone.get_current_timezone())
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title='[실습 및 Q&A]',
+                start_at=start_at,
+                end_at=start_at + timedelta(days=1),
+                is_all_day=True,
+                event_type='study',
+                source_type='notice',
+                metadata_json={'track': 'data'},
+            )
+        output = StringIO()
+
+        call_command('dedupe_schedule_events', stdout=output)
+
+        self.assertIn('deleted_count=0', output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.count(), 2)
+
     def test_reparse_existing_raw_data_creates_schedule_event(self):
         raw_data = _raw_data('https://example.com/raw/reparse-1', 'Reparse schedule 2026.05.20')
 
@@ -340,6 +362,12 @@ class SampleNoticeImportTests(TestCase):
         self.assertTrue(is_wrapper_schedule_title('Data) 학습 주차 Data 트랙 시간표'))
         self.assertTrue(is_wrapper_schedule_title('Python) 학습 주차 Python 트랙 시간표'))
         self.assertFalse(is_wrapper_schedule_title('[학습] Django: DRF 1'))
+        self.assertFalse(is_wrapper_schedule_title('[학습] Django: DRF 2'))
+        self.assertFalse(is_wrapper_schedule_title('[학습] JS: DOM'))
+        self.assertFalse(is_wrapper_schedule_title('[학습] JS: Basic Syntax 1'))
+        self.assertFalse(is_wrapper_schedule_title('[실습 및 Q&A]'))
+        self.assertFalse(is_wrapper_schedule_title('중식'))
+        self.assertFalse(is_wrapper_schedule_title('과목평가 9'))
 
     def test_reparse_uses_normalized_title_to_skip_duplicate_events(self):
         first_raw = _raw_data('https://example.com/raw/challenge-1', '2026.04.02 AI 챌린지 (예정)')
@@ -366,6 +394,49 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(summary.skipped_count, 1)
         self.assertEqual(ScheduleEvent.objects.count(), 0)
         self.assertIn('timetable_title_equals_source_title', raw_data.metadata_json['parser_warnings'])
+        self.assertEqual(summary.wrapper_skip_count, 1)
+
+    def test_reparse_creates_timetable_cell_titles_for_may_calendar(self):
+        source_title = '[학습] 5월 2주차 Data 트랙 시간표'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/timetable-cells',
+            title=source_title,
+            raw_text='[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\nDjango DRF\nJS DOM\n중식',
+            ocr_boxes=_timetable_many_cell_ocr_boxes(),
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        titles = list(ScheduleEvent.objects.order_by('start_at', 'id').values_list('title', flat=True))
+        may_count = ScheduleEvent.objects.filter(start_at__date__gte='2026-05-01', start_at__date__lt='2026-06-01').count()
+        self.assertEqual(summary.created_count, 7)
+        self.assertEqual(summary.wrapper_skip_count, 0)
+        self.assertEqual(may_count, 7)
+        self.assertIn('[학습] Django: DRF 1', titles)
+        self.assertIn('[학습] Django: DRF 2', titles)
+        self.assertIn('[학습] JS: DOM', titles)
+        self.assertIn('[학습] JS: Basic Syntax 1', titles)
+        self.assertIn('[실습 및 Q&A]', titles)
+        self.assertIn('중식', titles)
+        self.assertIn('과목평가 9', titles)
+        self.assertNotIn(source_title, titles)
+
+    def test_reparse_wrapper_title_does_not_block_timetable_cell_title(self):
+        source_title = '[학습] 5월 2주차 Python 트랙 시간표'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/timetable-wrapper-and-cell',
+            title=source_title,
+            raw_text='[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\nPython time table',
+            ocr_boxes=_timetable_wrapper_and_cell_ocr_boxes(source_title),
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(summary.wrapper_skip_count, 1)
+        self.assertEqual(list(ScheduleEvent.objects.values_list('title', flat=True)), ['[학습] JS: DOM'])
 
     def test_reparse_source_type_filter_limits_checked_rows(self):
         _raw_data('https://example.com/raw/reparse-notice', 'Notice schedule 2026.05.20')
@@ -416,6 +487,21 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('raw_checked=1', value)
         self.assertIn('created_count=1', value)
         self.assertIn('dry_run=true', value)
+        self.assertIn('duplicate_skip_count=0', value)
+        self.assertIn('wrapper_skip_count=0', value)
+
+    def test_debug_schedule_events_command_outputs_calendar_counts(self):
+        _raw_data('https://example.com/raw/debug-command', 'Debug schedule 2026.05.20')
+        output = StringIO()
+
+        call_command('debug_schedule_events', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('schedule_total=0', value)
+        self.assertIn('schedule_2026_05_count=0', value)
+        self.assertIn('generated_schedule_count=0', value)
+        self.assertIn('raw_source_type_counts=notice:1', value)
+        self.assertIn('reparse_dry_run=raw_checked:1|candidate:1|created:1', value)
 
     def test_reparse_command_can_target_id_and_replace_existing_events(self):
         raw_data = _raw_data('https://example.com/raw/reparse-replace', '월말평가 2026.05.20')
@@ -3166,6 +3252,33 @@ def _timetable_non_learning_ocr_boxes():
 def _timetable_practice_marker_ocr_boxes():
     boxes = _timetable_ocr_boxes()
     boxes[-1] = {'text': '[실습 및 Q&A] Django', 'x1': 205, 'y1': 132, 'x2': 330, 'y2': 152, 'confidence': 0.98}
+    return boxes
+
+
+def _timetable_many_cell_ocr_boxes():
+    boxes = _timetable_ocr_boxes()[:-1]
+    boxes.extend(
+        [
+            {'text': '[Live 방송]\nDjango :\nDRF 1', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 172, 'confidence': 0.98},
+            {'text': '[Live 방송]\nDjango :\nDRF 2', 'x1': 305, 'y1': 132, 'x2': 390, 'y2': 172, 'confidence': 0.98},
+            {'text': 'JS: DOM', 'x1': 405, 'y1': 132, 'x2': 470, 'y2': 152, 'confidence': 0.98},
+            {'text': 'JS: Basic Syntax 1', 'x1': 505, 'y1': 132, 'x2': 640, 'y2': 152, 'confidence': 0.98},
+            {'text': '[실습 및 Q&A]', 'x1': 205, 'y1': 180, 'x2': 310, 'y2': 200, 'confidence': 0.98},
+            {'text': '중식', 'x1': 305, 'y1': 180, 'x2': 345, 'y2': 200, 'confidence': 0.98},
+            {'text': '과목평가 9', 'x1': 405, 'y1': 180, 'x2': 485, 'y2': 200, 'confidence': 0.98},
+        ]
+    )
+    return boxes
+
+
+def _timetable_wrapper_and_cell_ocr_boxes(source_title):
+    boxes = _timetable_ocr_boxes()[:-1]
+    boxes.extend(
+        [
+            {'text': source_title, 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 152, 'confidence': 0.98},
+            {'text': 'JS: DOM', 'x1': 305, 'y1': 132, 'x2': 370, 'y2': 152, 'confidence': 0.98},
+        ]
+    )
     return boxes
 
 

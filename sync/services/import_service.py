@@ -42,6 +42,10 @@ class ImportSummary:
     ocr_text_length: int = 0
     parse_candidate_count: int = 0
     event_skipped_count: int = 0
+    duplicate_event_skipped_count: int = 0
+    wrapper_event_skipped_count: int = 0
+    validation_event_skipped_count: int = 0
+    empty_title_event_skipped_count: int = 0
     excluded_count: int = 0
     keyword_candidate_count: int = 0
     saved_evaluation_notice_count: int = 0
@@ -198,15 +202,22 @@ def _import_raw_items(raw_items):
                 continue
 
             for schedule in parsed_schedules:
-                if find_existing_schedule_event(schedule, raw_data):
-                    summary.skipped_count += 1
-                    summary.event_skipped_count += 1
+                title = str(getattr(schedule, 'title', '') or '').strip()
+                if not title:
+                    _store_parser_warning(raw_data, ['empty_schedule_title'])
+                    _mark_event_skipped(summary, 'empty_title')
                     continue
                 warnings = validate_generated_schedule(raw_data, schedule)
                 if 'timetable_title_equals_source_title' in warnings:
                     _store_parser_warning(raw_data, warnings)
-                    summary.skipped_count += 1
-                    summary.event_skipped_count += 1
+                    _mark_event_skipped(summary, 'wrapper')
+                    continue
+                if warnings:
+                    _store_parser_warning(raw_data, warnings)
+                    _mark_event_skipped(summary, 'validation')
+                    continue
+                if find_existing_schedule_event(schedule, raw_data):
+                    _mark_event_skipped(summary, 'duplicate')
                     continue
 
                 ScheduleEvent.objects.create(
@@ -282,6 +293,19 @@ def _store_parser_warning(raw_data, warnings):
     raw_data.metadata_json = metadata
 
 
+def _mark_event_skipped(summary, reason):
+    summary.skipped_count += 1
+    summary.event_skipped_count += 1
+    if reason == 'duplicate':
+        summary.duplicate_event_skipped_count += 1
+    elif reason == 'wrapper':
+        summary.wrapper_event_skipped_count += 1
+    elif reason == 'validation':
+        summary.validation_event_skipped_count += 1
+    elif reason == 'empty_title':
+        summary.empty_title_event_skipped_count += 1
+
+
 def _build_success_message(selected_mode, summary, crawler_debug=None):
     message = (
         f'{SUCCESS_MESSAGE} mode={selected_mode}, '
@@ -324,6 +348,13 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
     )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
+        message = (
+            f'{message}, event_skip_reasons='
+            f'duplicate:{summary.duplicate_event_skipped_count}|'
+            f'wrapper:{summary.wrapper_event_skipped_count}|'
+            f'validation:{summary.validation_event_skipped_count}|'
+            f'empty_title:{summary.empty_title_event_skipped_count}'
+        )
     if summary.excluded_count:
         message = f'{message}, excluded_count={summary.excluded_count}'
     if summary.excluded_items:
@@ -845,6 +876,8 @@ def _create_raw_data(item):
 
 def find_existing_schedule_event(schedule, raw_data):
     normalized_title = normalize_event_title_for_dedupe(schedule.title)
+    if not normalized_title:
+        return None
     schedule_track = _schedule_track(schedule, raw_data)
     candidates = ScheduleEvent.objects.filter(
         start_at=schedule.start_at,
