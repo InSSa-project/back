@@ -12,6 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from schedules.utils import is_wrapper_schedule_title, normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.import_service import run_notice_import, run_sample_notice_import
 from sync.services.ocr_service import extract_text_from_image_urls
@@ -256,6 +257,47 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('deleted_count=1', run_output.getvalue())
         self.assertEqual(ScheduleEvent.objects.count(), 3)
 
+    def test_dedupe_schedule_events_uses_normalized_title_and_keeps_manual_rows(self):
+        raw_data = _raw_data('https://example.com/raw/dedupe-normalized', 'AI challenge')
+        start_at = timezone.datetime(2026, 4, 2, tzinfo=timezone.get_current_timezone())
+        end_at = timezone.datetime(2026, 4, 3, tzinfo=timezone.get_current_timezone())
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='마이스터고) AI 챌린지 (예정)',
+            start_at=start_at,
+            end_at=end_at,
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track': 'meister'},
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='마이스터고) AI 챌린지',
+            start_at=start_at,
+            end_at=end_at,
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track': 'meister'},
+        )
+        ScheduleEvent.objects.create(
+            title='마이스터고) AI 챌린지',
+            start_at=start_at,
+            end_at=end_at,
+            is_all_day=True,
+            event_type='notice',
+            source_type='manual',
+            metadata_json={'track': 'meister'},
+        )
+        output = StringIO()
+
+        call_command('dedupe_schedule_events', stdout=output)
+
+        self.assertIn('deleted_count=1', output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data__isnull=False).count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data__isnull=True).count(), 1)
+
     def test_reparse_existing_raw_data_creates_schedule_event(self):
         raw_data = _raw_data('https://example.com/raw/reparse-1', 'Reparse schedule 2026.05.20')
 
@@ -287,6 +329,43 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(second_summary.created_count, 0)
         self.assertEqual(second_summary.skipped_count, 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_normalized_title_treats_status_suffix_as_same_event(self):
+        self.assertEqual(
+            normalize_event_title_for_dedupe('마이스터고) AI 챌린지 (예정)'),
+            normalize_event_title_for_dedupe('마이스터고) AI 챌린지'),
+        )
+
+    def test_wrapper_schedule_title_is_detected_generically(self):
+        self.assertTrue(is_wrapper_schedule_title('Data) 학습 주차 Data 트랙 시간표'))
+        self.assertTrue(is_wrapper_schedule_title('Python) 학습 주차 Python 트랙 시간표'))
+        self.assertFalse(is_wrapper_schedule_title('[학습] Django: DRF 1'))
+
+    def test_reparse_uses_normalized_title_to_skip_duplicate_events(self):
+        first_raw = _raw_data('https://example.com/raw/challenge-1', '2026.04.02 AI 챌린지 (예정)')
+        second_raw = _raw_data('https://example.com/raw/challenge-2', '2026.04.02 AI 챌린지')
+
+        first_summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=first_raw.pk))
+        second_summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=second_raw.pk))
+
+        self.assertEqual(first_summary.created_count, 1)
+        self.assertEqual(second_summary.created_count, 0)
+        self.assertEqual(second_summary.skipped_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_reparse_skips_timetable_wrapper_title(self):
+        raw_data = _raw_data(
+            'https://example.com/raw/timetable-wrapper',
+            '2026.05.12 Data) 학습 주차 Data 트랙 시간표',
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        raw_data.refresh_from_db()
+        self.assertEqual(summary.created_count, 0)
+        self.assertEqual(summary.skipped_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertIn('timetable_title_equals_source_title', raw_data.metadata_json['parser_warnings'])
 
     def test_reparse_source_type_filter_limits_checked_rows(self):
         _raw_data('https://example.com/raw/reparse-notice', 'Notice schedule 2026.05.20')
