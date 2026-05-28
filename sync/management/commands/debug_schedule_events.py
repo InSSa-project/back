@@ -7,6 +7,14 @@ from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
+from sync.services.calendar_quality import (
+    build_month_quality_report,
+    format_count_dict,
+    format_daily_counts,
+    format_empty_weekdays,
+    format_suspicious_events,
+    parse_month_option,
+)
 from sync.services.reparse_service import reparse_raw_data_to_events
 
 MIN_HEALTHY_REPARSE_TARGET_COUNT = 3
@@ -17,7 +25,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--year', type=int, default=2026, help='Calendar year to inspect.')
-        parser.add_argument('--month', type=int, default=5, help='Calendar month to inspect.')
+        parser.add_argument('--month', default='5', help='Calendar month to inspect. Accepts 5 or 2026-05.')
         parser.add_argument('--date', help='Print ScheduleEvent rows overlapping one date in YYYY-MM-DD format.')
         parser.add_argument(
             '--reparse-source-type',
@@ -40,10 +48,10 @@ class Command(BaseCommand):
             _print_events_for_date(self.stdout, target_date)
             return
 
-        year = options['year']
-        month = options['month']
+        year, month = parse_month_option(options['month'], options['year'])
         start_at = _aware(datetime(year, month, 1))
         end_at = _next_month(start_at)
+        quality_report = build_month_quality_report(year, month)
 
         self.stdout.write(f'schedule_total={ScheduleEvent.objects.count()}')
         self.stdout.write(
@@ -55,6 +63,13 @@ class Command(BaseCommand):
         self.stdout.write(f'monthly_schedule_counts={_monthly_schedule_counts()}')
         self.stdout.write(f'raw_total={RawSsafyData.objects.count()}')
         self.stdout.write(f'raw_source_type_counts={_source_type_counts()}')
+        self.stdout.write(f'daily_event_counts={format_daily_counts(quality_report)}')
+        self.stdout.write(f'month_generated_count={quality_report.generated_count}')
+        self.stdout.write(f'month_manual_count={quality_report.manual_count}')
+        self.stdout.write(f'month_holiday_count={quality_report.holiday_count}')
+        self.stdout.write(f'skip_reason_counts={format_count_dict(quality_report.skip_reason_counts)}')
+        self.stdout.write(f'suspicious_events={format_suspicious_events(quality_report.suspicious_events)}')
+        self.stdout.write(f'suspicious_empty_weekdays={format_empty_weekdays(quality_report.suspicious_empty_weekdays)}')
 
         if options['no_reparse']:
             return

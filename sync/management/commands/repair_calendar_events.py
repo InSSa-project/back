@@ -9,6 +9,12 @@ from django.db.models import Q
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from sync.services.calendar_quality import (
+    build_month_quality_report,
+    format_suspicious_events,
+    parse_month_option,
+    suspicious_events_by_reason,
+)
 from sync.models import RawSsafyData
 from sync.services.reparse_service import reparse_raw_data_to_events
 
@@ -100,6 +106,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--dry-run', action='store_true', help='Print changes without writing them.')
+        parser.add_argument('--confirm', action='store_true', help='Allow writes when --month is provided.')
+        parser.add_argument('--month', help='Inspect and repair one calendar month. Accepts 5 or 2026-05.')
+        parser.add_argument('--year', type=int, default=2026, help='Calendar year used when --month is a number.')
         parser.add_argument(
             '--use-manual-fallback',
             action='store_true',
@@ -107,6 +116,17 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get('month'):
+            _print_month_quality_report(
+                self.stdout,
+                options['month'],
+                options['year'],
+                confirmed=options['confirm'],
+                dry_run=options['dry_run'] or not options['confirm'],
+            )
+            if not options['confirm']:
+                return
+
         summary = repair_calendar_events(
             dry_run=options['dry_run'],
             use_manual_fallback=options['use_manual_fallback'],
@@ -140,6 +160,31 @@ class Command(BaseCommand):
                 f'dry_run={str(summary.dry_run).lower()}'
             )
         )
+
+
+def _print_month_quality_report(stdout, month_option, year_option, confirmed=False, dry_run=True):
+    year, month = parse_month_option(month_option, year_option)
+    report = build_month_quality_report(year, month)
+    stdout.write(f'month={year}-{month:02d}')
+    stdout.write(f'dry_run={str(dry_run).lower()}')
+    stdout.write(f'confirmed={str(confirmed).lower()}')
+    stdout.write(f'suspicious_events={format_suspicious_events(report.suspicious_events)}')
+    stdout.write(
+        'suspicious_holiday_generated='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "holiday_generated"))}'
+    )
+    stdout.write(
+        'suspicious_fallback_week='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "fallback_week"))}'
+    )
+    stdout.write(
+        'duplicate_events='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "duplicate_title"))}'
+    )
+    stdout.write(
+        'meaningless_title_events='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "meaningless_title"))}'
+    )
 
 
 @transaction.atomic
