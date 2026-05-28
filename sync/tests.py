@@ -360,6 +360,43 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.count(), 1)
         self.assertEqual(ScheduleEvent.objects.get().title, '월말평가')
 
+    def test_reset_generated_schedule_events_deletes_only_raw_linked_events(self):
+        raw_data = _raw_data('https://example.com/raw/generated-reset', 'Generated schedule 2026.05.20')
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated schedule',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='study',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='Manual personal schedule',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='personal',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('reset_generated_schedule_events', stdout=output)
+
+        self.assertIn('delete_count=1', output.getvalue())
+        self.assertEqual(list(ScheduleEvent.objects.values_list('title', flat=True)), ['Manual personal schedule'])
+
+    def test_seed_korean_holidays_creates_childrens_day_on_may_5(self):
+        output = StringIO()
+
+        call_command('seed_korean_holidays', '--year', '2026', stdout=output)
+
+        holiday = ScheduleEvent.objects.get(title='어린이날')
+        self.assertEqual(timezone.localdate(holiday.start_at).isoformat(), '2026-05-05')
+        self.assertEqual(holiday.event_type, 'holiday')
+        self.assertEqual(holiday.source_type, 'seed')
+        self.assertIn('created_count=', output.getvalue())
+
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
             _notice_item('https://example.com/notices/3', 'notice-3'),
@@ -1012,7 +1049,8 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('15기 입학식', titles)
         self.assertIn('SW 역량테스트', titles)
         self.assertIn('관통PJT 경진대회', titles)
-        self.assertTrue(any(schedule.event_type == 'holiday' for schedule in schedules))
+        self.assertFalse(any(schedule.event_type == 'holiday' for schedule in schedules))
+        self.assertNotIn('어린이날', titles)
         self.assertEqual(titles.count('월말평가6'), 1)
 
     def test_parser_prefers_ocr_grid_boxes_when_available(self):
@@ -1025,6 +1063,39 @@ class SampleNoticeImportTests(TestCase):
         event = next(schedule for schedule in schedules if schedule.title == 'SW 역량테스트')
         self.assertEqual(event.start_at.date().isoformat(), '2026-01-20')
         self.assertEqual(event.event_type, 'exam')
+
+    def test_timetable_grid_uses_cell_text_instead_of_notice_title(self):
+        source_title = '[학습] 5월 2주차 Data 트랙 시간표'
+
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\nPandas 실습',
+            default_title=source_title,
+            ocr_boxes=_timetable_ocr_boxes(),
+        )
+
+        self.assertEqual([schedule.title for schedule in schedules], ['Pandas 실습'])
+        self.assertEqual(schedules[0].metadata_json['source_title'], source_title)
+        self.assertEqual(schedules[0].metadata_json['parser'], 'ocr_timetable_grid')
+        self.assertIn(source_title, schedules[0].description)
+        self.assertEqual(schedules[0].start_at.date().isoformat(), '2026-05-12')
+        self.assertEqual(grid_debug.candidates[0]['source_text'], 'Pandas 실습')
+
+    def test_timetable_grid_rejects_notice_title_as_cell_title(self):
+        source_title = '[학습] 5월 2주차 Data 트랙 시간표'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title=source_title,
+            raw_text='[OCR_TEXT]\n5월\n11\n12\n13',
+            ocr_boxes=_timetable_notice_title_ocr_boxes(source_title),
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        raw_data.refresh_from_db()
+        self.assertEqual(summary.created_count, 0)
+        self.assertEqual(summary.skipped_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertIn('timetable_title_equals_source_title', raw_data.metadata_json['parser_warnings'])
 
     def test_parser_rejects_mixed_exam_titles_and_records_review_candidates(self):
         schedules, grid_debug = parse_schedule_candidates_with_debug(
@@ -2929,6 +3000,29 @@ def _calendar_ocr_boxes():
         {'text': '21', 'x1': 610, 'y1': 180, 'x2': 624, 'y2': 200},
         {'text': 'SW 역량테스트', 'x1': 505, 'y1': 212, 'x2': 590, 'y2': 232, 'confidence': 0.96},
     ]
+
+
+def _timetable_ocr_boxes():
+    return [
+        {'text': '5월', 'x1': 20, 'y1': 20, 'x2': 52, 'y2': 40},
+        {'text': 'MON', 'x1': 110, 'y1': 60, 'x2': 140, 'y2': 80},
+        {'text': 'TUE', 'x1': 210, 'y1': 60, 'x2': 240, 'y2': 80},
+        {'text': 'WED', 'x1': 310, 'y1': 60, 'x2': 340, 'y2': 80},
+        {'text': 'THU', 'x1': 410, 'y1': 60, 'x2': 440, 'y2': 80},
+        {'text': 'FRI', 'x1': 510, 'y1': 60, 'x2': 540, 'y2': 80},
+        {'text': '11', 'x1': 110, 'y1': 100, 'x2': 124, 'y2': 120},
+        {'text': '12', 'x1': 210, 'y1': 100, 'x2': 224, 'y2': 120},
+        {'text': '13', 'x1': 310, 'y1': 100, 'x2': 324, 'y2': 120},
+        {'text': '14', 'x1': 410, 'y1': 100, 'x2': 424, 'y2': 120},
+        {'text': '15', 'x1': 510, 'y1': 100, 'x2': 524, 'y2': 120},
+        {'text': 'Pandas 실습', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 152, 'confidence': 0.98},
+    ]
+
+
+def _timetable_notice_title_ocr_boxes(source_title):
+    boxes = _timetable_ocr_boxes()
+    boxes[-1] = {'text': source_title, 'x1': 205, 'y1': 132, 'x2': 260, 'y2': 152, 'confidence': 0.98}
+    return boxes
 
 
 def _review_required_exam_ocr_boxes():

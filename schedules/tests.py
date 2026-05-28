@@ -467,6 +467,36 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    def test_delete_event_removes_manual_personal_event(self):
+        event = ScheduleEvent.objects.create(
+            title='Manual personal event',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        response = self.client.delete(reverse('schedule-event-detail', args=[event.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
+    def test_delete_event_rejects_generated_event(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='Generated source', raw_text='body')
+        event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated event',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
+            event_type='study',
+            source_type='notice',
+        )
+
+        response = self.client.delete(reverse('schedule-event-detail', args=[event.id]))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+
     def test_deadline_single_time_does_not_become_one_hour_event(self):
         schedules = parse_schedule_candidates('2026.05.20 23:59 제출 마감', default_title='과제 제출 마감')
 

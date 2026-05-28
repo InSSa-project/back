@@ -1,4 +1,5 @@
 import re
+import logging
 from dataclasses import dataclass, field
 from datetime import date, time, timedelta
 
@@ -63,6 +64,7 @@ OCR_CANDIDATE_KEYWORDS = [
     '온라인 위크',
     '관통 프로젝트',
 ]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -254,6 +256,14 @@ def _correct_weekday_mismatches(summary, dry_run=False):
         corrected_date = _adjacent_date_for_weekday(event_date, target_weekday)
         if not corrected_date:
             continue
+        logger.warning(
+            'schedule_date_corrected event_id=%s title=%r old_date=%s new_date=%s target_weekday=%s',
+            event.id,
+            event.title,
+            event_date.isoformat(),
+            corrected_date.isoformat(),
+            target_weekday,
+        )
         duration = event.end_at - event.start_at
         new_start = _aware(corrected_date)
         summary.weekday_corrected_count += 1
