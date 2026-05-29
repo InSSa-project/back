@@ -3,6 +3,8 @@ import re
 
 from django.utils import timezone
 
+from sync.services.tracks import normalize_track_key
+
 
 STATUS_WORD_PATTERN = re.compile(r'\b(?:예정|안내|수정|변경)\b', re.IGNORECASE)
 PREFIX_PATTERN = re.compile(r'^\s*\[(?:공지|학습|평가|안내)\]\s*')
@@ -132,7 +134,7 @@ def choose_representative_title(titles):
 
 def _track_from_metadata(metadata):
     audience = metadata.get('audience') or {}
-    return str(metadata.get('track') or audience.get('track') or '').strip().lower()
+    return normalize_track_key(metadata.get('track') or audience.get('track') or '')
 
 
 def _hash_text(text):

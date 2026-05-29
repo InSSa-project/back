@@ -986,6 +986,113 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(event.metadata_json['source_published_at'], '2026-05-01')
         self.assertNotEqual(timezone.localdate(event.start_at).isoformat(), event.metadata_json['source_published_at'])
 
+    def test_timetable_event_rejects_other_month_source_title_mapping(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/april-week5',
+            title='[??] 4? 5?? Embedded Robot ?? ???',
+            raw_text='[OCR_TEXT]',
+        )
+        start_at = timezone.datetime(2026, 5, 8, tzinfo=timezone.get_current_timezone())
+        schedule = ParsedSchedule(
+            title='?? ??',
+            description='wrong source mapping candidate',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            metadata_json={
+                'parser': 'ocr_timetable_grid',
+                'parser_type': 'timetable_grid',
+                'raw_title': '?? ??',
+                'date_mapping_source': 'ocr_header',
+                'track': 'embedded_robot',
+            },
+        )
+        grid_debug = types.SimpleNamespace(metadata_json={}, review_required_candidates=[], as_dict=lambda: {})
+
+        with patch('sync.services.reparse_service.parse_schedule_candidates_with_debug', return_value=([schedule], grid_debug)):
+            summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        raw_data.refresh_from_db()
+        self.assertEqual(summary.created_count, 0)
+        self.assertEqual(summary.validation_skip_count, 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+        self.assertIn('source_title_period_mismatch', raw_data.metadata_json['parser_warnings'])
+
+    def test_monthly_evaluation_notice_creates_all_track_events(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/monthly-exam-all-tracks',
+            title='?? ??',
+            raw_text='evaluation notice text',
+        )
+        start_at = timezone.datetime(2026, 5, 26, tzinfo=timezone.get_current_timezone())
+        tracks = ['python', 'java_non_major', 'java_major', 'embedded', 'mobile', 'embedded_robot', 'data', 'meister']
+        schedules = [
+            ParsedSchedule(
+                title='????5',
+                description='monthly exam',
+                start_at=start_at,
+                end_at=start_at + timedelta(days=1),
+                is_all_day=True,
+                event_type='exam',
+                metadata_json={
+                    'parser': 'evaluation_notice_ocr',
+                    'parser_type': 'evaluation_notice',
+                    'raw_title': '????5',
+                    'date_mapping_source': 'explicit_text_date',
+                    'track': track,
+                },
+            )
+            for track in tracks
+        ]
+        grid_debug = types.SimpleNamespace(metadata_json={}, review_required_candidates=[], as_dict=lambda: {})
+
+        with patch('sync.services.reparse_service.parse_schedule_candidates_with_debug', return_value=(schedules, grid_debug)):
+            summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        self.assertEqual(summary.created_count, 8)
+        self.assertEqual(ScheduleEvent.objects.filter(title='????5', event_type='exam').count(), 8)
+        self.assertEqual(
+            sorted(event.metadata_json['track'] for event in ScheduleEvent.objects.all()),
+            sorted(tracks),
+        )
+
+    def test_debug_event_id_outputs_source_mapping(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/notices/may-week',
+            title='[??] 5? 1?? Data ?? ???',
+            raw_text='source',
+        )
+        start_at = timezone.datetime(2026, 5, 8, tzinfo=timezone.get_current_timezone())
+        event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Data) ?? ??',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+            metadata_json={
+                'source_title': raw_data.title,
+                'source_url': raw_data.source_url,
+                'raw_title': '?? ??',
+                'parser_type': 'timetable_grid',
+                'track': 'data',
+            },
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--event-id', str(event.id), stdout=output)
+
+        value = output.getvalue()
+        self.assertIn(f'raw_data_id={raw_data.id}', value)
+        self.assertIn('source_url=https://example.com/notices/may-week', value)
+        self.assertIn('source_title=[??] 5? 1?? Data ?? ???', value)
+
     def test_online_week_date_range_expands_to_weekdays_except_holidays(self):
         schedules = parse_schedule_candidates(
             '2026.06.02~06.13 온라인 위크',
@@ -1960,18 +2067,19 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(schedules, [])
 
-    def test_evaluation_notice_without_track_requires_review(self):
+    def test_evaluation_notice_without_track_expands_to_all_tracks(self):
         schedules, grid_debug = parse_schedule_candidates_with_debug(
-            '[OCR_TEXT]\n평가 안내\n3월 3일 월말평가 알고리즘 기본',
-            default_title='평가 안내',
+            '[OCR_TEXT]\n\ud3c9\uac00 \uc548\ub0b4\n3\uc6d4 3\uc77c \uc6d4\ub9d0\ud3c9\uac00 \uc54c\uace0\ub9ac\uc998 \uae30\ubcf8',
+            default_title='\ud3c9\uac00 \uc548\ub0b4',
         )
 
-        self.assertEqual(schedules, [])
-        self.assertEqual(grid_debug.review_required_candidate_count, 1)
+        self.assertEqual(len(schedules), 8)
         self.assertEqual(
-            grid_debug.review_required_candidates[0]['review_required_reason'],
-            'missing_or_ambiguous_track',
+            sorted({schedule.metadata_json['track'] for schedule in schedules}),
+            ['Data', 'Embedded', 'Embedded Robot', 'Java\ube44\uc804\uacf5', 'Java\uc804\uacf5', 'Mobile', 'Python', '\ub9c8\uc774\uc2a4\ud130\uace0'],
         )
+        self.assertEqual(grid_debug.review_required_candidate_count, 0)
+        self.assertEqual(grid_debug.metadata_json['track'], 'all')
 
     def test_parser_failure_source_type_is_recorded_in_message(self):
         with patch('sync.services.import_service.load_notices_by_mode', return_value=[_notice_item('https://example.com/notices/error', 'notice-error')]):

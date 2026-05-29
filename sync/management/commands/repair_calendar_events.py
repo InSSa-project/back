@@ -21,6 +21,9 @@ from sync.services.calendar_quality import (
 from sync.models import RawSsafyData
 from sync.services.reparse_service import reparse_raw_data_to_events
 from sync.services.schedule_identity import choose_representative_title
+from sync.services.tracks import TRACK_ALIASES as CANONICAL_TRACK_ALIASES
+from sync.services.tracks import TRACK_DISPLAY_BY_KEY as CANONICAL_TRACK_DISPLAY_BY_KEY
+from sync.services.tracks import normalize_track_key
 
 
 REPAIR_SOURCE = 'manual_calendar_correction'
@@ -41,6 +44,8 @@ TRACK_ALIASES = {
 TRACK_DISPLAY_BY_KEY = {value: key for key, value in TRACK_ALIASES.items()}
 TRACK_DISPLAY_BY_KEY.update({key: key for key in TRACK_ALIASES})
 TRACK_DISPLAY_BY_KEY.update({'java_non_major': 'Java비전공', 'java_major': 'Java전공'})
+TRACK_ALIASES.update(CANONICAL_TRACK_ALIASES)
+TRACK_DISPLAY_BY_KEY.update(CANONICAL_TRACK_DISPLAY_BY_KEY)
 COMMON_TRACKS = {'', 'common', 'all', '공통'}
 COMMON_TITLE_KEYWORDS = [
     '과목평가', '월말평가', 'SSAFY DAY', '설날', '온라인 위크', '관통', 'PJT',
@@ -676,15 +681,7 @@ def _track_from_text(text):
 
 
 def _normalize_track(track):
-    text = str(track or '').strip()
-    if not text:
-        return ''
-    lowered = text.lower().replace('-', '_').replace(' ', '_')
-    alias_by_lower = {key.lower().replace(' ', '_'): value for key, value in TRACK_ALIASES.items()}
-    alias_by_lower.update({value.lower(): value for value in TRACK_ALIASES.values()})
-    if lowered in alias_by_lower:
-        return alias_by_lower[lowered]
-    return TRACK_ALIASES.get(text, text)
+    return normalize_track_key(track)
 
 
 def _strip_weekday_marker(title):
