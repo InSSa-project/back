@@ -10,6 +10,7 @@ from schedules.models import ScheduleEvent
 from schedules.utils import normalize_event_title_for_dedupe
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.models import RawSsafyData
+from sync.services.schedule_identity import event_identity_key
 
 
 GENERATED_REPAIR_SOURCES = {'manual_calendar_correction', 'manual_exam_correction'}
@@ -197,6 +198,10 @@ def _suspicious_events(events, holidays):
             reasons.append('weekend_generated')
         if mapping_source == 'fallback_week':
             reasons.append('fallback_week')
+        if mapping_source == 'unknown':
+            reasons.append('unknown_date_source')
+        if _uses_source_published_at_as_event_date(event):
+            reasons.append('source_published_at_date')
         if _is_meaningless_title(metadata.get('display_title') or event.title):
             reasons.append('meaningless_title')
 
@@ -209,7 +214,42 @@ def _suspicious_events(events, holidays):
             if 'duplicate_title' not in item.reasons:
                 item.reasons.append('duplicate_title')
 
+    for merge_group in generated_merge_groups(events):
+        for event in merge_group:
+            item = by_id.setdefault(event.id, SuspiciousEvent(event=event, reasons=[]))
+            if 'merge_candidate' not in item.reasons:
+                item.reasons.append('merge_candidate')
+
     return list(by_id.values())
+
+
+def generated_merge_groups(events):
+    groups = defaultdict(list)
+    for event in events:
+        if not is_deletable_generated_event(event):
+            continue
+        if not _is_identity_mergeable_event(event):
+            continue
+        metadata = event.metadata_json or {}
+        key = event_identity_key(event)
+        if not key[2] and not key[3]:
+            continue
+        groups[key].append(event)
+    return [group for group in groups.values() if len({event.title for event in group}) > 1 or len(group) > 1]
+
+
+def format_merge_candidates(groups):
+    if not groups:
+        return 'none'
+    parts = []
+    for group in groups:
+        parts.append(
+            ','.join(
+                f'{event.id}:{_safe(event.title)}:{timezone.localdate(event.start_at).isoformat()}'
+                for event in group
+            )
+        )
+    return '|'.join(parts)
 
 
 def _duplicate_generated_groups(events):
@@ -233,6 +273,30 @@ def _duplicate_generated_groups(events):
         )
         groups[key].append(event)
     return [group for group in groups.values() if len(group) > 1]
+
+
+def _is_identity_mergeable_event(event):
+    metadata = event.metadata_json or {}
+    parser_type = metadata.get('parser_type') or ''
+    parser = metadata.get('parser') or ''
+    grid_values = {'timetable_grid', 'calendar_grid', 'ocr_timetable_grid', 'ocr_calendar_grid', 'calendar_ocr_text'}
+    if parser_type in grid_values or parser in grid_values:
+        return False
+    mergeable_parser_types = {'', 'calendar_text', 'text_date', 'text_date_range', 'evaluation_notice'}
+    mergeable_parsers = {'', 'notice_text', 'notice_text_range', 'evaluation_notice_ocr'}
+    return parser_type in mergeable_parser_types and parser in mergeable_parsers
+
+
+def _uses_source_published_at_as_event_date(event):
+    if not is_generated_event(event):
+        return False
+    metadata = event.metadata_json or {}
+    published_at = str(metadata.get('source_published_at') or '')[:10]
+    if not published_at:
+        return False
+    if metadata.get('date_mapping_source') not in {'unknown', 'fallback_week', 'source_published_at_forbidden'}:
+        return False
+    return timezone.localdate(event.start_at).isoformat() == published_at
 
 
 def _empty_weekdays(year, month, daily_counts, holidays):

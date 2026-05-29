@@ -9,8 +9,9 @@ from schedules.services import (
     validate_generated_schedule,
 )
 from sync.models import RawSsafyData
-from sync.services.import_service import find_existing_schedule_event
+from sync.services.import_service import find_existing_schedule_event, merge_schedule_candidate_into_event
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
+from sync.services.schedule_identity import ensure_raw_identity_metadata
 
 
 @dataclass
@@ -41,6 +42,7 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
         if raw_data.source_type != 'notice':
             summary.no_schedule_count += 1
             continue
+        ensure_raw_identity_metadata(raw_data, save=not dry_run)
 
         try:
             parsed_schedules, grid_debug = parse_schedule_candidates_with_debug(
@@ -91,7 +93,10 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 summary.skipped_count += 1
                 summary.validation_skip_count += 1
                 continue
-            if not replace_events and find_existing_schedule_event(schedule, raw_data):
+            existing_event = None if replace_events else find_existing_schedule_event(schedule, raw_data)
+            if existing_event:
+                if not dry_run:
+                    merge_schedule_candidate_into_event(existing_event, schedule, raw_data)
                 summary.skipped_count += 1
                 summary.duplicate_skip_count += 1
                 continue

@@ -5,6 +5,11 @@ from django.utils import timezone
 
 from schedules.utils import is_wrapper_schedule_title
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
+from sync.services.schedule_identity import (
+    date_mapping_source_for_schedule,
+    ensure_raw_identity_metadata,
+    extracted_date_range_for_schedule,
+)
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -35,7 +40,15 @@ def build_generated_event_metadata(raw_data, schedule):
     if raw_data and raw_data.title:
         metadata.setdefault('source_title', raw_data.title)
     if raw_data:
+        raw_metadata = ensure_raw_identity_metadata(raw_data, save=False)
         metadata.setdefault('raw_data_id', raw_data.id)
+        metadata.setdefault('normalized_content_hash', raw_metadata.get('normalized_content_hash'))
+        metadata.setdefault('ocr_text_hash', raw_metadata.get('ocr_text_hash'))
+        metadata.setdefault('source_published_at', raw_metadata.get('source_published_at'))
+    metadata['date_mapping_source'] = date_mapping_source_for_schedule(schedule)
+    metadata.setdefault('extracted_date_range', extracted_date_range_for_schedule(schedule))
+    metadata.setdefault('extracted_dates', [timezone.localdate(schedule.start_at).isoformat()])
+    metadata.setdefault('confidence', 0.5 if metadata.get('date_mapping_source') in {'fallback_week', 'unknown'} else 0.85)
     warnings = validate_generated_schedule(raw_data, schedule)
     if warnings:
         metadata['parser_warnings'] = warnings

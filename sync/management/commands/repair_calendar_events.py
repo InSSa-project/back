@@ -11,13 +11,16 @@ from django.utils import timezone
 from schedules.models import ScheduleEvent
 from sync.services.calendar_quality import (
     build_month_quality_report,
+    format_merge_candidates,
     format_suspicious_events,
+    generated_merge_groups,
     is_deletable_generated_event,
     parse_month_option,
     suspicious_events_by_reason,
 )
 from sync.models import RawSsafyData
 from sync.services.reparse_service import reparse_raw_data_to_events
+from sync.services.schedule_identity import choose_representative_title
 
 
 REPAIR_SOURCE = 'manual_calendar_correction'
@@ -167,6 +170,7 @@ def _repair_month_quality_report(stdout, month_option, year_option, confirmed=Fa
     year, month = parse_month_option(month_option, year_option)
     report = build_month_quality_report(year, month)
     targets = _month_delete_targets(report)
+    merge_groups = generated_merge_groups(report.events)
     stdout.write(f'month={year}-{month:02d}')
     stdout.write(f'dry_run={str(dry_run).lower()}')
     stdout.write(f'confirmed={str(confirmed).lower()}')
@@ -187,6 +191,7 @@ def _repair_month_quality_report(stdout, month_option, year_option, confirmed=Fa
         'meaningless_title_events='
         f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "meaningless_title"))}'
     )
+    stdout.write(f'merge_candidates={format_merge_candidates(merge_groups)}')
     for event in targets:
         metadata = event.metadata_json or {}
         stdout.write(
@@ -198,7 +203,10 @@ def _repair_month_quality_report(stdout, month_option, year_option, confirmed=Fa
         )
     if confirmed and not dry_run and targets:
         ScheduleEvent.objects.filter(id__in=[event.id for event in targets]).delete()
-    return len(targets)
+    merged_deleted_count = 0
+    if confirmed and not dry_run:
+        merged_deleted_count = _merge_generated_groups(merge_groups)
+    return len(targets) + merged_deleted_count
 
 
 def _month_delete_targets(report):
@@ -215,6 +223,32 @@ def _month_delete_targets(report):
 
 def _safe_log(value):
     return str(value if value is not None else '').replace('\n', ' ').replace('\r', ' ')
+
+
+def _merge_generated_groups(groups):
+    deleted_count = 0
+    for group in groups:
+        ordered = sorted(group, key=lambda event: (len(event.title or ''), event.id))
+        keep = ordered[0]
+        aliases = {keep.title}
+        merged_ids = set((keep.metadata_json or {}).get('merged_from_event_ids') or [])
+        merged_ids.add(keep.id)
+        for event in ordered[1:]:
+            aliases.add(event.title)
+            aliases.update((event.metadata_json or {}).get('alias_titles') or [])
+            merged_ids.add(event.id)
+        representative = choose_representative_title(aliases)
+        metadata = dict(keep.metadata_json or {})
+        metadata['alias_titles'] = sorted(value for value in aliases if value and value != representative)
+        metadata['merged_from_event_ids'] = sorted(merged_ids)
+        keep.title = representative or keep.title
+        keep.metadata_json = metadata
+        keep.save(update_fields=['title', 'metadata_json'])
+        delete_ids = [event.id for event in ordered[1:]]
+        if delete_ids:
+            deleted_count += len(delete_ids)
+            ScheduleEvent.objects.filter(id__in=delete_ids).delete()
+    return deleted_count
 
 
 @transaction.atomic
