@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
-from schedules.utils import normalize_schedule_display_title
+from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
 from sync.services.tracks import canonical_track_display, canonical_track_keys, track_key_from_text
@@ -592,6 +592,8 @@ def _dedupe_schedules(schedules):
 
 
 def _is_noise_schedule_title(title):
+    if is_meaningless_schedule_title(title):
+        return True
     compact = re.sub(r'[\s.()\-_/\]]+', '', str(title or '')).upper()
     if compact in NOISE_TITLE_COMPACTS:
         return True
@@ -691,7 +693,7 @@ def _parse_evaluation_notice(raw_text, default_title):
         return [], GridParseDebug(candidates=[], review_required_candidates=[])
 
     track = _extract_clear_track(text)
-    target_tracks = [track] if track else canonical_track_keys()
+    target_tracks = canonical_track_keys()
     debug = GridParseDebug(candidates=[], review_required_candidates=[])
     schedules = []
 
@@ -855,7 +857,7 @@ def _parse_evaluation_notice(raw_text, default_title):
         return [], GridParseDebug(candidates=[], review_required_candidates=[])
 
     track = _extract_clear_track(text)
-    target_tracks = [track] if track else canonical_track_keys()
+    target_tracks = canonical_track_keys()
     debug = GridParseDebug(candidates=[], review_required_candidates=[])
     schedules = []
     day = '\uc77c'

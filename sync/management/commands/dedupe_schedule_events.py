@@ -2,6 +2,7 @@ from django.core.management.base import BaseCommand
 
 from schedules.models import ScheduleEvent
 from schedules.utils import normalize_event_title_for_dedupe
+from sync.services.tracks import normalize_track_key
 
 
 class Command(BaseCommand):
@@ -58,4 +59,4 @@ def _duplicate_groups():
 def _event_track(event):
     metadata = event.metadata_json or {}
     audience = metadata.get('audience') or {}
-    return str(metadata.get('track') or audience.get('track') or '').strip().lower()
+    return normalize_track_key(metadata.get('track_key') or metadata.get('track') or audience.get('track') or '')

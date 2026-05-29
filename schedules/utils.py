@@ -19,6 +19,13 @@ WRAPPER_PHRASES = (
     '학습 주차',
     '커리큘럼',
 )
+MEANINGLESS_TITLE_COMPACTS = {
+    '0012',
+    'DB',
+    'JS',
+    '&A',
+    'A',
+}
 
 
 def normalize_event_title_for_dedupe(title):
@@ -65,6 +72,20 @@ def normalize_schedule_display_title(title):
     return text[:80] if text else original[:80]
 
 
+def is_meaningless_schedule_title(title):
+    text = _normalize_spaces(title)
+    compact = re.sub(r'[\s\[\].:()_\-/~]+', '', text).upper()
+    if not compact:
+        return True
+    if re.fullmatch(r'\d{1,2}\s*(?::\s*\d{2})?\s*(?:-|~|to|부터|부터\s*)\s*\d{1,2}\s*(?::\s*\d{2})?', text, re.I):
+        return True
+    if compact in MEANINGLESS_TITLE_COMPACTS:
+        return True
+    if len(compact) <= 2 and not _is_allowed_short_title(compact):
+        return True
+    return False
+
+
 def _strip_display_noise_prefixes(text):
     for _ in range(4):
         previous = text
@@ -96,6 +117,17 @@ def _normalize_learning_subject(text):
     text = re.sub(r'\bBasic\s+Syntax\s*\d+\b', 'Basic Syntax', text, flags=re.IGNORECASE)
     text = text.replace('실습 및 Q&A', '실습 Q&A')
     return text
+
+
+def _is_allowed_short_title(compact):
+    return compact in {
+        'SQL',
+        'PJT',
+        '평가',
+        '특강',
+        '중식',
+        '설날',
+    }
 
 
 def _looks_like_timetable_parser(metadata):

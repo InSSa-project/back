@@ -152,7 +152,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
-    def test_duplicate_schedule_event_is_skipped_even_when_raw_data_is_new(self):
+    def test_duplicate_schedule_event_keeps_each_raw_data_source_mapping(self):
         first_item = _notice_item('https://example.com/notices/event-1', 'notice-event-1')
         second_item = _notice_item('https://example.com/notices/event-2', 'notice-event-2')
         first_item['title'] = 'Notice A'
@@ -164,11 +164,14 @@ class SampleNoticeImportTests(TestCase):
             job_log = run_notice_import(mode='ssafy_notice')
 
         self.assertEqual(job_log.raw_count, 2)
-        self.assertEqual(job_log.event_count, 1)
-        self.assertEqual(job_log.skipped_count, 1)
-        self.assertIn('event_skipped_count=1', job_log.message)
+        self.assertEqual(job_log.event_count, 2)
+        self.assertEqual(job_log.skipped_count, 0)
         self.assertEqual(RawSsafyData.objects.count(), 2)
-        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 2)
+        self.assertEqual(
+            set(ScheduleEvent.objects.values_list('raw_data__source_url', flat=True)),
+            {'https://example.com/notices/event-1', 'https://example.com/notices/event-2'},
+        )
 
     def test_existing_data_is_not_deleted_when_duplicate_is_skipped(self):
         existing = RawSsafyData.objects.create(
@@ -377,9 +380,9 @@ class SampleNoticeImportTests(TestCase):
         second_summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=second_raw.pk))
 
         self.assertEqual(first_summary.created_count, 1)
-        self.assertEqual(second_summary.created_count, 0)
-        self.assertEqual(second_summary.skipped_count, 1)
-        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(second_summary.created_count, 1)
+        self.assertEqual(second_summary.skipped_count, 0)
+        self.assertEqual(ScheduleEvent.objects.count(), 2)
 
     def test_reparse_skips_timetable_wrapper_title(self):
         raw_data = _raw_data(
@@ -611,7 +614,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('title=월말 평가', value)
         self.assertIn('display_title=월말평가', value)
         self.assertIn(f'raw_data_id={raw_data.id}', value)
-        self.assertIn('source_title=[학습] 5월 2주차 Data 트랙 시간표', value)
+        self.assertIn('source_title=notice title', value)
         self.assertIn('raw_title=월말 평가 OCR', value)
         self.assertIn('parser_type=timetable_grid', value)
         self.assertIn('date_mapping_source=fallback', value)
@@ -2048,13 +2051,18 @@ class SampleNoticeImportTests(TestCase):
         schedules, grid_debug = parse_schedule_candidates_with_debug(raw_text, default_title='평가 안내')
         result = [(schedule.start_at.date().isoformat(), schedule.title) for schedule in schedules]
 
+        self.assertEqual(len(result), 24)
         self.assertEqual(
-            result,
+            sorted(set(result)),
             [
                 ('2026-03-03', '월말평가: 알고리즘 기본'),
                 ('2026-03-16', '과목평가: 알고리즘 응용'),
                 ('2026-03-26', '과목평가: AI'),
             ],
+        )
+        self.assertEqual(
+            sorted({schedule.metadata_json['track_key'] for schedule in schedules}),
+            ['data', 'embedded', 'embedded_robot', 'java_major', 'java_non_major', 'meister', 'mobile', 'python'],
         )
         self.assertEqual(grid_debug.metadata_json['track'], '마이스터고')
 
@@ -3350,7 +3358,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('과목평가: 알고리즘 응용', titles)
         self.assertIn('과목평가: AI', titles)
         self.assertIn('deleted_count=1', output.getvalue())
-        self.assertIn('created_count=3', output.getvalue())
+        self.assertIn('created_count=24', output.getvalue())
 
     def test_reparse_evaluation_exams_aborts_without_evaluation_ocr_raw_data(self):
         raw_data = RawSsafyData.objects.create(

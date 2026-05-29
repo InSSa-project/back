@@ -7,7 +7,7 @@ from datetime import datetime, time, timedelta
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
-from schedules.utils import normalize_event_title_for_dedupe
+from schedules.utils import is_meaningless_schedule_title, normalize_event_title_for_dedupe
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.models import RawSsafyData
 from sync.services.schedule_identity import event_identity_key
@@ -314,11 +314,7 @@ def _empty_weekdays(year, month, daily_counts, holidays):
 def _is_meaningless_title(title):
     text = str(title or '').strip()
     compact = re.sub(r'[\s\[\].:()_\-/~]+', '', text).lower()
-    if TIME_ONLY_PATTERN.match(text):
-        return True
-    if len(compact) <= 1:
-        return True
-    return compact in MEANINGLESS_TITLES
+    return is_meaningless_schedule_title(text) or bool(TIME_ONLY_PATTERN.match(text)) or compact in MEANINGLESS_TITLES
 
 
 def _safe(value):
