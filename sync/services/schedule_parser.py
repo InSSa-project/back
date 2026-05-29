@@ -7,6 +7,7 @@ from django.utils import timezone
 from schedules.utils import normalize_schedule_display_title
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
+from sync.services.tracks import canonical_track_display, canonical_track_keys, track_key_from_text
 
 
 DEFAULT_YEAR = 2026
@@ -581,7 +582,8 @@ def _dedupe_schedules(schedules):
     for schedule in schedules:
         if _is_noise_schedule_title(schedule.title):
             continue
-        key = (schedule.title, schedule.start_at, schedule.event_type, 'notice')
+        metadata = schedule.metadata_json or {}
+        key = (schedule.title, schedule.start_at, schedule.event_type, metadata.get('track') or 'notice')
         if key in seen:
             continue
         seen.add(key)
@@ -683,6 +685,84 @@ def _aware(event_date, event_time):
     return timezone.make_aware(naive, timezone.get_current_timezone())
 
 
+def _parse_evaluation_notice(raw_text, default_title):
+    text = f'{default_title or ""}\n{raw_text or ""}'
+    if not _looks_like_evaluation_notice(text):
+        return [], GridParseDebug(candidates=[], review_required_candidates=[])
+
+    track = _extract_clear_track(text)
+    target_tracks = [track] if track else canonical_track_keys()
+    debug = GridParseDebug(candidates=[], review_required_candidates=[])
+    schedules = []
+
+    for line in _candidate_lines_for_evaluation(text):
+        match = EVALUATION_DATE_PATTERN.search(line)
+        type_match = EVALUATION_TYPE_PATTERN.search(line)
+        if not match or not type_match:
+            continue
+        subject = _evaluation_subject(line, match, type_match)
+        if not subject:
+            continue
+        event_date = date(
+            int(match.group('year') or DEFAULT_YEAR),
+            int(match.group('month')),
+            int(match.group('day')),
+        )
+        evaluation_type = type_match.group(1)
+        title = f'{evaluation_type}: {subject}'
+        for track_key in target_tracks:
+            track_display = canonical_track_display(track_key)
+            schedules.append(
+                ParsedSchedule(
+                    title=title[:255],
+                    description=f'SSAFY evaluation notice parsed for {track_display} track',
+                    start_at=_aware(event_date, time.min),
+                    end_at=_aware(event_date, time.min) + timedelta(days=1),
+                    is_all_day=True,
+                    event_type='exam',
+                    metadata_json={
+                        'parser': 'evaluation_notice_ocr',
+                        'parser_type': 'evaluation_notice',
+                        'raw_title': title,
+                        'source_title': default_title,
+                        'display_title': normalize_schedule_display_title(title),
+                        'track': track_display,
+                        'track_key': track_key,
+                        'track_display': track_display,
+                        'candidate_date': event_date.isoformat(),
+                        'date_mapping_source': 'explicit_text_date',
+                        'confidence': 0.9 if track else 0.8,
+                        'skip_reason': '',
+                    },
+                )
+            )
+
+    if not schedules:
+        debug.reason = 'evaluation_notice_no_parseable_rows'
+        debug.review_required_candidates = [
+            {
+                'title': default_title or 'evaluation notice',
+                'source_text': _debug_text_sample(text),
+                'review_required_reason': 'no_parseable_evaluation_rows',
+            }
+        ]
+        debug.review_required_candidate_count = 1
+    else:
+        debug.reason = 'evaluation_notice_ok'
+        debug.candidates = [
+            {
+                'title': schedule.title,
+                'inferred_date': schedule.start_at.date().isoformat(),
+                'event_type': schedule.event_type,
+                'track': (schedule.metadata_json or {}).get('track') or '',
+            }
+            for schedule in schedules
+        ]
+        debug.candidate_count = len(debug.candidates)
+        debug.metadata_json = {'track': canonical_track_display(track) if track else 'all', 'parser': 'evaluation_notice_ocr'}
+    return schedules, debug
+
+
 def _parse_title(line, default_title):
     cleaned = re.sub(DATE_RANGE_PATTERN, '', line)
     cleaned = re.sub(DATE_PATTERN, '', cleaned)
@@ -723,3 +803,143 @@ def _context_title(raw_text, default_title):
             return cleaned[:255]
 
     return default_title or 'SSAFY 일정'
+
+
+def _extract_clear_track(text):
+    canonical = track_key_from_text(text)
+    if canonical:
+        return canonical
+    found = []
+    for keyword in TRACK_KEYWORDS:
+        if re.search(re.escape(keyword), text, re.I):
+            found.append(keyword)
+    return found[0] if len(set(found)) == 1 else ''
+
+
+def _extract_track_from_title(title):
+    canonical = track_key_from_text(title)
+    if canonical:
+        return canonical_track_display(canonical)
+    text = str(title or '')
+    track_map = [
+        ('Python', 'Python'),
+        ('Data', 'Data'),
+        ('Java', 'Java'),
+        ('Embedded Robot', 'Embedded Robot'),
+        ('Embedded', 'Embedded'),
+        ('Mobile', 'Mobile'),
+    ]
+    for keyword, label in track_map:
+        if keyword.lower() in text.lower():
+            return label
+    return ''
+
+
+
+
+def _looks_like_evaluation_notice(text):
+    value = str(text or '')
+    compact = re.sub(r'\s+', '', value)
+    eval_notice = '\ud3c9\uac00\uc548\ub0b4'
+    subject_exam = '\uacfc\ubaa9\ud3c9\uac00'
+    monthly_exam = '\uc6d4\ub9d0\ud3c9\uac00'
+    return '[OCR_TEXT]' in value and (
+        (eval_notice in compact and (subject_exam in compact or monthly_exam in compact))
+        or (('???' in value or '??????' in value or '??????' in value) and ('???' in value or '??? ???' in value))
+    )
+
+
+def _parse_evaluation_notice(raw_text, default_title):
+    text = f'{default_title or ""}\n{raw_text or ""}'
+    if not _looks_like_evaluation_notice(text):
+        return [], GridParseDebug(candidates=[], review_required_candidates=[])
+
+    track = _extract_clear_track(text)
+    target_tracks = [track] if track else canonical_track_keys()
+    debug = GridParseDebug(candidates=[], review_required_candidates=[])
+    schedules = []
+    day = '\uc77c'
+    month = '\uc6d4'
+    subject_exam = '\uacfc\ubaa9\ud3c9\uac00'
+    monthly_exam = '\uc6d4\ub9d0\ud3c9\uac00'
+    actual_pattern = re.compile(
+        rf'(?:(?P<year>\d{{4}})[.\-/\s]*)?'
+        rf'(?P<month>\d{{1,2}})\s*(?:[.\-/]|{month})\s*'
+        rf'(?P<day>\d{{1,2}})\s*(?:{day})?\s*'
+        rf'(?P<kind>{monthly_exam}|{subject_exam})\s*(?P<subject>.*)'
+    )
+
+    for line in _candidate_lines_for_evaluation(text):
+        actual_match = actual_pattern.search(line)
+        if actual_match:
+            event_date = date(
+                int(actual_match.group('year') or DEFAULT_YEAR),
+                int(actual_match.group('month')),
+                int(actual_match.group('day')),
+            )
+            title = f"{actual_match.group('kind')}: {actual_match.group('subject').strip(' :-|[]()~')}".rstrip(': ')
+        else:
+            match = EVALUATION_DATE_PATTERN.search(line)
+            type_match = EVALUATION_TYPE_PATTERN.search(line)
+            if not match or not type_match:
+                continue
+            subject = _evaluation_subject(line, match, type_match)
+            if not subject:
+                continue
+            event_date = date(
+                int(match.group('year') or DEFAULT_YEAR),
+                int(match.group('month')),
+                int(match.group('day')),
+            )
+            title = f'{type_match.group(1)}: {subject}'
+        for track_key in target_tracks:
+            track_display = canonical_track_display(track_key)
+            schedules.append(
+                ParsedSchedule(
+                    title=title[:255],
+                    description=f'SSAFY evaluation notice parsed for {track_display} track',
+                    start_at=_aware(event_date, time.min),
+                    end_at=_aware(event_date, time.min) + timedelta(days=1),
+                    is_all_day=True,
+                    event_type='exam',
+                    metadata_json={
+                        'parser': 'evaluation_notice_ocr',
+                        'parser_type': 'evaluation_notice',
+                        'raw_title': title,
+                        'source_title': default_title,
+                        'display_title': normalize_schedule_display_title(title),
+                        'track': track_display,
+                        'track_key': track_key,
+                        'track_display': track_display,
+                        'candidate_date': event_date.isoformat(),
+                        'date_mapping_source': 'explicit_text_date',
+                        'confidence': 0.9 if track else 0.8,
+                        'skip_reason': '',
+                    },
+                )
+            )
+
+    if not schedules:
+        debug.reason = 'evaluation_notice_no_parseable_rows'
+        debug.review_required_candidates = [
+            {
+                'title': default_title or 'evaluation notice',
+                'source_text': _debug_text_sample(text),
+                'review_required_reason': 'no_parseable_evaluation_rows',
+            }
+        ]
+        debug.review_required_candidate_count = 1
+    else:
+        debug.reason = 'evaluation_notice_ok'
+        debug.candidates = [
+            {
+                'title': schedule.title,
+                'inferred_date': schedule.start_at.date().isoformat(),
+                'event_type': schedule.event_type,
+                'track': (schedule.metadata_json or {}).get('track') or '',
+            }
+            for schedule in schedules
+        ]
+        debug.candidate_count = len(debug.candidates)
+        debug.metadata_json = {'track': canonical_track_display(track) if track else 'all', 'parser': 'evaluation_notice_ocr'}
+    return schedules, debug

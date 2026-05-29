@@ -19,6 +19,7 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     generated_identity_key,
 )
+from sync.services.tracks import normalize_track_key, track_key_from_text
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
@@ -1004,11 +1005,14 @@ def _event_track(event):
 
 
 def _normalize_track_value(value):
-    return str(value or '').strip().lower()
+    return normalize_track_key(value)
 
 
 def _infer_track_from_text(text):
     text = str(text or '')
+    canonical = track_key_from_text(text)
+    if canonical:
+        return canonical
     if 'Data' in text or '데이터' in text:
         return 'data'
     if 'Python' in text:

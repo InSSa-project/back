@@ -27,6 +27,7 @@ class Command(BaseCommand):
         parser.add_argument('--year', type=int, default=2026, help='Calendar year to inspect.')
         parser.add_argument('--month', default='5', help='Calendar month to inspect. Accepts 5 or 2026-05.')
         parser.add_argument('--date', help='Print ScheduleEvent rows overlapping one date in YYYY-MM-DD format.')
+        parser.add_argument('--event-id', type=int, help='Print source mapping details for one ScheduleEvent id.')
         parser.add_argument(
             '--reparse-source-type',
             default='notice',
@@ -40,6 +41,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get('event_id'):
+            _print_event_source_mapping(self.stdout, options['event_id'])
+            return
+
         if options.get('date'):
             target_date = parse_date(options['date'])
             if target_date is None:
@@ -158,6 +163,7 @@ def _print_events_for_date(stdout, target_date):
             f'end_at={timezone.localtime(event.end_at).isoformat()} '
             f'raw_data_id={event.raw_data_id or ""} '
             f'source_type={_safe(event.source_type)} '
+            f'source_url={_safe(_event_source_url(event))} '
             f'source_title={_safe(metadata.get("source_title"))} '
             f'raw_title={_safe(metadata.get("raw_title"))} '
             f'parser_type={_safe(metadata.get("parser_type"))} '
@@ -165,6 +171,36 @@ def _print_events_for_date(stdout, target_date):
             f'original_header_date={_safe(metadata.get("original_header_date"))} '
             f'fallback_date={_safe(metadata.get("fallback_date"))}'
         )
+
+
+def _print_event_source_mapping(stdout, event_id):
+    event = ScheduleEvent.objects.select_related('raw_data').filter(id=event_id).first()
+    stdout.write(f'event_id={event_id}')
+    if not event:
+        stdout.write('event_found=false')
+        return
+    metadata = event.metadata_json or {}
+    raw_data = event.raw_data
+    stdout.write('event_found=true')
+    stdout.write(f'title={_safe(event.title)}')
+    stdout.write(f'start_at={timezone.localtime(event.start_at).isoformat()}')
+    stdout.write(f'end_at={timezone.localtime(event.end_at).isoformat()}')
+    stdout.write(f'raw_data_id={event.raw_data_id or metadata.get("raw_data_id") or ""}')
+    stdout.write(f'source_type={_safe(event.source_type)}')
+    stdout.write(f'source_url={_safe(_event_source_url(event))}')
+    stdout.write(f'source_title={_safe(metadata.get("source_title") or (raw_data.title if raw_data else ""))}')
+    stdout.write(f'raw_title={_safe(metadata.get("raw_title"))}')
+    stdout.write(f'parser_type={_safe(metadata.get("parser_type"))}')
+    stdout.write(f'track={_safe(metadata.get("track"))}')
+
+
+def _event_source_url(event):
+    metadata = event.metadata_json or {}
+    if metadata.get('source_url'):
+        return metadata.get('source_url')
+    if event.raw_data_id and event.raw_data:
+        return event.raw_data.source_url
+    return ''
 
 
 def _safe(value):

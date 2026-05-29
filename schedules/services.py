@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import timedelta
 
 from django.utils import timezone
 
@@ -37,11 +38,11 @@ def build_event_metadata_from_raw_data(raw_data):
 def build_generated_event_metadata(raw_data, schedule):
     metadata = build_event_metadata_from_raw_data(raw_data)
     metadata.update(getattr(schedule, 'metadata_json', None) or {})
-    if raw_data and raw_data.title:
-        metadata.setdefault('source_title', raw_data.title)
     if raw_data:
         raw_metadata = ensure_raw_identity_metadata(raw_data, save=False)
-        metadata.setdefault('raw_data_id', raw_data.id)
+        metadata['raw_data_id'] = raw_data.id
+        metadata['source_title'] = raw_data.title or ''
+        metadata['source_url'] = raw_data.source_url or ''
         metadata.setdefault('normalized_content_hash', raw_metadata.get('normalized_content_hash'))
         metadata.setdefault('ocr_text_hash', raw_metadata.get('ocr_text_hash'))
         metadata.setdefault('source_published_at', raw_metadata.get('source_published_at'))
@@ -68,6 +69,8 @@ def validate_generated_schedule(raw_data, schedule):
         warnings.append('non_positive_duration')
     if _is_generated_class_on_korean_holiday(schedule, parser):
         warnings.append('generated_class_on_korean_holiday')
+    if _is_timetable_source_period_mismatch(source_title, schedule):
+        warnings.append('source_title_period_mismatch')
 
     for warning in warnings:
         logger.warning(
@@ -82,7 +85,7 @@ def validate_generated_schedule(raw_data, schedule):
 
 
 def is_blocking_generated_schedule_warning(warning):
-    return warning in {'timetable_title_equals_source_title', 'non_positive_duration'}
+    return warning in {'timetable_title_equals_source_title', 'non_positive_duration', 'source_title_period_mismatch'}
 
 
 def _is_generated_class_on_korean_holiday(schedule, parser):
@@ -99,6 +102,36 @@ def _is_generated_class_on_korean_holiday(schedule, parser):
     except ValueError:
         return False
     return event_date in holidays
+
+
+def _is_timetable_source_period_mismatch(source_title, schedule):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    parser_type = metadata.get('parser_type') or metadata.get('parser')
+    if parser_type not in {'timetable_grid', 'ocr_timetable_grid'}:
+        return False
+    start_at = getattr(schedule, 'start_at', None)
+    if not start_at:
+        return False
+    source_text = str(source_title or '')
+    numbers = re.findall(r'\d{1,2}', source_text)
+    if len(numbers) < 2:
+        return False
+    event_date = timezone.localdate(start_at)
+    source_month = int(numbers[0])
+    source_week = int(numbers[1])
+    if event_date.month != source_month:
+        return True
+    expected_week = _month_week_index(event_date)
+    return expected_week is not None and expected_week != source_week
+
+
+def _month_week_index(event_date):
+    first_day = event_date.replace(day=1)
+    days_until_monday = (7 - first_day.weekday()) % 7
+    first_monday = first_day + timedelta(days=days_until_monday)
+    if event_date < first_monday:
+        return None
+    return ((event_date - first_monday).days // 7) + 1
 
 
 def filter_events_for_user_profile(events, profile):
