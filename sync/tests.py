@@ -830,6 +830,162 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.count(), 0)
         self.assertIn('fallback_week_timetable_blocked', raw_data.metadata_json['parser_warnings'])
 
+    def test_reparse_merges_same_raw_date_range_with_different_titles(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/merge-title',
+            title='[공지] 평가 안내',
+            raw_text='2026.05.20 월말 평가 안내',
+            metadata_json={'published_at': '2026-05-01'},
+        )
+        first_start = timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone())
+        first = ParsedSchedule(
+            title='월말 평가 안내',
+            description='first',
+            start_at=first_start,
+            end_at=first_start + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            metadata_json={'date_mapping_source': 'ocr_text_date', 'extracted_date_range': '2026-05-20..2026-05-21'},
+        )
+        second = ParsedSchedule(
+            title='월말 평가',
+            description='second',
+            start_at=first_start,
+            end_at=first_start + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            metadata_json={'date_mapping_source': 'ocr_text_date', 'extracted_date_range': '2026-05-20..2026-05-21'},
+        )
+        grid_debug = types.SimpleNamespace(metadata_json={}, review_required_candidates=[], as_dict=lambda: {})
+
+        with patch('sync.services.reparse_service.parse_schedule_candidates_with_debug', return_value=([first, second], grid_debug)):
+            summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        event = ScheduleEvent.objects.get()
+        raw_data.refresh_from_db()
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(summary.duplicate_skip_count, 1)
+        self.assertEqual(event.title, '월말 평가')
+        self.assertIn('월말 평가 안내', event.metadata_json['alias_titles'])
+        self.assertEqual(event.metadata_json['normalized_content_hash'], raw_data.metadata_json['normalized_content_hash'])
+        self.assertEqual(event.metadata_json['source_published_at'], '2026-05-01')
+        self.assertEqual(event.metadata_json['date_mapping_source'], 'ocr_text_date')
+        self.assertEqual(event.metadata_json['extracted_date_range'], '2026-05-20..2026-05-21')
+
+    def test_repair_month_confirm_merges_generated_duplicates_and_keeps_manual(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/repair-merge',
+            title='평가 공지',
+            raw_text='2026.05.20 월말 평가',
+            metadata_json={'normalized_content_hash': 'samehash', 'ocr_text_hash': 'ocrhash'},
+        )
+        start_at = timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone())
+        first = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말 평가 안내',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'normalized_content_hash': 'samehash',
+                'ocr_text_hash': 'ocrhash',
+                'extracted_date_range': '2026-05-20..2026-05-21',
+                'date_mapping_source': 'ocr_text_date',
+            },
+        )
+        second = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말 평가',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            source_id=str(raw_data.id),
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'normalized_content_hash': 'samehash',
+                'ocr_text_hash': 'ocrhash',
+                'extracted_date_range': '2026-05-20..2026-05-21',
+                'date_mapping_source': 'ocr_text_date',
+            },
+        )
+        manual = ScheduleEvent.objects.create(
+            title='월말 평가 개인 메모',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('repair_calendar_events', '--month', '2026-05', '--confirm', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('merge_candidates=', value)
+        self.assertIn('deleted_count=1', value)
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=raw_data).count(), 1)
+        kept = ScheduleEvent.objects.get(raw_data=raw_data)
+        self.assertEqual(kept.title, '월말 평가')
+        self.assertIn(first.id, kept.metadata_json['merged_from_event_ids'])
+        self.assertIn(second.id, kept.metadata_json['merged_from_event_ids'])
+        self.assertIn('월말 평가 안내', kept.metadata_json['alias_titles'])
+        self.assertTrue(ScheduleEvent.objects.filter(id=manual.id).exists())
+
+    def test_debug_month_reports_source_published_at_suspicious_event(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/source-date',
+            title='공지',
+            raw_text='작성일만 있는 공지',
+            metadata_json={'published_at': '2026-05-20'},
+        )
+        start_at = timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone())
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='의심 일정',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            source_id=str(raw_data.id),
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_published_at': '2026-05-20',
+                'date_mapping_source': 'unknown',
+            },
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--month', '2026-05', '--no-reparse', stdout=output)
+
+        self.assertIn('source_published_at_date', output.getvalue())
+
+    def test_body_date_takes_precedence_over_source_published_at(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/body-date-priority',
+            title='평가 공지',
+            raw_text='2026.05.20 월말 평가',
+            metadata_json={'published_at': '2026-05-01'},
+        )
+
+        summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(pk=raw_data.pk))
+
+        event = ScheduleEvent.objects.get()
+        self.assertEqual(summary.created_count, 1)
+        self.assertEqual(timezone.localdate(event.start_at).isoformat(), '2026-05-20')
+        self.assertEqual(event.metadata_json['source_published_at'], '2026-05-01')
+        self.assertNotEqual(timezone.localdate(event.start_at).isoformat(), event.metadata_json['source_published_at'])
+
     def test_online_week_date_range_expands_to_weekdays_except_holidays(self):
         schedules = parse_schedule_candidates(
             '2026.06.02~06.13 온라인 위크',

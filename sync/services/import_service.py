@@ -14,6 +14,11 @@ from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
+from sync.services.schedule_identity import (
+    choose_representative_title,
+    ensure_raw_identity_metadata,
+    generated_identity_key,
+)
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
@@ -185,6 +190,7 @@ def _import_raw_items(raw_items):
 
         item = _apply_ocr_pipeline(item, summary)
         raw_data = _create_raw_data(item)
+        ensure_raw_identity_metadata(raw_data, save=True)
 
         summary.raw_count += 1
         _increment_source_count(summary, raw_data.source_type)
@@ -225,7 +231,9 @@ def _import_raw_items(raw_items):
                 if blocking_warnings:
                     _mark_event_skipped(summary, 'validation')
                     continue
-                if find_existing_schedule_event(schedule, raw_data):
+                existing_event = find_existing_schedule_event(schedule, raw_data)
+                if existing_event:
+                    merge_schedule_candidate_into_event(existing_event, schedule, raw_data)
                     _mark_event_skipped(summary, 'duplicate')
                     continue
 
@@ -906,7 +914,34 @@ def find_existing_schedule_event(schedule, raw_data):
         raw_match = _first_matching_event(candidates.filter(raw_data=raw_data), normalized_title, schedule_track)
         if raw_match:
             return raw_match
+        if _is_identity_mergeable_schedule(schedule):
+            identity_match = _first_matching_identity_event(candidates.filter(raw_data=raw_data), schedule, raw_data)
+            if identity_match:
+                return identity_match
     return _first_matching_event(candidates, normalized_title, schedule_track)
+
+
+def merge_schedule_candidate_into_event(event, schedule, raw_data):
+    metadata = dict(event.metadata_json or {})
+    title = str(getattr(schedule, 'title', '') or '').strip()
+    existing_titles = [event.title, *(metadata.get('alias_titles') or [])]
+    if title and title not in existing_titles:
+        existing_titles.append(title)
+    representative = choose_representative_title(existing_titles)
+    metadata['alias_titles'] = sorted({value for value in existing_titles if value and value != representative})
+    merged_candidates = list(metadata.get('merged_from_candidates') or [])
+    merged_candidates.append(
+        {
+            'raw_data_id': raw_data.id,
+            'title': title,
+            'source_title': raw_data.title,
+        }
+    )
+    metadata['merged_from_candidates'] = merged_candidates[-20:]
+    if representative and representative != event.title:
+        event.title = representative
+    event.metadata_json = metadata
+    event.save(update_fields=['title', 'metadata_json'])
 
 
 def _first_matching_event(events, normalized_title, schedule_track):
@@ -917,6 +952,36 @@ def _first_matching_event(events, normalized_title, schedule_track):
             continue
         return event
     return None
+
+
+def _first_matching_identity_event(events, schedule, raw_data):
+    target_key = generated_identity_key(raw_data, schedule)
+    for event in events:
+        metadata = event.metadata_json or {}
+        event_key = (
+            event.source_id or str(event.raw_data_id or metadata.get('raw_data_id') or ''),
+            str(event.raw_data_id or metadata.get('raw_data_id') or ''),
+            metadata.get('normalized_content_hash') or '',
+            metadata.get('ocr_text_hash') or '',
+            metadata.get('extracted_date_range') or '',
+            event.event_type,
+            _event_track(event),
+        )
+        if event_key == target_key:
+            return event
+    return None
+
+
+def _is_identity_mergeable_schedule(schedule):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    parser_type = metadata.get('parser_type') or ''
+    parser = metadata.get('parser') or ''
+    grid_values = {'timetable_grid', 'calendar_grid', 'ocr_timetable_grid', 'ocr_calendar_grid', 'calendar_ocr_text'}
+    if parser_type in grid_values or parser in grid_values:
+        return False
+    mergeable_parser_types = {'', 'calendar_text', 'text_date', 'text_date_range', 'evaluation_notice'}
+    mergeable_parsers = {'', 'notice_text', 'notice_text_range', 'evaluation_notice_ocr'}
+    return parser_type in mergeable_parser_types and parser in mergeable_parsers
 
 
 def _schedule_track(schedule, raw_data):
