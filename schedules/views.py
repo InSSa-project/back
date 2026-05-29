@@ -10,7 +10,9 @@ from django.views.decorators.http import require_http_methods
 
 from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
-from .utils import normalize_schedule_display_title
+from sync.services.tracks import normalize_track_key
+
+from .utils import is_meaningless_schedule_title, normalize_schedule_display_title
 
 
 CANONICAL_TRACKS = {
@@ -96,6 +98,7 @@ def event_list(request):
         events = _filter_queryset_by_event_type(events, event_type)
     events = filter_events_for_user_profile(list(events), _user_profile(request.user))
     events = _filter_events_by_audience_params(events, request.GET)
+    events = [event for event in events if not _is_hidden_meaningless_event(event)]
 
     events = sorted(events, key=_event_list_sort_key)
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
@@ -275,7 +278,7 @@ def _serialize_event(event):
     end_at = timezone.localtime(event.end_at)
     raw_data = event.raw_data
     metadata = event.metadata_json or {}
-    source_title = metadata.get('source_title') or (raw_data.title if raw_data else None)
+    source_title = raw_data.title if raw_data else metadata.get('source_title')
     return {
         'id': event.id,
         'title': event.title,
@@ -292,6 +295,7 @@ def _serialize_event(event):
         'audience': metadata.get('audience', {}),
         'source_url': raw_data.source_url if raw_data else None,
         'source_title': source_title,
+        'track': _event_track(metadata, metadata.get('audience') or {}),
     }
 
 
@@ -367,7 +371,12 @@ def _matches_track_filter(event, metadata, audience, expected):
 
 
 def _event_track(metadata, audience):
-    return audience.get('track') or metadata.get('track')
+    return normalize_track_key(
+        metadata.get('track_key')
+        or audience.get('track_key')
+        or metadata.get('track')
+        or audience.get('track')
+    )
 
 
 def _is_common_event(event, metadata):
@@ -388,6 +397,9 @@ def _is_common_track(value):
 
 
 def _normalize_track(value):
+    normalized = normalize_track_key(value)
+    if normalized:
+        return normalized
     text = str(value or '').strip()
     if not text:
         return ''
@@ -397,6 +409,17 @@ def _normalize_track(value):
     aliases.update({key.lower().replace(' ', '').replace('_', ''): track for key, track in TRACK_ALIASES.items()})
     aliases.update({track: track for track in CANONICAL_TRACKS})
     return aliases.get(lowered, aliases.get(compact, lowered))
+
+
+def _is_hidden_meaningless_event(event):
+    metadata = event.metadata_json or {}
+    display_title = _event_display_title(event, metadata)
+    raw_title = metadata.get('raw_title') or event.title
+    if not is_meaningless_schedule_title(display_title):
+        return False
+    source_title = metadata.get('source_title') or (event.raw_data.title if event.raw_data_id and event.raw_data else '')
+    fallback_title = normalize_schedule_display_title(raw_title or source_title)
+    return is_meaningless_schedule_title(fallback_title)
 
 
 def _is_blank(value):

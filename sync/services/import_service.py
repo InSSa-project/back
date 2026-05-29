@@ -919,6 +919,7 @@ def find_existing_schedule_event(schedule, raw_data):
             identity_match = _first_matching_identity_event(candidates.filter(raw_data=raw_data), schedule, raw_data)
             if identity_match:
                 return identity_match
+        return None
     return _first_matching_event(candidates, normalized_title, schedule_track)
 
 

@@ -164,7 +164,7 @@ def _print_events_for_date(stdout, target_date):
             f'raw_data_id={event.raw_data_id or ""} '
             f'source_type={_safe(event.source_type)} '
             f'source_url={_safe(_event_source_url(event))} '
-            f'source_title={_safe(metadata.get("source_title"))} '
+            f'source_title={_safe((event.raw_data.title if event.raw_data_id and event.raw_data else "") or metadata.get("source_title"))} '
             f'raw_title={_safe(metadata.get("raw_title"))} '
             f'parser_type={_safe(metadata.get("parser_type"))} '
             f'date_mapping_source={_safe(metadata.get("date_mapping_source"))} '
@@ -188,16 +188,14 @@ def _print_event_source_mapping(stdout, event_id):
     stdout.write(f'raw_data_id={event.raw_data_id or metadata.get("raw_data_id") or ""}')
     stdout.write(f'source_type={_safe(event.source_type)}')
     stdout.write(f'source_url={_safe(_event_source_url(event))}')
-    stdout.write(f'source_title={_safe(metadata.get("source_title") or (raw_data.title if raw_data else ""))}')
+    stdout.write(f'source_title={_safe((raw_data.title if raw_data else "") or metadata.get("source_title"))}')
     stdout.write(f'raw_title={_safe(metadata.get("raw_title"))}')
     stdout.write(f'parser_type={_safe(metadata.get("parser_type"))}')
+    stdout.write(f'date_mapping_source={_safe(metadata.get("date_mapping_source"))}')
     stdout.write(f'track={_safe(metadata.get("track"))}')
 
 
 def _event_source_url(event):
-    metadata = event.metadata_json or {}
-    if metadata.get('source_url'):
-        return metadata.get('source_url')
     if event.raw_data_id and event.raw_data:
         return event.raw_data.source_url
     return ''
