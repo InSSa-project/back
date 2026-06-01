@@ -11,6 +11,7 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     extracted_date_range_for_schedule,
 )
+from sync.services.tracks import normalize_track_key
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -38,6 +39,8 @@ def build_event_metadata_from_raw_data(raw_data):
 def build_generated_event_metadata(raw_data, schedule):
     metadata = build_event_metadata_from_raw_data(raw_data)
     metadata.update(getattr(schedule, 'metadata_json', None) or {})
+    if metadata.get('track') and not metadata.get('track_key'):
+        metadata['track_key'] = normalize_track_key(metadata.get('track'))
     if raw_data:
         raw_metadata = ensure_raw_identity_metadata(raw_data, save=False)
         metadata['raw_data_id'] = raw_data.id

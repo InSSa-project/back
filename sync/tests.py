@@ -650,6 +650,73 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('fallback_week', value)
         self.assertIn('월말 평가', value)
 
+    def test_debug_schedule_events_month_outputs_quality_buckets(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/debug-quality',
+            title='평가 안내',
+            raw_text='월말평가',
+        )
+        start_at = timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone())
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말평가',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_url': raw_data.source_url,
+                'source_title': raw_data.title,
+                'track': 'Python',
+                'track_key': 'python',
+                'parser_type': 'evaluation_notice',
+            },
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='월말평가',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='exam',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_url': 'https://example.com/wrong',
+                'source_title': '다른 공지',
+                'track': 'Python',
+                'track_key': 'python',
+                'parser_type': 'evaluation_notice',
+            },
+        )
+        ScheduleEvent.objects.create(
+            title='DB',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='study',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--month', '2026-05', '--no-reparse', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('track_event_counts=', value)
+        self.assertIn('python:2', value)
+        self.assertIn('common:1', value)
+        self.assertIn('evaluation_missing_tracks=', value)
+        self.assertIn('java_non_major', value)
+        self.assertIn('source_mismatches=', value)
+        self.assertIn('source_url,source_title', value)
+        self.assertIn('meaningless_titles=', value)
+        self.assertIn('DB', value)
+        self.assertIn('duplicate_candidates=', value)
+        self.assertIn('월말평가:python', value)
+
     def test_debug_schedule_events_month_reports_empty_weekdays(self):
         output = StringIO()
 

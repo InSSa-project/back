@@ -18,6 +18,8 @@ TRACK_ALIASES = {
     'Java비전공': 'java_non_major',
     'Java(비전공)': 'java_non_major',
     '비전공': 'java_non_major',
+    'java': 'java_major',
+    'Java': 'java_major',
     'java전공': 'java_major',
     'Java전공': 'java_major',
     'Java(전공)': 'java_major',

@@ -10,6 +10,7 @@ from django.views.decorators.http import require_http_methods
 
 from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
+from sync.models import RawSsafyData
 from sync.services.tracks import normalize_track_key
 
 from .utils import is_meaningless_schedule_title, normalize_schedule_display_title
@@ -276,8 +277,9 @@ def _parse_patch_datetime(value):
 def _serialize_event(event):
     start_at = timezone.localtime(event.start_at)
     end_at = timezone.localtime(event.end_at)
-    raw_data = event.raw_data
     metadata = event.metadata_json or {}
+    raw_data = _event_raw_data(event, metadata)
+    raw_data_id = raw_data.id if raw_data else (metadata.get('raw_data_id') or None)
     source_title = raw_data.title if raw_data else metadata.get('source_title')
     return {
         'id': event.id,
@@ -290,6 +292,7 @@ def _serialize_event(event):
         'is_important': _is_important_event(event),
         'event_type': event.event_type,
         'source_type': event.source_type,
+        'raw_data_id': raw_data_id,
         'metadata': metadata,
         'metadata_json': metadata,
         'audience': metadata.get('audience', {}),
@@ -297,6 +300,18 @@ def _serialize_event(event):
         'source_title': source_title,
         'track': _event_track(metadata, metadata.get('audience') or {}),
     }
+
+
+def _event_raw_data(event, metadata):
+    if event.raw_data_id:
+        return event.raw_data
+    metadata_raw_data_id = metadata.get('raw_data_id')
+    if not metadata_raw_data_id:
+        return None
+    try:
+        return RawSsafyData.objects.filter(pk=metadata_raw_data_id).first()
+    except (TypeError, ValueError):
+        return None
 
 
 def _event_display_title(event, metadata):

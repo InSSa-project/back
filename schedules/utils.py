@@ -25,7 +25,19 @@ MEANINGLESS_TITLE_COMPACTS = {
     'JS',
     '&A',
     'A',
+    'SSAFY',
+    'SAMSUNG',
+    'SW',
+    'AI',
+    'AIACADEMY',
+    'SAMSUNGSWAIACADEMY',
+    'FOR',
+    'YOUTH',
+    'FORYOUTH',
 }
+DATE_FRAGMENT_PATTERN = re.compile(
+    r'^\s*(?:\d{1,2}\s*(?:[./-]\s*\d{1,2}|월\s*\d{0,2}\s*일?|일)|\d{1,2}\s*월)\s*$'
+)
 
 
 def normalize_event_title_for_dedupe(title):
@@ -79,7 +91,11 @@ def is_meaningless_schedule_title(title):
         return True
     if re.fullmatch(r'\d{1,2}\s*(?::\s*\d{2})?\s*(?:-|~|to|부터|부터\s*)\s*\d{1,2}\s*(?::\s*\d{2})?', text, re.I):
         return True
+    if DATE_FRAGMENT_PATTERN.fullmatch(text):
+        return True
     if compact in MEANINGLESS_TITLE_COMPACTS:
+        return True
+    if _looks_like_logo_or_slogan_fragment(compact):
         return True
     if len(compact) <= 2 and not _is_allowed_short_title(compact):
         return True
@@ -128,6 +144,14 @@ def _is_allowed_short_title(compact):
         '중식',
         '설날',
     }
+
+
+def _looks_like_logo_or_slogan_fragment(compact):
+    return compact in {
+        'SAMSUNGSW',
+        'SWAIA',
+        'SWAIACADEMY',
+    } or compact.startswith('SAMSUNGSWAI') or compact.endswith('FORYOUTH')
 
 
 def _looks_like_timetable_parser(metadata):

@@ -988,8 +988,8 @@ def _is_identity_mergeable_schedule(schedule):
 
 def _schedule_track(schedule, raw_data):
     metadata = getattr(schedule, 'metadata_json', None) or {}
-    if metadata.get('track'):
-        return _normalize_track_value(metadata.get('track'))
+    if metadata.get('track_key') or metadata.get('track'):
+        return _normalize_track_value(metadata.get('track_key') or metadata.get('track'))
     raw_metadata = raw_data.metadata_json or {}
     audience = raw_metadata.get('audience') or {}
     return _normalize_track_value(
@@ -1002,7 +1002,9 @@ def _schedule_track(schedule, raw_data):
 def _event_track(event):
     metadata = event.metadata_json or {}
     audience = metadata.get('audience') or {}
-    return _normalize_track_value(metadata.get('track') or audience.get('track') or _infer_track_from_text(event.title))
+    return _normalize_track_value(
+        metadata.get('track_key') or metadata.get('track') or audience.get('track_key') or audience.get('track') or _infer_track_from_text(event.title)
+    )
 
 
 def _normalize_track_value(value):
