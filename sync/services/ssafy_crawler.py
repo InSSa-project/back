@@ -24,6 +24,18 @@ IGNORED_OCR_IMAGE_KEYWORDS = (
     'icon',
     'banner',
 )
+ACADEMIC_TOGGLE_SELECTOR = (
+    'table.accordian-list td.btn-area button, '
+    'table.accordion-list td.btn-area button, '
+    '.accordion button, '
+    '.accordian button, '
+    '[aria-expanded][aria-controls], '
+    'button[data-toggle*="collapse"], '
+    'a[data-toggle*="collapse"]'
+)
+ACADEMIC_TOGGLE_WAIT_MS = 300
+LAZY_IMAGE_ATTRIBUTES = ('src', 'data-src', 'data-lazy-src', 'data-original', 'data-url')
+BACKGROUND_IMAGE_PATTERN = re.compile(r'url\(\s*([\'"]?)(?P<url>.*?)(?:\1)\s*\)', flags=re.IGNORECASE)
 EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평가', '평가 안내', '1학기 평가')
 EVALUATION_NOTICE_KEYWORDS = EVALUATION_NOTICE_KEYWORDS + (
     '과목월말평가',
@@ -206,11 +218,25 @@ def load_ssafy_authenticated_documents(
                 learning_material_url=learning_material_url,
                 event_url=event_url,
             ):
+                source_started_at = _source_log_timestamp()
+                source_started_monotonic = time.monotonic()
                 env_name = SOURCE_LIST_URL_ENV_NAMES.get(source_type, '')
+                _record_collection_debug(
+                    f'source_run_start source_type={source_type} started_at={source_started_at} '
+                    f'env_var={env_name} url={list_url or "-"}',
+                    level='warning',
+                )
                 if not list_url:
                     _record_collection_debug(
                         f'skipped_source={source_type} reason=missing_url env_var={env_name}',
                         level='warning',
+                    )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='skipped',
+                        collected_count=0,
                     )
                     continue
                 _record_collection_debug(f'source_url source_type={source_type} env_var={env_name} url={list_url}')
@@ -224,11 +250,26 @@ def load_ssafy_authenticated_documents(
                     )
                     notices.extend(collected)
                     _record_collection_debug(f'collected_source={source_type} count={len(collected)}')
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='success',
+                        collected_count=len(collected),
+                    )
                 except SsafySessionExpiredError as exc:
                     exc.collected_items = notices
                     _record_collection_debug(
                         f'failed_source={source_type} url={list_url} error_reason=session_expired error={exc}',
                         level='warning',
+                    )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='failed',
+                        collected_count=0,
+                        error_count=1,
                     )
                     raise exc
                 except SsafySourceTimeoutError as exc:
@@ -236,11 +277,27 @@ def load_ssafy_authenticated_documents(
                         f'failed_source={source_type} url={list_url} error_reason=timeout error={exc}',
                         level='warning',
                     )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='timeout',
+                        collected_count=0,
+                        error_count=1,
+                    )
                     continue
                 except Exception as exc:
                     _record_collection_debug(
                         f'failed_source={source_type} url={list_url} error={exc}',
                         level='warning',
+                    )
+                    _record_source_run_end(
+                        source_type=source_type,
+                        started_at=source_started_at,
+                        started_monotonic=source_started_monotonic,
+                        status='failed',
+                        collected_count=0,
+                        error_count=1,
                     )
             context.close()
             browser.close()
@@ -283,6 +340,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
     for page_index in range(1, max_pages + 1):
         _raise_if_source_timed_out(source_type, source_deadline)
         _open_list_page(page, list_url, current_url, requested_page)
+        _prepare_academic_page_for_collection(page, source_type, current_url)
         session_reason = _session_expired_reason(page, login_url=login_url)
         if session_reason:
             _record_source_page_debug(
@@ -475,6 +533,27 @@ def _source_deadline():
     except ValueError:
         seconds = 0
     return time.monotonic() + seconds if seconds > 0 else 0
+
+
+def _source_log_timestamp():
+    return datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def _record_source_run_end(
+    source_type,
+    started_at,
+    started_monotonic,
+    status,
+    collected_count,
+    error_count=0,
+):
+    _record_collection_debug(
+        f'source_run_end source_type={source_type} started_at={started_at} '
+        f'ended_at={_source_log_timestamp()} elapsed_seconds={time.monotonic() - started_monotonic:.3f} '
+        f'status={status} collected_count={collected_count} saved_count=pending '
+        f'skipped_count=pending error_count={error_count}',
+        level='warning',
+    )
 
 
 def _raise_if_source_timed_out(source_type, deadline):
@@ -851,6 +930,7 @@ def _looks_like_login_title(final_url, page_title):
 
 def fetch_authenticated_detail(page, detail_url, source_type='notice', list_title='', login_url=None):
     page.goto(detail_url, wait_until='networkidle')
+    _prepare_academic_page_for_collection(page, source_type, detail_url)
     session_reason = _session_expired_reason(page, login_url=login_url)
     if session_reason:
         _record_source_page_debug(
@@ -889,8 +969,20 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
 
     raw_html, raw_text = _clean_detail_html_and_text(content_node)
     image_urls = extract_image_urls_from_html(raw_html, detail_url)
+    if source_type == 'academic_rule':
+        reply_image_urls = extract_academic_rule_reply_image_urls_from_html(str(soup), detail_url)
+        if reply_image_urls:
+            image_urls = reply_image_urls
     if not image_urls:
         image_urls = extract_image_urls_from_html(str(soup), detail_url)
+    if source_type == 'academic_rule':
+        content_image_urls = extract_image_urls_from_html(raw_html, detail_url)
+        _record_collection_debug(
+            f'academic_collected_images source_type={source_type} content_image_count={len(content_image_urls)} '
+            f'metadata_image_count={len(image_urls)} ocr_target_image_count={len(image_urls)} '
+            f'urls={_format_debug_urls(image_urls)}',
+            level='warning',
+        )
     notice_id = _guess_notice_id(detail_url)
     published_at = _extract_published_at(soup)
     is_evaluation_notice = _looks_like_evaluation_notice(f'{title} {raw_text} {raw_html}')
@@ -987,7 +1079,7 @@ def _detail_content_score(text, raw_html):
 
 
 def _save_detail_debug_html(soup, source_type, detail_url):
-    if str(os.getenv('SSAFY_CRAWLER_DEBUG_HTML', '')).lower() not in {'1', 'true', 'yes', 'on'}:
+    if not _crawler_debug_html_enabled():
         return
     count = _DETAIL_DEBUG_COUNTS.get(source_type, 0)
     if count >= 3:
@@ -1180,6 +1272,136 @@ def _candidate_is_accessible(page, url, source_type, login_url=None):
         return False
 
 
+def _prepare_academic_page_for_collection(page, source_type, source_url):
+    if source_type != 'academic_rule':
+        return
+
+    before_html = _page_content(page)
+    before_urls = extract_image_urls_from_html(before_html, source_url)
+    toggle_count, opened_toggle_count = _open_academic_toggles(page, source_type)
+    after_html = _page_content(page)
+    after_urls = extract_image_urls_from_html(after_html, source_url)
+    reply_image_urls = extract_academic_rule_reply_image_urls_from_html(after_html, source_url)
+    reply_row_count = _academic_rule_reply_row_count(after_html)
+    _record_collection_debug(
+        f'academic_toggle_images source_type={source_type} toggle_count={toggle_count} '
+        f'opened_toggle_count={opened_toggle_count} reply_row_count={reply_row_count} '
+        f'reply_image_count={len(reply_image_urls)} page_total_image_count={len(after_urls)} '
+        f'content_image_count={len(reply_image_urls)} before_count={len(before_urls)} after_count={len(after_urls)} '
+        f'iframe_count={_page_iframe_count(page)} urls={_format_debug_urls(after_urls)}',
+        level='warning',
+    )
+    if _crawler_debug_html_enabled():
+        debug_info = _save_crawler_debug_page(page, source_type, 'academic_toggles_opened')
+        _record_collection_debug(
+            f'debug_saved source_type={source_type} reason=academic_toggles_opened '
+            f'html={debug_info.get("html_path", "")} screenshot={debug_info.get("screenshot_path", "")}'
+        )
+
+
+def _open_academic_toggles(page, source_type):
+    try:
+        toggle_buttons = page.locator(ACADEMIC_TOGGLE_SELECTOR)
+        toggle_count = toggle_buttons.count()
+    except Exception as exc:
+        _record_collection_debug(
+            f'academic_toggle_scan_failed source_type={source_type} selector={ACADEMIC_TOGGLE_SELECTOR} error={exc}',
+            level='warning',
+        )
+        return 0, 0
+
+    opened_toggle_count = 0
+    for index in range(toggle_count):
+        button = toggle_buttons.nth(index)
+        try:
+            if _academic_toggle_is_open(button):
+                continue
+            button.click()
+            opened_toggle_count += 1
+            page.wait_for_timeout(ACADEMIC_TOGGLE_WAIT_MS)
+        except Exception as exc:
+            _record_collection_debug(
+                f'academic_toggle_failed source_type={source_type} index={index} '
+                f'selector={ACADEMIC_TOGGLE_SELECTOR} error={exc}',
+                level='warning',
+            )
+    return toggle_count, opened_toggle_count
+
+
+def _academic_toggle_is_open(button):
+    aria_expanded = _locator_attribute(button, 'aria-expanded').lower()
+    if aria_expanded:
+        return aria_expanded == 'true'
+
+    try:
+        button_state = button.evaluate(
+            """button => {
+                const classNames = button.innerHTML || '';
+                const label = (button.textContent || '').trim();
+                if (classNames.includes('accordian-arrow-down') || label.includes('열기')) {
+                    return 'closed';
+                }
+                if (classNames.includes('accordian-arrow-up') || label.includes('닫기')) {
+                    return 'open';
+                }
+                return '';
+            }"""
+        )
+        if button_state:
+            return button_state == 'open'
+    except Exception:
+        pass
+
+    class_names = ' '.join(
+        _locator_attribute(button, attribute)
+        for attribute in ('class', 'data-state')
+    ).lower()
+    if any(marker in class_names.split() for marker in ('active', 'expanded', 'open', 'opened', 'is-active')):
+        return True
+
+    try:
+        return bool(
+            button.evaluate(
+                """button => {
+                    const row = button.closest('tr');
+                    const reply = row && row.nextElementSibling;
+                    if (!reply || !reply.classList.contains('reply')) {
+                        return false;
+                    }
+                    const style = window.getComputedStyle(reply);
+                    return !reply.hidden && style.display !== 'none' && style.visibility !== 'hidden';
+                }"""
+            )
+        )
+    except Exception:
+        return False
+
+
+def _locator_attribute(locator, name):
+    try:
+        return (locator.get_attribute(name) or '').strip()
+    except Exception:
+        return ''
+
+
+def _page_iframe_count(page):
+    try:
+        return page.locator('iframe').count()
+    except Exception:
+        return 0
+
+
+def _format_debug_urls(image_urls, limit=20):
+    if not image_urls:
+        return '-'
+    urls = ','.join(image_urls[:limit])
+    return f'{urls},...' if len(image_urls) > limit else urls
+
+
+def _crawler_debug_html_enabled():
+    return str(os.getenv('SSAFY_CRAWLER_DEBUG_HTML', '')).lower() in {'1', 'true', 'yes', 'on'}
+
+
 def extract_image_urls_from_html(raw_html, source_url):
     if not raw_html:
         return []
@@ -1187,18 +1409,57 @@ def extract_image_urls_from_html(raw_html, source_url):
     soup = BeautifulSoup(raw_html, 'html.parser')
     image_urls = []
     seen = set()
-    for image in soup.select('img[src]'):
-        src = image.get('src', '').strip()
-        if not src or src.startswith(('data:', 'javascript:', 'mailto:', '#')):
-            continue
-        absolute_url = urljoin(source_url, src)
-        if _is_ignored_ocr_image_url(absolute_url):
-            continue
-        if absolute_url in seen:
-            continue
-        seen.add(absolute_url)
-        image_urls.append(absolute_url)
+    for image in soup.select('img'):
+        for attribute in LAZY_IMAGE_ATTRIBUTES:
+            _append_image_url(image_urls, seen, image.get(attribute, ''), source_url)
+        _append_srcset_image_urls(image_urls, seen, image.get('srcset', ''), source_url)
+        _append_srcset_image_urls(image_urls, seen, image.get('data-srcset', ''), source_url)
+    for styled_node in soup.select('[style]'):
+        for background_url in _extract_background_image_urls(styled_node.get('style', '')):
+            _append_image_url(image_urls, seen, background_url, source_url)
     return image_urls
+
+
+def extract_academic_rule_reply_image_urls_from_html(raw_html, source_url):
+    if not raw_html:
+        return []
+
+    soup = BeautifulSoup(raw_html, 'html.parser')
+    image_urls = []
+    seen = set()
+    for image in soup.select('tr.reply img'):
+        for attribute in LAZY_IMAGE_ATTRIBUTES:
+            _append_image_url(image_urls, seen, image.get(attribute, ''), source_url)
+        _append_srcset_image_urls(image_urls, seen, image.get('srcset', ''), source_url)
+        _append_srcset_image_urls(image_urls, seen, image.get('data-srcset', ''), source_url)
+    return image_urls
+
+
+def _academic_rule_reply_row_count(raw_html):
+    if not raw_html:
+        return 0
+    return len(BeautifulSoup(raw_html, 'html.parser').select('tr.reply'))
+
+
+def _append_srcset_image_urls(image_urls, seen, srcset, source_url):
+    for candidate in (srcset or '').split(','):
+        image_url = candidate.strip().split(' ', 1)[0]
+        _append_image_url(image_urls, seen, image_url, source_url)
+
+
+def _extract_background_image_urls(style):
+    return [match.group('url').strip() for match in BACKGROUND_IMAGE_PATTERN.finditer(style or '')]
+
+
+def _append_image_url(image_urls, seen, image_url, source_url):
+    image_url = str(image_url or '').strip()
+    if not image_url or image_url.startswith(('data:', 'javascript:', 'mailto:', '#')):
+        return
+    absolute_url = urljoin(source_url, image_url)
+    if _is_ignored_ocr_image_url(absolute_url) or absolute_url in seen:
+        return
+    seen.add(absolute_url)
+    image_urls.append(absolute_url)
 
 
 def _is_ignored_ocr_image_url(image_url):

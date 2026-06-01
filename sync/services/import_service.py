@@ -6,10 +6,21 @@ from django.db import transaction
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
-from schedules.services import build_event_metadata_from_raw_data
+from schedules.services import (
+    build_generated_event_metadata,
+    is_blocking_generated_schedule_warning,
+    validate_generated_schedule,
+)
+from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
+from sync.services.schedule_identity import (
+    choose_representative_title,
+    ensure_raw_identity_metadata,
+    generated_identity_key,
+)
+from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key, track_key_from_text
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
@@ -43,6 +54,10 @@ class ImportSummary:
     ocr_text_length: int = 0
     parse_candidate_count: int = 0
     event_skipped_count: int = 0
+    duplicate_event_skipped_count: int = 0
+    wrapper_event_skipped_count: int = 0
+    validation_event_skipped_count: int = 0
+    empty_title_event_skipped_count: int = 0
     excluded_count: int = 0
     keyword_candidate_count: int = 0
     saved_evaluation_notice_count: int = 0
@@ -50,7 +65,11 @@ class ImportSummary:
     real_content_count: int = 0
     image_found_count: int = 0
     menu_only_content_count: int = 0
+    updated_count: int = 0
     scanned_by_source: dict = field(default_factory=dict)
+    skipped_by_source: dict = field(default_factory=dict)
+    updated_by_source: dict = field(default_factory=dict)
+    failed_by_source: dict = field(default_factory=dict)
     excluded_by_source: dict = field(default_factory=dict)
     keyword_candidates_by_source: dict = field(default_factory=dict)
     excluded_items: list = field(default_factory=list)
@@ -118,15 +137,20 @@ def run_notice_import(mode=None):
             )
             if debug_message:
                 message = f'{message}, crawler_debug={debug_message}'
+            message = _append_source_run_logs(message, partial_summary, crawler_debug)
             return _mark_job_partial_success(job_log, message, partial_summary)
-        return _mark_job_failed(job_log, message, summary=partial_summary)
+        return _mark_job_failed(
+            job_log,
+            _append_source_run_logs(message, partial_summary, crawler_debug),
+            summary=partial_summary,
+        )
     except (SsafyCrawlerError, ValueError) as exc:
         crawler_debug = get_last_collection_debug()
         debug_message = _format_crawler_debug(crawler_debug)
         message = f'{CRAWL_FAILED_MESSAGE} {exc}'
         if debug_message:
             message = f'{message}, crawler_debug={debug_message}'
-        return _mark_job_failed(job_log, message)
+        return _mark_job_failed(job_log, _append_source_run_logs(message, None, crawler_debug))
     except Exception as exc:
         return _mark_job_failed(job_log, str(exc))
 
@@ -143,6 +167,7 @@ def _import_raw_items(raw_items):
             summary.skipped_count += 1
             summary.excluded_count += 1
             excluded_source = excluded_debug['source_type']
+            _increment_skipped_source(summary, excluded_source)
             summary.excluded_by_source[excluded_source] = summary.excluded_by_source.get(excluded_source, 0) + 1
             if excluded_debug['keyword_candidate']:
                 summary.keyword_candidate_count += 1
@@ -162,9 +187,12 @@ def _import_raw_items(raw_items):
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         existing_raw_data = _find_existing_raw_data(item)
         if existing_raw_data:
+            if _update_existing_academic_rule_images(existing_raw_data, item, summary):
+                continue
             summary.raw_data_ids.append(existing_raw_data.id)
             summary.skipped_count += 1
             summary.duplicate_count += 1
+            _increment_skipped_source(summary, item.get('source_type', 'notice'))
             summary.duplicate_items.append(
                 f'brdItmSeq={notice_id or "-"} title={item.get("title", "")} '
                 f'source_url={item.get("source_url", "")} existing_id={existing_raw_data.id}'
@@ -173,6 +201,7 @@ def _import_raw_items(raw_items):
 
         item = _apply_ocr_pipeline(item, summary)
         raw_data = _create_raw_data(item)
+        ensure_raw_identity_metadata(raw_data, save=True)
         summary.raw_data_ids.append(raw_data.id)
 
         summary.raw_count += 1
@@ -195,9 +224,29 @@ def _import_raw_items(raw_items):
                 continue
 
             for schedule in parsed_schedules:
-                if find_existing_schedule_event(schedule, raw_data):
-                    summary.skipped_count += 1
-                    summary.event_skipped_count += 1
+                title = str(getattr(schedule, 'title', '') or '').strip()
+                if not title:
+                    _store_parser_warning(raw_data, ['empty_schedule_title'])
+                    _mark_event_skipped(summary, 'empty_title')
+                    continue
+                if _should_skip_fallback_week_timetable(schedule):
+                    _store_parser_warning(raw_data, ['fallback_week_timetable_blocked'])
+                    _mark_event_skipped(summary, 'validation')
+                    continue
+                warnings = validate_generated_schedule(raw_data, schedule)
+                if warnings:
+                    _store_parser_warning(raw_data, warnings)
+                blocking_warnings = [warning for warning in warnings if is_blocking_generated_schedule_warning(warning)]
+                if 'timetable_title_equals_source_title' in blocking_warnings:
+                    _mark_event_skipped(summary, 'wrapper')
+                    continue
+                if blocking_warnings:
+                    _mark_event_skipped(summary, 'validation')
+                    continue
+                existing_event = find_existing_schedule_event(schedule, raw_data)
+                if existing_event:
+                    merge_schedule_candidate_into_event(existing_event, schedule, raw_data)
+                    _mark_event_skipped(summary, 'duplicate')
                     continue
 
                 ScheduleEvent.objects.create(
@@ -210,7 +259,7 @@ def _import_raw_items(raw_items):
                     event_type=schedule.event_type,
                     source_type=raw_data.source_type,
                     source_id=str(raw_data.pk),
-                    metadata_json=build_event_metadata_from_raw_data(raw_data),
+                    metadata_json=build_generated_event_metadata(raw_data, schedule),
                 )
                 summary.event_count += 1
 
@@ -218,6 +267,7 @@ def _import_raw_items(raw_items):
             raw_data.save(update_fields=['status', 'metadata_json'])
         except Exception as exc:
             summary.failed_count += 1
+            summary.failed_by_source[raw_data.source_type] = summary.failed_by_source.get(raw_data.source_type, 0) + 1
             raw_data.status = RawSsafyData.STATUS_FAILED
             raw_data.save(update_fields=['status', 'metadata_json'])
             summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
@@ -231,6 +281,14 @@ def _increment_source_count(summary, source_type):
         summary.notice_count += 1
     elif source_type == 'academic_rule':
         summary.academic_rule_count += 1
+
+
+def _increment_skipped_source(summary, source_type):
+    summary.skipped_by_source[source_type] = summary.skipped_by_source.get(source_type, 0) + 1
+
+
+def _increment_updated_source(summary, source_type):
+    summary.updated_by_source[source_type] = summary.updated_by_source.get(source_type, 0) + 1
 
 
 def _increment_collected_source_count(summary, source_type):
@@ -251,11 +309,37 @@ def _mark_no_schedule(raw_data, summary):
 def _store_review_required_candidates(raw_data, grid_debug):
     metadata = dict(raw_data.metadata_json or {})
     metadata.update(getattr(grid_debug, 'metadata_json', {}) or {})
+    metadata['ocr_parse_debug'] = getattr(grid_debug, 'as_dict', lambda: {})()
     review_required_candidates = grid_debug.review_required_candidates or []
     metadata['review_required_candidate_count'] = len(review_required_candidates)
     metadata['review_required_candidates'] = review_required_candidates
     raw_data.metadata_json = metadata
 
+def _store_parser_warning(raw_data, warnings):
+    metadata = dict(raw_data.metadata_json or {})
+    metadata['parser_warnings'] = list(dict.fromkeys([*(metadata.get('parser_warnings') or []), *warnings]))
+    raw_data.metadata_json = metadata
+
+
+def _mark_event_skipped(summary, reason):
+    summary.skipped_count += 1
+    summary.event_skipped_count += 1
+    if reason == 'duplicate':
+        summary.duplicate_event_skipped_count += 1
+    elif reason == 'wrapper':
+        summary.wrapper_event_skipped_count += 1
+    elif reason == 'validation':
+        summary.validation_event_skipped_count += 1
+    elif reason == 'empty_title':
+        summary.empty_title_event_skipped_count += 1
+
+
+def _should_skip_fallback_week_timetable(schedule):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    if metadata.get('allow_fallback_week'):
+        return False
+    parser_type = metadata.get('parser_type') or metadata.get('parser')
+    return parser_type in {'timetable_grid', 'ocr_timetable_grid'} and metadata.get('date_mapping_source') == 'fallback_week'
 
 def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats=None):
     message = (
@@ -267,7 +351,9 @@ def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats
         f'academic_rule_count={summary.academic_rule_count}, '
         f'no_schedule_candidates={summary.no_schedule_count}, '
         f'image_count={summary.image_count}, '
+        f'metadata_image_count={summary.image_count}, '
         f'ocr_processed_count={summary.ocr_processed_count}, '
+        f'ocr_target_image_count={summary.ocr_processed_count}, '
         f'ocr_text_length={summary.ocr_text_length}, '
         f'parse_candidate_count={summary.parse_candidate_count}, '
         f'ocr_failed_count={summary.ocr_failed_count}, '
@@ -292,7 +378,8 @@ def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats
         f'real_content_count={summary.real_content_count}, '
         f'image_found_count={summary.image_found_count}, '
         f'menu_only_content_count={summary.menu_only_content_count}, '
-        f'saved_count={summary.raw_count}'
+        f'saved_count={summary.raw_count}, '
+        f'updated_count={summary.updated_count}'
     )
     if rag_stats:
         message = (
@@ -304,6 +391,13 @@ def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats
         )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
+        message = (
+            f'{message}, event_skip_reasons='
+            f'duplicate:{summary.duplicate_event_skipped_count}|'
+            f'wrapper:{summary.wrapper_event_skipped_count}|'
+            f'validation:{summary.validation_event_skipped_count}|'
+            f'empty_title:{summary.empty_title_event_skipped_count}'
+        )
     if summary.excluded_count:
         message = f'{message}, excluded_count={summary.excluded_count}'
     if summary.excluded_items:
@@ -314,6 +408,9 @@ def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats
     if summary.collected_source_counts:
         collected_detail = ','.join(f'{key}:{value}' for key, value in sorted(summary.collected_source_counts.items()))
         message = f'{message}, collected_source_counts={collected_detail}'
+    if summary.updated_by_source:
+        updated_detail = ','.join(f'{key}:{value}' for key, value in sorted(summary.updated_by_source.items()))
+        message = f'{message}, updated_by_source={updated_detail}'
     if summary.no_schedule_by_type:
         no_schedule_detail = ','.join(
             f'{source_type}:{count}' for source_type, count in sorted(summary.no_schedule_by_type.items())
@@ -326,7 +423,7 @@ def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats
     debug_message = _format_crawler_debug(crawler_debug)
     if debug_message:
         message = f'{message}, crawler_debug={debug_message}'
-    return message
+    return _append_source_run_logs(message, summary, crawler_debug)
 
 
 def _ingest_raw_data_to_rag(raw_data_ids):
@@ -557,6 +654,97 @@ def _format_crawler_debug(crawler_debug):
     return ' | '.join(str(item) for item in crawler_debug[:20])
 
 
+def _append_source_run_logs(message, summary, crawler_debug):
+    source_run_logs = _format_source_run_logs(summary, crawler_debug)
+    if not source_run_logs:
+        return message
+    return f'{message}, source_run_logs={source_run_logs}'
+
+
+def _format_source_run_logs(summary, crawler_debug):
+    source_runs = _source_run_debug_by_type(crawler_debug)
+    if not source_runs:
+        return ''
+
+    source_types = sorted(set(source_runs) | set((summary.scanned_by_source if summary else {}) or {}))
+    logs = []
+    for source_type in source_types:
+        source_run = source_runs.get(source_type, {})
+        failure = _failed_source_from_debug(crawler_debug, source_type)
+        error_count = _int_debug_field(source_run.get('error_count')) + (
+            (summary.failed_by_source.get(source_type, 0) if summary else 0)
+        )
+        if failure and not error_count:
+            error_count = 1
+        logs.append(
+            f'source_type={source_type}:started_at={source_run.get("started_at", "-")}:'
+            f'ended_at={source_run.get("ended_at", "-")}:'
+            f'elapsed_seconds={source_run.get("elapsed_seconds", "-")}:'
+            f'status={source_run.get("status", "failed" if failure else "unknown")}:'
+            f'collected_count={source_run.get("collected_count", _source_scanned_count(summary, source_type))}:'
+            f'saved_count={_source_saved_count(summary, source_type)}:'
+            f'updated_count={_source_updated_count(summary, source_type)}:'
+            f'skipped_count={_source_skipped_count(summary, source_type)}:'
+            f'error_count={error_count}:'
+            f'error={failure.get("error", "-") if failure else "-"}'
+        )
+    return ';'.join(logs)
+
+
+def _source_run_debug_by_type(crawler_debug):
+    source_runs = {}
+    for message in crawler_debug or []:
+        text = str(message)
+        if not text.startswith('source_run_end '):
+            continue
+        fields = _debug_fields(text)
+        source_type = fields.get('source_type')
+        if source_type:
+            source_runs[source_type] = fields
+    return source_runs
+
+
+def _debug_fields(message):
+    fields = {}
+    for token in str(message).split():
+        if '=' not in token:
+            continue
+        key, value = token.split('=', 1)
+        fields[key] = value
+    return fields
+
+
+def _int_debug_field(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _source_scanned_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.scanned_by_source.get(source_type, 0)
+
+
+def _source_saved_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.source_counts.get(source_type, 0)
+
+
+def _source_updated_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.updated_by_source.get(source_type, 0)
+
+
+def _source_skipped_count(summary, source_type):
+    if not summary:
+        return 0
+    return summary.skipped_by_source.get(source_type, 0)
+
+
 def _source_result_summary(summary, crawler_debug=None, failed_error=None):
     source_types = sorted(set(summary.scanned_by_source) | _sources_from_debug(crawler_debug))
     if failed_error and 'source_type=' in str(failed_error):
@@ -578,10 +766,12 @@ def _source_result_summary(summary, crawler_debug=None, failed_error=None):
             error_message = debug_failure.get('error', '')
         collected_count = summary.scanned_by_source.get(source_type, 0)
         saved_count = _saved_count_for_source(summary, source_type)
-        skipped_count = max(0, collected_count - saved_count)
+        updated_count = summary.updated_by_source.get(source_type, 0)
+        skipped_count = max(0, collected_count - saved_count - updated_count)
         parts.append(
             f'{source_type}:{status}:collected={collected_count}:saved={saved_count}:'
-            f'skipped={skipped_count}:error_type={error_type or "-"}:error={error_message or "-"}'
+            f'updated={updated_count}:skipped={skipped_count}:'
+            f'error_type={error_type or "-"}:error={error_message or "-"}'
         )
     return f'source_results={";".join(parts) or "none"}'
 
@@ -666,6 +856,49 @@ def _apply_ocr_pipeline(item, summary):
     return prepared
 
 
+def _update_existing_academic_rule_images(raw_data, item, summary):
+    if item.get('source_type') != 'academic_rule' or raw_data.source_type != 'academic_rule':
+        return False
+
+    incoming_image_urls = _item_image_urls(item)
+    existing_image_urls = list((raw_data.metadata_json or {}).get('image_urls') or [])
+    if incoming_image_urls == existing_image_urls:
+        return False
+
+    updated_item = _apply_ocr_pipeline(item, summary)
+    raw_data.title = updated_item.get('title', raw_data.title)
+    raw_data.raw_text = updated_item.get('raw_text', '')
+    raw_data.raw_html = updated_item.get('raw_html', '')
+    raw_data.ocr_boxes = updated_item.get('ocr_boxes') or []
+    raw_data.metadata_json = updated_item.get('metadata_json', {})
+    raw_data.collected_at = timezone.now()
+    raw_data.status = RawSsafyData.STATUS_PARSED
+    raw_data.save(
+        update_fields=[
+            'title',
+            'raw_text',
+            'raw_html',
+            'ocr_boxes',
+            'metadata_json',
+            'collected_at',
+            'status',
+        ]
+    )
+    summary.updated_count += 1
+    _increment_updated_source(summary, raw_data.source_type)
+    summary.no_schedule_count += 1
+    summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
+    return True
+
+
+def _item_image_urls(item):
+    metadata = item.get('metadata_json') or {}
+    image_urls = metadata.get('image_urls')
+    if image_urls is None:
+        image_urls = extract_image_urls_from_html(item.get('raw_html', ''), item.get('source_url', ''))
+    return list(image_urls or [])
+
+
 def _safe_extract_ocr_text(image_urls):
     try:
         return extract_text_from_image_urls(image_urls)
@@ -704,20 +937,134 @@ def _create_raw_data(item):
 
 
 def find_existing_schedule_event(schedule, raw_data):
-    event_filter = {
-        'title': schedule.title,
-        'start_at': schedule.start_at,
-        'end_at': schedule.end_at,
-        'event_type': schedule.event_type,
-        'source_type': raw_data.source_type,
-    }
-
+    normalized_title = normalize_event_title_for_dedupe(schedule.title)
+    if not normalized_title:
+        return None
+    schedule_track = _schedule_track(schedule, raw_data)
+    candidates = ScheduleEvent.objects.filter(
+        start_at=schedule.start_at,
+        end_at=schedule.end_at,
+        event_type=schedule.event_type,
+        source_type=raw_data.source_type,
+    )
     if raw_data.pk:
-        existing_for_raw_data = ScheduleEvent.objects.filter(raw_data=raw_data, **event_filter).first()
-        if existing_for_raw_data:
-            return existing_for_raw_data
+        raw_match = _first_matching_event(candidates.filter(raw_data=raw_data), normalized_title, schedule_track)
+        if raw_match:
+            return raw_match
+        if _is_identity_mergeable_schedule(schedule):
+            identity_match = _first_matching_identity_event(candidates.filter(raw_data=raw_data), schedule, raw_data)
+            if identity_match:
+                return identity_match
+        return None
+    return _first_matching_event(candidates, normalized_title, schedule_track)
 
-    return ScheduleEvent.objects.filter(**event_filter).first()
+
+def merge_schedule_candidate_into_event(event, schedule, raw_data):
+    metadata = dict(event.metadata_json or {})
+    title = str(getattr(schedule, 'title', '') or '').strip()
+    existing_titles = [event.title, *(metadata.get('alias_titles') or [])]
+    if title and title not in existing_titles:
+        existing_titles.append(title)
+    representative = choose_representative_title(existing_titles)
+    metadata['alias_titles'] = sorted({value for value in existing_titles if value and value != representative})
+    merged_candidates = list(metadata.get('merged_from_candidates') or [])
+    merged_candidates.append(
+        {
+            'raw_data_id': raw_data.id,
+            'title': title,
+            'source_title': raw_data.title,
+        }
+    )
+    metadata['merged_from_candidates'] = merged_candidates[-20:]
+    if representative and representative != event.title:
+        event.title = representative
+    event.metadata_json = metadata
+    event.save(update_fields=['title', 'metadata_json'])
+
+
+def _first_matching_event(events, normalized_title, schedule_track):
+    for event in events:
+        if normalize_event_title_for_dedupe(event.title) != normalized_title:
+            continue
+        if _event_track(event) != schedule_track:
+            continue
+        return event
+    return None
+
+
+def _first_matching_identity_event(events, schedule, raw_data):
+    target_key = generated_identity_key(raw_data, schedule)
+    for event in events:
+        metadata = event.metadata_json or {}
+        event_key = (
+            event.source_id or str(event.raw_data_id or metadata.get('raw_data_id') or ''),
+            str(event.raw_data_id or metadata.get('raw_data_id') or ''),
+            metadata.get('normalized_content_hash') or '',
+            metadata.get('ocr_text_hash') or '',
+            metadata.get('extracted_date_range') or '',
+            event.event_type,
+            _event_track(event),
+        )
+        if event_key == target_key:
+            return event
+    return None
+
+
+def _is_identity_mergeable_schedule(schedule):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    parser_type = metadata.get('parser_type') or ''
+    parser = metadata.get('parser') or ''
+    grid_values = {'timetable_grid', 'calendar_grid', 'ocr_timetable_grid', 'ocr_calendar_grid', 'calendar_ocr_text'}
+    if parser_type in grid_values or parser in grid_values:
+        return False
+    mergeable_parser_types = {'', 'calendar_text', 'text_date', 'text_date_range', 'evaluation_notice'}
+    mergeable_parsers = {'', 'notice_text', 'notice_text_range', 'evaluation_notice_ocr'}
+    return parser_type in mergeable_parser_types and parser in mergeable_parsers
+
+
+def _schedule_track(schedule, raw_data):
+    metadata = getattr(schedule, 'metadata_json', None) or {}
+    if metadata.get('track_key') or metadata.get('track'):
+        return _normalize_track_value(metadata.get('track_key') or metadata.get('track'))
+    raw_metadata = raw_data.metadata_json or {}
+    audience = raw_metadata.get('audience') or {}
+    return _normalize_track_value(
+        raw_metadata.get('track')
+        or audience.get('track')
+        or _infer_track_from_text(f'{getattr(schedule, "title", "")} {raw_data.title} {raw_data.raw_text}')
+    )
+
+
+def _event_track(event):
+    metadata = event.metadata_json or {}
+    audience = metadata.get('audience') or {}
+    return _normalize_track_value(
+        metadata.get('track_key')
+        or metadata.get('track')
+        or audience.get('track_key')
+        or audience.get('track')
+        or _infer_track_from_text(event.title)
+    )
+
+
+def _normalize_track_value(value):
+    return normalize_track_key(value)
+
+
+def _infer_track_from_text(text):
+    text = str(text or '')
+    canonical = track_key_from_text(text)
+    if canonical:
+        return canonical
+    if 'Data' in text or '데이터' in text:
+        return 'data'
+    if 'Python' in text:
+        return 'python'
+    if 'Java' in text:
+        return 'java'
+    if '마이스터고' in text:
+        return 'meister'
+    return COMMON_TRACK_KEY
 
 
 def _find_existing_raw_data(item):
