@@ -19,7 +19,7 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     generated_identity_key,
 )
-from sync.services.tracks import normalize_track_key, track_key_from_text
+from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key, track_key_from_text
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
@@ -1003,7 +1003,11 @@ def _event_track(event):
     metadata = event.metadata_json or {}
     audience = metadata.get('audience') or {}
     return _normalize_track_value(
-        metadata.get('track_key') or metadata.get('track') or audience.get('track_key') or audience.get('track') or _infer_track_from_text(event.title)
+        metadata.get('track_key')
+        or metadata.get('track')
+        or audience.get('track_key')
+        or audience.get('track')
+        or _infer_track_from_text(event.title)
     )
 
 
@@ -1024,11 +1028,7 @@ def _infer_track_from_text(text):
         return 'java'
     if '마이스터고' in text:
         return 'meister'
-    if 'AI' in text:
-        return 'AI'
-    if 'SW' in text:
-        return 'SW'
-    return ''
+    return COMMON_TRACK_KEY
 
 
 def _find_existing_raw_data(item):

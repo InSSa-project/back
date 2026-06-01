@@ -707,7 +707,9 @@ class SampleNoticeImportTests(TestCase):
         value = output.getvalue()
         self.assertIn('track_event_counts=', value)
         self.assertIn('python:2', value)
-        self.assertIn('common:1', value)
+        self.assertIn('unclassified:1', value)
+        self.assertIn('common_all_event_count=0', value)
+        self.assertIn('unclassified_track_events=', value)
         self.assertIn('evaluation_missing_tracks=', value)
         self.assertIn('java_non_major', value)
         self.assertIn('source_mismatches=', value)
@@ -1163,6 +1165,36 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('source_url=https://example.com/notices/may-week', value)
         self.assertIn('source_title=[??] 5? 1?? Data ?? ???', value)
 
+    def test_debug_schedule_events_outputs_common_track_diagnostics(self):
+        start_at = timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone())
+        ScheduleEvent.objects.create(
+            title='온라인 위크',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='study',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        ScheduleEvent.objects.create(
+            title='Unclassified event',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='notice',
+            metadata_json={},
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--month', '2026-05', '--no-reparse', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('track_event_counts=', value)
+        self.assertIn('all:1', value)
+        self.assertIn('common_all_event_count=1', value)
+        self.assertIn('unclassified_track_events=', value)
+        self.assertIn('track_filter_risk_events=', value)
+        self.assertIn('common_candidate_events=', value)
+
     def test_online_week_date_range_expands_to_weekdays_except_holidays(self):
         schedules = parse_schedule_candidates(
             '2026.06.02~06.13 온라인 위크',
@@ -1183,6 +1215,8 @@ class SampleNoticeImportTests(TestCase):
                 '2026-06-12',
             ],
         )
+        self.assertEqual({schedule.metadata_json['track_key'] for schedule in schedules}, {'all'})
+        self.assertTrue(all(schedule.metadata_json['is_common'] for schedule in schedules))
         self.assertTrue(all(schedule.title == '온라인 위크' for schedule in schedules))
         self.assertTrue(all(schedule.metadata_json['date_mapping_source'] == 'explicit_text_date' for schedule in schedules))
 
@@ -2148,11 +2182,9 @@ class SampleNoticeImportTests(TestCase):
             default_title='\ud3c9\uac00 \uc548\ub0b4',
         )
 
-        self.assertEqual(len(schedules), 8)
-        self.assertEqual(
-            sorted({schedule.metadata_json['track'] for schedule in schedules}),
-            ['Data', 'Embedded', 'Embedded Robot', 'Java\ube44\uc804\uacf5', 'Java\uc804\uacf5', 'Mobile', 'Python', '\ub9c8\uc774\uc2a4\ud130\uace0'],
-        )
+        self.assertEqual(len(schedules), 1)
+        self.assertEqual(schedules[0].metadata_json['track_key'], 'all')
+        self.assertTrue(schedules[0].metadata_json['is_common'])
         self.assertEqual(grid_debug.review_required_candidate_count, 0)
         self.assertEqual(grid_debug.metadata_json['track'], 'all')
 

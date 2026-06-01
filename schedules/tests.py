@@ -540,6 +540,9 @@ class ScheduleEventApiTests(TestCase):
         payload = response.json()
         self.assertEqual({item['title'] for item in payload}, {'Meister study', '온라인 위크'})
         self.assertEqual({item['event_type'] for item in payload}, {'study'})
+        online_week = next(item for item in payload if item['title'] == '온라인 위크')
+        self.assertEqual(online_week['track_key'], 'all')
+        self.assertTrue(online_week['is_common'])
 
     def test_patch_event_rejects_source_fields(self):
         run_sample_notice_import()

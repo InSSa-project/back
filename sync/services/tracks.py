@@ -9,6 +9,10 @@ CANONICAL_TRACKS = (
     ('meister', '마이스터고'),
 )
 
+COMMON_TRACK_KEY = 'all'
+COMMON_TRACK_DISPLAY = 'All'
+COMMON_TRACK_VALUES = {'', COMMON_TRACK_KEY, 'common', 'global', '전체', '공통', 'all_tracks'}
+
 TRACK_DISPLAY_BY_KEY = dict(CANONICAL_TRACKS)
 
 TRACK_ALIASES = {
@@ -50,12 +54,29 @@ def normalize_track_key(value):
     text = str(value or '').strip()
     if not text:
         return ''
+    lowered_text = text.lower().replace('-', '_').replace(' ', '_')
+    if lowered_text in {value.lower().replace('-', '_').replace(' ', '_') for value in COMMON_TRACK_VALUES}:
+        return COMMON_TRACK_KEY
     lowered = text.lower().replace('-', '_').replace(' ', '_')
     alias_by_lower = {
         str(alias).lower().replace('-', '_').replace(' ', '_'): key
         for alias, key in TRACK_ALIASES.items()
     }
     return alias_by_lower.get(lowered) or TRACK_ALIASES.get(text, text)
+
+
+def is_common_track_key(value):
+    normalized = normalize_track_key(value)
+    return normalized == COMMON_TRACK_KEY or (not normalized and str(value or '').strip() == '')
+
+
+def common_track_metadata():
+    return {
+        'track': COMMON_TRACK_KEY,
+        'track_key': COMMON_TRACK_KEY,
+        'track_display': COMMON_TRACK_DISPLAY,
+        'is_common': True,
+    }
 
 
 def track_key_from_text(text):

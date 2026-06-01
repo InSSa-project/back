@@ -3,7 +3,7 @@ import re
 
 from django.utils import timezone
 
-from sync.services.tracks import normalize_track_key
+from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
 
 STATUS_WORD_PATTERN = re.compile(r'\b(?:예정|안내|수정|변경)\b', re.IGNORECASE)
@@ -134,7 +134,13 @@ def choose_representative_title(titles):
 
 def _track_from_metadata(metadata):
     audience = metadata.get('audience') or {}
-    return normalize_track_key(metadata.get('track') or audience.get('track') or '')
+    return normalize_track_key(
+        metadata.get('track_key')
+        or metadata.get('track')
+        or audience.get('track_key')
+        or audience.get('track')
+        or COMMON_TRACK_KEY
+    )
 
 
 def _hash_text(text):
