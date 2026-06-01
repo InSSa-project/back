@@ -5,12 +5,22 @@ from datetime import date
 
 DEFAULT_YEAR = 2026
 WEEKDAY_HEADERS = {'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'}
+KOREAN_WEEKDAY_HEADERS = {'월', '화', '수', '목', '금', '토', '일'}
 MONTH_TOKENS = {'월', '¿ù'}
 MONTH_PATTERN = re.compile(r'^(?P<month>[1-9]|1[0-2])\s*월$')
 DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
+DATE_HEADER_PATTERN = re.compile(r'^(?:(?P<month>[1-9]|1[0-2])\s*월\s*)?(?P<day>\d{1,2})\s*일(?:\s*\([^)]*\))?$')
 INLINE_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
+TIME_TOKEN_PATTERN = r'\d{1,2}\s*:\s*\d{2}'
+TIME_ONLY_PATTERN = re.compile(
+    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*$',
+    re.IGNORECASE,
+)
+LEADING_TIME_RANGE_PATTERN = re.compile(
+    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*',
+    re.IGNORECASE,
+)
 EVENT_KEYWORDS = [
-    '신정',
     '스타트캠프',
     '입학식',
     '본학습',
@@ -25,16 +35,11 @@ EVENT_KEYWORDS = [
     'AI 강의',
     'AI 챌린지',
     '밋업',
-    '어린이날',
-    '근로자의 날',
-    '부처님',
-    '현충일',
     '온라인 위크',
     '온라인 워크',
     '관통 프로젝트',
     '관통PJT',
     '경진대회',
-    '지방선거',
 ]
 HOLIDAY_COMPACT_KEYWORDS = {
     '신정',
@@ -54,7 +59,21 @@ MIN_EXAM_OVERLAP_RATIO = 0.35
 REVIEW_REQUIRED_EXAM_FILTER_REASONS = {
     'review_required_exam_title',
     'low_overlap_exam',
+    'generic_exam_calendar_marker',
 }
+TIMETABLE_NOISE_COMPACTS = {
+    '시간',
+    '시간표',
+    'LIVE',
+    '방송',
+    'VIEWMODEL',
+    'WITHOUTQUESTIONS',
+    'THEREISNOCHANGE',
+    'SWAISAMSUNGACADEMY',
+    'SWAISAMSUNG',
+    'SAMSUNGACADEMY',
+}
+TIMETABLE_LUNCH_COMPACTS = {'중식', '점심', '점심시간', 'LUNCH'}
 
 
 @dataclass
@@ -105,7 +124,7 @@ class GridParseDebug:
         }
 
 
-def parse_grid_schedule_candidates(ocr_boxes):
+def parse_grid_schedule_candidates(ocr_boxes, source_title=''):
     debug = GridParseDebug(
         ocr_box_count=len(ocr_boxes or []),
         candidates=[],
@@ -127,21 +146,31 @@ def parse_grid_schedule_candidates(ocr_boxes):
     candidates = []
     all_cells = []
     all_section_boxes = []
+    timetable_mode = _looks_like_timetable(source_title)
     for month, section_boxes in month_sections:
         cells = _build_date_cells(month, section_boxes)
         all_cells.extend(cells)
         all_section_boxes.extend(section_boxes)
         debug.date_cell_count += len(cells)
-        candidates.extend(_assign_events_to_cells(section_boxes, cells))
+        if timetable_mode:
+            candidates.extend(_assign_timetable_events_to_cells(section_boxes, cells, source_title=source_title))
+        else:
+            candidates.extend(_assign_events_to_cells(section_boxes, cells))
 
     candidates = _dedupe_candidates(candidates)
-    candidates, filtered_candidates = _filter_exam_false_positives(candidates)
+    if timetable_mode:
+        filtered_candidates = []
+    else:
+        candidates, filtered_candidates = _filter_exam_false_positives(candidates)
     review_required_candidates = _collect_review_required_candidates(filtered_candidates)
     debug.used_grid_parser = bool(candidates)
     debug.candidate_count = len(candidates)
     debug.filtered_candidate_count = len(filtered_candidates)
     debug.review_required_candidate_count = len(review_required_candidates)
-    debug.reason = 'ok' if candidates else ('review_required_candidates_only' if review_required_candidates else 'no_event_boxes_matched')
+    if timetable_mode and not candidates:
+        debug.reason = 'timetable_no_cell_text_matched'
+    else:
+        debug.reason = 'ok' if candidates else ('review_required_candidates_only' if review_required_candidates else 'no_event_boxes_matched')
     debug.candidates = [
         {
             'title': candidate.source_text or candidate.title,
@@ -234,6 +263,10 @@ def _month_sections(boxes):
         if match:
             month_headers.append((int(match.group('month')), box))
             continue
+        date_header_match = DATE_HEADER_PATTERN.match(box['text'])
+        if date_header_match and date_header_match.group('month'):
+            month_headers.append((int(date_header_match.group('month')), box))
+            continue
         month = _month_from_split_boxes(box, boxes)
         if month:
             month_headers.append((month, box))
@@ -315,10 +348,14 @@ def _build_date_cells(month, boxes):
 
 
 def _day_from_box(box):
-    match = DAY_PATTERN.match(box['text'])
+    text = str(box['text'] or '').strip()
+    date_match = DATE_HEADER_PATTERN.match(text)
+    if date_match:
+        return int(date_match.group('day'))
+    match = DAY_PATTERN.match(text)
     if match:
         return int(match.group('day'))
-    inline_match = INLINE_DAY_PATTERN.match(box['text'])
+    inline_match = INLINE_DAY_PATTERN.match(text)
     if inline_match:
         return int(inline_match.group('day'))
     return None
@@ -343,21 +380,22 @@ def _assign_events_to_cells(boxes, cells):
         cell, overlap_ratio = (matched_cells[0] if matched_cells else (_find_cell_for_box(box, cells), None))
         if not cell:
             continue
-        candidates.append(
-            GridScheduleCandidate(
-                title=title,
-                event_date=cell['date'],
-                event_type=_event_type(title),
-                description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
-                source_text=box['text'],
-                source_box_count=1,
-                row_index=cell.get('row_index'),
-                col_index=cell.get('col_index'),
-                confidence=box.get('confidence'),
-                overlap_ratio=overlap_ratio,
-                reason='single_box_keyword_overlap',
+        for expanded_title in _expand_combined_exam_titles(title):
+            candidates.append(
+                GridScheduleCandidate(
+                    title=expanded_title,
+                    event_date=cell['date'],
+                    event_type=_event_type(expanded_title),
+                    description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                    source_text=box['text'],
+                    source_box_count=1,
+                    row_index=cell.get('row_index'),
+                    col_index=cell.get('col_index'),
+                    confidence=box.get('confidence'),
+                    overlap_ratio=overlap_ratio,
+                    reason='single_box_keyword_overlap',
+                )
             )
-        )
 
     for cell in cells:
         for title, row_boxes in _event_titles_from_cell(boxes, cell):
@@ -365,19 +403,43 @@ def _assign_events_to_cells(boxes, cells):
                 continue
             row_rect = _boxes_rect(row_boxes)
             overlap_ratio = _overlap_ratio(row_rect, cell)
+            for expanded_title in _expand_combined_exam_titles(title):
+                candidates.append(
+                    GridScheduleCandidate(
+                        title=expanded_title,
+                        event_date=cell['date'],
+                        event_type=_event_type(expanded_title),
+                        description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                        source_text=' '.join(box['text'] for box in row_boxes),
+                        source_box_count=len(row_boxes),
+                        row_index=cell.get('row_index'),
+                        col_index=cell.get('col_index'),
+                        confidence=_average_confidence(row_boxes),
+                        overlap_ratio=overlap_ratio,
+                        reason='cell_row_group_overlap',
+                    )
+                )
+    return candidates
+
+
+def _assign_timetable_events_to_cells(boxes, cells, source_title=''):
+    candidates = []
+    for cell in cells:
+        for title, row_boxes in _timetable_titles_from_cell(boxes, cell, source_title=source_title):
+            row_rect = _boxes_rect(row_boxes)
             candidates.append(
                 GridScheduleCandidate(
                     title=title,
                     event_date=cell['date'],
                     event_type=_event_type(title),
-                    description='SSAFY OCR bounding box 달력 grid에서 추출한 일정',
+                    description='SSAFY OCR 시간표 셀에서 추출한 일정',
                     source_text=' '.join(box['text'] for box in row_boxes),
                     source_box_count=len(row_boxes),
                     row_index=cell.get('row_index'),
                     col_index=cell.get('col_index'),
                     confidence=_average_confidence(row_boxes),
-                    overlap_ratio=overlap_ratio,
-                    reason='cell_row_group_overlap',
+                    overlap_ratio=_overlap_ratio(row_rect, cell),
+                    reason='timetable_cell_text',
                 )
             )
     return candidates
@@ -393,6 +455,21 @@ def _event_titles_from_cell(boxes, cell):
     for row in _group_rows(cell_boxes):
         phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
         title = _event_title_from_box(phrase)
+        if title:
+            titles.append((title, row))
+    return titles
+
+
+def _timetable_titles_from_cell(boxes, cell, source_title=''):
+    cell_boxes = [
+        box for box in boxes
+        if _overlap_ratio(_box_rect(box), cell) >= 0.5
+        and not _is_structural_box(box)
+    ]
+    titles = []
+    for row in _group_rows(cell_boxes):
+        phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
+        title = _clean_timetable_title(phrase, source_title=source_title)
         if title:
             titles.append((title, row))
     return titles
@@ -508,7 +585,15 @@ def _is_structural_box(box):
     text = box['text']
     if text.upper() in WEEKDAY_HEADERS or text in MONTH_TOKENS:
         return True
+    if text in KOREAN_WEEKDAY_HEADERS:
+        return True
+    if MONTH_PATTERN.match(text):
+        return True
     if DAY_PATTERN.match(text):
+        return True
+    if DATE_HEADER_PATTERN.match(text):
+        return True
+    if _is_time_only_text(text):
         return True
     return False
 
@@ -524,11 +609,103 @@ def _event_title_from_box(text):
     return ''
 
 
+def _clean_timetable_title(text, source_title=''):
+    text = _normalize_timetable_spacing(text)
+    inline_match = INLINE_DAY_PATTERN.match(text)
+    if inline_match:
+        text = inline_match.group('title').strip(' :-|()~')
+    text = _remove_leading_time_range(text)
+    text = _remove_timetable_noise_prefixes(text)
+    text = _normalize_timetable_spacing(text)
+    if not text:
+        return ''
+    compact = _compact_text(text)
+    if _is_time_only_text(text):
+        return ''
+    if _is_timetable_header_only(text):
+        return ''
+    if _is_lunch_title(text):
+        return ''
+    if compact in TIMETABLE_NOISE_COMPACTS:
+        return ''
+    if any(noise in compact for noise in TIMETABLE_NOISE_COMPACTS if len(noise) >= 8):
+        return ''
+    if len(compact) <= 1:
+        return ''
+    return _prefix_timetable_title(text)[:255]
+
+
+def _remove_timetable_noise_prefixes(text):
+    text = re.sub(r'^\s*\[\s*LIVE\s*방송\s*\]\s*', '', str(text or ''), flags=re.IGNORECASE)
+    text = re.sub(r'^\s*\[?\s*LIVE\s*방송\s*\]?\s*', '', text, flags=re.IGNORECASE)
+    return text.strip(' :-|()~')
+
+
+def _normalize_timetable_spacing(text):
+    text = re.sub(r'\s+', ' ', str(text or '').replace('\n', ' ')).strip()
+    text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
+    text = re.sub(r'\s*:\s*', ': ', text)
+    text = re.sub(r'\s*/\s*', ' / ', text)
+    text = re.sub(r'\[\s*', '[', text)
+    text = re.sub(r'\s*\]', ']', text)
+    text = re.sub(r'\s*&\s*', '&', text)
+    text = re.sub(r'\b(JS|Django)\s+(?=[A-Za-z])', r'\1: ', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
+    return text.strip(' :-|')
+
+
+def _prefix_timetable_title(text):
+    if _has_timetable_non_learning_marker(text):
+        return text
+    if text.startswith('[학습]'):
+        return text
+    return f'[학습] {text}'
+
+
+def _has_timetable_non_learning_marker(text):
+    normalized = str(text or '').strip()
+    compact = _compact_text(normalized)
+    if normalized.startswith('[실습 및 Q&A]'):
+        return True
+    if any(keyword in compact for keyword in ['과목평가', '월말평가', '역량테스트']):
+        return True
+    return False
+
+
+def _remove_leading_time_range(text):
+    return LEADING_TIME_RANGE_PATTERN.sub('', str(text or ''), count=1).strip(' :-|~')
+
+
+def _is_time_only_text(text):
+    return bool(TIME_ONLY_PATTERN.match(_normalize_time_text(text)))
+
+
+def _normalize_time_text(text):
+    return re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', str(text or '').strip())
+
+
+def _is_timetable_header_only(text):
+    normalized = str(text or '').strip()
+    if normalized.upper() in WEEKDAY_HEADERS or normalized in KOREAN_WEEKDAY_HEADERS:
+        return True
+    if MONTH_PATTERN.match(normalized) or DATE_HEADER_PATTERN.match(normalized):
+        return True
+    return False
+
+
+def _is_lunch_title(text):
+    return _compact_text(text) in TIMETABLE_LUNCH_COMPACTS
+
+
+def _looks_like_timetable(source_title):
+    return '시간표' in str(source_title or '')
+
+
 def _has_compact_event_keyword(compact):
     return any(
         keyword in compact
         for keyword in [
-            '신정',
             '스타트캠프',
             '입학식',
             '본학습',
@@ -541,16 +718,11 @@ def _has_compact_event_keyword(compact):
             'AI강의',
             'AI챌린지',
             '밋업',
-            '어린이날',
-            '근로자의날',
-            '부처님오신날',
-            '현충일',
             '온라인위크',
             '온라인워크',
             '관통프로젝트',
             '관통PJT',
             '경진대회',
-            '지방선거',
         ]
     )
 
@@ -572,7 +744,9 @@ def _canonical_title(title):
     if 'SSAFYDAY' in compact:
         return 'SSAFY DAY'
     if '과목평가' in compact and '월말평가' in compact:
-        return '과목평가/월말평가'
+        suffix_match = re.search(r'(?:과목평가|월말평가)(\d+)', compact)
+        suffix = suffix_match.group(1) if suffix_match else ''
+        return f'과목평가{suffix}/월말평가{suffix}'
     if '과목평가' in compact:
         return '과목평가'
     if '월말평가' in compact:
@@ -588,6 +762,15 @@ def _canonical_title(title):
     if '관통프로젝트' in compact:
         return '관통 프로젝트'
     return title[:255]
+
+
+def _expand_combined_exam_titles(title):
+    compact = _compact_text(title)
+    if '과목평가' in compact and '월말평가' in compact:
+        suffix_match = re.search(r'(?:과목평가|월말평가)(\d+)$', compact)
+        suffix = suffix_match.group(1) if suffix_match else ''
+        return [f'과목평가{suffix}', f'월말평가{suffix}']
+    return [title]
 
 
 def _find_cell_for_box(box, cells):
@@ -657,6 +840,9 @@ def _filter_exam_false_positives(candidates):
         if _is_exam_candidate(candidate) and candidate.event_date in holiday_dates:
             filtered.append(_with_filtered_reason(candidate, 'holiday_exam_conflict'))
             continue
+        if _is_generic_exam_calendar_marker(candidate):
+            filtered.append(_with_filtered_reason(candidate, 'generic_exam_calendar_marker'))
+            continue
         if _is_exam_candidate(candidate) and not _is_clear_exam_title(candidate.source_text or candidate.title):
             filtered.append(_with_filtered_reason(candidate, 'review_required_exam_title'))
             continue
@@ -707,9 +893,9 @@ def _filter_consecutive_exam_runs(candidates, filtered):
 
 
 def _mark_long_exam_run(run, unique_by_date, remove_ids):
-    if len(run) < 3:
+    if len(run) < 4:
         return
-    for event_date in run[1:]:
+    for event_date in run[3:]:
         for candidate in unique_by_date[event_date]:
             remove_ids.add(id(candidate))
 
@@ -733,6 +919,13 @@ def _with_filtered_reason(candidate, reason):
 
 def _is_exam_candidate(candidate):
     return candidate.event_type == 'exam' or _is_exam_title_compact(_compact_text(candidate.title))
+
+
+def _is_generic_exam_calendar_marker(candidate):
+    compact_title = _normalize_exam_compact(_compact_text(candidate.title))
+    compact_source = _normalize_exam_compact(_compact_text(candidate.source_text or candidate.title))
+    generic_titles = {'과목평가', '월말평가'}
+    return compact_title in generic_titles and compact_source in generic_titles
 
 
 def _collect_review_required_candidates(filtered_candidates):
@@ -819,12 +1012,8 @@ def _event_type(title):
         keyword in compact for keyword in ['강의', '특강', '캠프']
     ):
         return 'lecture'
-    if any(keyword in title for keyword in ['신정', '어린이날', '근로자의 날', '부처님', '현충일', '지방선거']) or any(
-        keyword in compact for keyword in ['신정', '어린이날', '근로자의날', '부처님', '현충일', '지방선거']
-    ):
-        return 'holiday'
     if any(keyword in title for keyword in ['SSAFY DAY', '입학식', '밋업']) or any(
         keyword in compact for keyword in ['SSAFYDAY', '입학식', '밋업']
     ):
         return 'event'
-    return 'notice'
+    return 'study'

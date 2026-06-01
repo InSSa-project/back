@@ -10,6 +10,74 @@ from django.views.decorators.http import require_http_methods
 
 from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
+from sync.models import RawSsafyData
+from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
+
+from .utils import is_meaningless_schedule_title, normalize_schedule_display_title
+
+
+CANONICAL_TRACKS = {
+    'python',
+    'java_non_major',
+    'java_major',
+    'embedded',
+    'mobile',
+    'embedded_robot',
+    'data',
+    'meister',
+}
+TRACK_ALIASES = {
+    'python': 'python',
+    '파이썬': 'python',
+    'java_non_major': 'java_non_major',
+    'java비전공': 'java_non_major',
+    'java_비전공': 'java_non_major',
+    'java(비전공)': 'java_non_major',
+    'java_major': 'java_major',
+    'java전공': 'java_major',
+    'java_전공': 'java_major',
+    'java(전공)': 'java_major',
+    'embedded': 'embedded',
+    '임베디드': 'embedded',
+    'mobile': 'mobile',
+    '모바일': 'mobile',
+    'embedded_robot': 'embedded_robot',
+    'embedded robot': 'embedded_robot',
+    '임베디드로봇': 'embedded_robot',
+    '임베디드 로봇': 'embedded_robot',
+    'data': 'data',
+    '데이터': 'data',
+    'meister': 'meister',
+    '마이스터고': 'meister',
+}
+COMMON_TRACK_VALUES = {'', 'common', 'all', 'global', '공통', '전체'}
+COMMON_TITLE_KEYWORDS = (
+    'SSAFY DAY',
+    '설날',
+    '온라인 위크',
+    '과목평가',
+    '월말평가',
+    '관통 프로젝트 집중기간',
+    '상반기 밋업',
+)
+OTHER_EVENT_TYPES = {
+    'study',
+    'assignment',
+    'lecture',
+    'deadline',
+    'notice',
+    'mentoring',
+    'unknown',
+    'other',
+    '기타',
+    'etc',
+}
+ALLOWED_EVENT_TYPES = OTHER_EVENT_TYPES | {
+    'exam',
+    'project',
+    'personal',
+    'holiday',
+}
 
 
 @csrf_exempt
@@ -28,10 +96,12 @@ def event_list(request):
         events = events.filter(start_at__lte=end_at)
     event_type = request.GET.get('event_type')
     if event_type:
-        events = events.filter(event_type=event_type)
+        events = _filter_queryset_by_event_type(events, event_type)
     events = filter_events_for_user_profile(list(events), _user_profile(request.user))
     events = _filter_events_by_audience_params(events, request.GET)
+    events = [event for event in events if not _is_hidden_meaningless_event(event)]
 
+    events = sorted(events, key=_event_list_sort_key)
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
 
 
@@ -47,10 +117,15 @@ def _create_event(request):
         'description',
         'start_at',
         'end_at',
+        'deadline_at',
         'is_all_day',
+        'is_global',
+        'is_important',
         'event_type',
         'metadata',
         'metadata_json',
+        'source_type',
+        'track',
     }
     if invalid_fields:
         return JsonResponse(
@@ -58,12 +133,13 @@ def _create_event(request):
             status=400,
         )
 
-    missing_fields = [field for field in ['title', 'start_at', 'end_at'] if not payload.get(field)]
-    if missing_fields:
-        return JsonResponse(
-            {'detail': f'Missing required fields: {", ".join(missing_fields)}'},
-            status=400,
-        )
+    title = str(payload.get('title') or '').strip()
+    if not title:
+        return JsonResponse({'detail': 'Title is required.'}, status=400)
+    if not payload.get('start_at'):
+        return JsonResponse({'detail': 'Start time is required.'}, status=400)
+    if not payload.get('end_at'):
+        return JsonResponse({'detail': 'End time is required.'}, status=400)
 
     start_at = _parse_patch_datetime(payload['start_at'])
     end_at = _parse_patch_datetime(payload['end_at'])
@@ -72,7 +148,7 @@ def _create_event(request):
     if end_at is None:
         return JsonResponse({'detail': 'Invalid datetime format: end_at'}, status=400)
     if end_at < start_at:
-        return JsonResponse({'detail': 'end_at must be after start_at.'}, status=400)
+        return JsonResponse({'detail': 'End time must be after start time.'}, status=400)
 
     metadata_json = payload.get('metadata_json', payload.get('metadata', {}))
     if metadata_json is None:
@@ -80,27 +156,49 @@ def _create_event(request):
     if not isinstance(metadata_json, dict):
         return JsonResponse({'detail': 'metadata_json must be an object.'}, status=400)
 
+    event_type = str(payload.get('event_type') or 'personal').strip()
+    if event_type not in ALLOWED_EVENT_TYPES:
+        return JsonResponse({'detail': f'Unsupported event_type: {event_type}'}, status=400)
+
+    metadata_json = dict(metadata_json)
+    if getattr(request.user, 'is_authenticated', False):
+        metadata_json['user_id'] = request.user.id
+    if payload.get('track') is not None:
+        metadata_json['track'] = payload['track']
+    if payload.get('is_global') is not None:
+        metadata_json['is_global'] = payload['is_global']
+    metadata_json['is_important'] = bool(payload.get('is_important', metadata_json.get('is_important', False)))
+    if payload.get('deadline_at'):
+        deadline_at = _parse_patch_datetime(payload['deadline_at'])
+        if deadline_at is None:
+            return JsonResponse({'detail': 'Invalid datetime format: deadline_at'}, status=400)
+        metadata_json['deadline_at'] = timezone.localtime(deadline_at).isoformat()
+
     event = ScheduleEvent.objects.create(
-        title=payload['title'],
+        title=title,
         description=payload.get('description', ''),
         start_at=start_at,
         end_at=end_at,
         is_all_day=payload.get('is_all_day', False),
-        event_type=payload.get('event_type', 'personal'),
-        source_type='manual',
+        event_type=event_type,
+        source_type=str(payload.get('source_type') or 'manual').strip() or 'manual',
         metadata_json=metadata_json,
     )
+    _ingest_schedule_event_to_rag(event)
     return JsonResponse(_serialize_event(event), status=201)
 
 
 @csrf_exempt
-@require_http_methods(['PATCH'])
+@require_http_methods(['PATCH', 'DELETE'])
 def event_detail(request, event_id):
     # TODO: Require authentication and per-user/admin permission before production use.
     try:
         event = ScheduleEvent.objects.get(pk=event_id)
     except ScheduleEvent.DoesNotExist:
         return JsonResponse({'detail': 'Schedule event not found.'}, status=404)
+
+    if request.method == 'DELETE':
+        return _delete_event(event)
 
     try:
         payload = json.loads(request.body.decode('utf-8') or '{}')
@@ -129,7 +227,25 @@ def event_detail(request, event_id):
     for field, value in parsed_datetimes.items():
         setattr(event, field, value)
     event.save(update_fields=[*payload.keys(), 'updated_at'])
+    _ingest_schedule_event_to_rag(event)
     return JsonResponse(_serialize_event(event))
+
+
+def _delete_event(event):
+    if event.raw_data_id:
+        return JsonResponse({'detail': 'Generated schedule events cannot be deleted from the personal event API.'}, status=403)
+    event.delete()
+    return JsonResponse({'detail': 'Schedule event deleted.'})
+def _ingest_schedule_event_to_rag(event):
+    if event.raw_data_id:
+        return
+    try:
+        from apps.ai.calendar_ingestion import ScheduleEventRagIngestionService
+
+        ScheduleEventRagIngestionService().ingest_event(event, ingest_vectors=True)
+    except Exception:
+        # Calendar writes should not fail because the AI index is unavailable.
+        return
 
 
 def _parse_boundary(value, is_end):
@@ -159,6 +275,13 @@ def _parse_patch_datetime(value):
 
     parsed_datetime = parse_datetime(value)
     if not parsed_datetime:
+        for datetime_format in ['%Y-%m-%dT%H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d %H:%M:%S']:
+            try:
+                parsed_datetime = datetime.strptime(value, datetime_format)
+                break
+            except ValueError:
+                continue
+    if not parsed_datetime:
         return None
     if timezone.is_naive(parsed_datetime):
         return timezone.make_aware(parsed_datetime, timezone.get_current_timezone())
@@ -168,22 +291,60 @@ def _parse_patch_datetime(value):
 def _serialize_event(event):
     start_at = timezone.localtime(event.start_at)
     end_at = timezone.localtime(event.end_at)
-    raw_data = event.raw_data
+    metadata = event.metadata_json or {}
+    raw_data = _event_raw_data(event, metadata)
+    raw_data_id = raw_data.id if raw_data else (metadata.get('raw_data_id') or None)
+    source_title = raw_data.title if raw_data else metadata.get('source_title')
+    is_common = _is_common_event(event, metadata)
+    track_key = COMMON_TRACK_KEY if is_common else _event_track(metadata, metadata.get('audience') or {})
     return {
         'id': event.id,
         'title': event.title,
+        'display_title': _event_display_title(event, metadata),
         'description': event.description,
         'start_at': start_at.isoformat(),
         'end_at': end_at.isoformat(),
         'is_all_day': event.is_all_day,
+        'is_important': _is_important_event(event),
         'event_type': event.event_type,
         'source_type': event.source_type,
-        'metadata': event.metadata_json,
-        'metadata_json': event.metadata_json,
-        'audience': (event.metadata_json or {}).get('audience', {}),
+        'raw_data_id': raw_data_id,
+        'metadata': metadata,
+        'metadata_json': metadata,
+        'audience': metadata.get('audience', {}),
         'source_url': raw_data.source_url if raw_data else None,
-        'source_title': raw_data.title if raw_data else None,
+        'source_title': source_title,
+        'track': track_key,
+        'track_key': track_key,
+        'is_common': is_common,
     }
+
+
+def _event_raw_data(event, metadata):
+    if event.raw_data_id:
+        return event.raw_data
+    metadata_raw_data_id = metadata.get('raw_data_id')
+    if not metadata_raw_data_id:
+        return None
+    try:
+        return RawSsafyData.objects.filter(pk=metadata_raw_data_id).first()
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_display_title(event, metadata):
+    metadata_display_title = str(metadata.get('display_title') or '').strip()
+    if metadata_display_title:
+        return metadata_display_title
+    return normalize_schedule_display_title(event.title) or event.title
+
+
+def _event_list_sort_key(event):
+    return (timezone.localdate(event.start_at), not _is_important_event(event), event.start_at, event.id)
+
+
+def _is_important_event(event):
+    return bool((event.metadata_json or {}).get('is_important', False))
 
 
 def _user_profile(user):
@@ -204,22 +365,97 @@ def _filter_events_by_audience_params(events, params):
     filtered = []
     for event in events:
         audience = (event.metadata_json or {}).get('audience') or {}
-        if _matches_audience_filters(event.metadata_json or {}, audience, filters):
+        if _matches_audience_filters(event, event.metadata_json or {}, audience, filters):
             filtered.append(event)
     return filtered
 
 
-def _matches_audience_filters(metadata, audience, filters):
+def _filter_queryset_by_event_type(events, event_type):
+    normalized_event_type = str(event_type or '').strip()
+    if normalized_event_type == 'other':
+        return events.filter(event_type__in=OTHER_EVENT_TYPES)
+    return events.filter(event_type=normalized_event_type)
+
+
+def _matches_audience_filters(event, metadata, audience, filters):
     for key, expected in filters.items():
+        if key == 'track':
+            if _matches_track_filter(event, metadata, audience, expected):
+                continue
+            return False
+
         actual = audience.get(key, metadata.get(key))
-        if key == 'track' and _is_common_track(actual):
+        if _is_blank(actual):
             continue
         if actual is None or str(actual).lower() != str(expected).lower():
             return False
     return True
 
 
-def _is_common_track(value):
-    if value is None or value == '':
+def _matches_track_filter(event, metadata, audience, expected):
+    expected_track = _normalize_track(expected)
+    if expected_track not in CANONICAL_TRACKS:
+        return False
+
+    actual_track = _event_track(metadata, audience)
+    if _is_common_event(event, metadata):
         return True
-    return str(value).lower() == 'common'
+    return _normalize_track(actual_track) == expected_track
+
+
+def _event_track(metadata, audience):
+    return normalize_track_key(
+        metadata.get('track_key')
+        or audience.get('track_key')
+        or metadata.get('track')
+        or audience.get('track')
+    )
+
+
+def _is_common_event(event, metadata):
+    audience = metadata.get('audience') or {}
+    track = _event_track(metadata, audience)
+    if metadata.get('is_common') is True:
+        return True
+    if _is_common_track(track):
+        return True
+    if metadata.get('is_global') is True or getattr(event, 'is_global', False) is True:
+        return True
+    title = str(getattr(event, 'title', '') or metadata.get('title') or metadata.get('source_title') or '')
+    return any(keyword in title for keyword in COMMON_TITLE_KEYWORDS)
+
+
+def _is_common_track(value):
+    if _is_blank(value):
+        return True
+    return _normalize_track(value) in COMMON_TRACK_VALUES or _normalize_track(value) == COMMON_TRACK_KEY
+
+
+def _normalize_track(value):
+    normalized = normalize_track_key(value)
+    if normalized:
+        return normalized
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    lowered = text.lower().replace('-', '_')
+    compact = lowered.replace(' ', '').replace('_', '')
+    aliases = {key.lower().replace('-', '_'): track for key, track in TRACK_ALIASES.items()}
+    aliases.update({key.lower().replace(' ', '').replace('_', ''): track for key, track in TRACK_ALIASES.items()})
+    aliases.update({track: track for track in CANONICAL_TRACKS})
+    return aliases.get(lowered, aliases.get(compact, lowered))
+
+
+def _is_hidden_meaningless_event(event):
+    metadata = event.metadata_json or {}
+    display_title = _event_display_title(event, metadata)
+    raw_title = metadata.get('raw_title') or event.title
+    if not is_meaningless_schedule_title(display_title):
+        return False
+    source_title = metadata.get('source_title') or (event.raw_data.title if event.raw_data_id and event.raw_data else '')
+    fallback_title = normalize_schedule_display_title(raw_title or source_title)
+    return is_meaningless_schedule_title(fallback_title)
+
+
+def _is_blank(value):
+    return value is None or str(value).strip() == ''
