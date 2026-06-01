@@ -161,6 +161,8 @@ def _create_event(request):
         return JsonResponse({'detail': f'Unsupported event_type: {event_type}'}, status=400)
 
     metadata_json = dict(metadata_json)
+    if getattr(request.user, 'is_authenticated', False):
+        metadata_json['user_id'] = request.user.id
     if payload.get('track') is not None:
         metadata_json['track'] = payload['track']
     if payload.get('is_global') is not None:
@@ -182,6 +184,7 @@ def _create_event(request):
         source_type=str(payload.get('source_type') or 'manual').strip() or 'manual',
         metadata_json=metadata_json,
     )
+    _ingest_schedule_event_to_rag(event)
     return JsonResponse(_serialize_event(event), status=201)
 
 
@@ -224,6 +227,7 @@ def event_detail(request, event_id):
     for field, value in parsed_datetimes.items():
         setattr(event, field, value)
     event.save(update_fields=[*payload.keys(), 'updated_at'])
+    _ingest_schedule_event_to_rag(event)
     return JsonResponse(_serialize_event(event))
 
 
@@ -232,6 +236,16 @@ def _delete_event(event):
         return JsonResponse({'detail': 'Generated schedule events cannot be deleted from the personal event API.'}, status=403)
     event.delete()
     return JsonResponse({'detail': 'Schedule event deleted.'})
+def _ingest_schedule_event_to_rag(event):
+    if event.raw_data_id:
+        return
+    try:
+        from apps.ai.calendar_ingestion import ScheduleEventRagIngestionService
+
+        ScheduleEventRagIngestionService().ingest_event(event, ingest_vectors=True)
+    except Exception:
+        # Calendar writes should not fail because the AI index is unavailable.
+        return
 
 
 def _parse_boundary(value, is_end):

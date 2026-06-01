@@ -1145,7 +1145,7 @@ def _source_collection_specs(
     mentoring_notice_url,
     curriculum_url,
     learning_material_url,
-    event_url,
+    event_url='',
 ):
     specs = [
         ('notice', notice_url, _extract_notice_link_items),
