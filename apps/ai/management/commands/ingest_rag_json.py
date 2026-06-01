@@ -4,7 +4,11 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from ai_server.core.config import get_settings
+from apps.ai.models import AiDocument
+from apps.ai.rag_ingestion import RagIngestionService
 from apps.notices.services import NoticeImportService
+from apps.notices.models import RawSsafyData, SsafyDataImportLog
 from apps.users.models import User
 
 
@@ -18,18 +22,27 @@ class Command(BaseCommand):
         parser.add_argument('--user-id', type=int, default=None, help='User id to own the import log.')
         parser.add_argument('--type', type=str, default='JSON_UPLOAD', help='Import type stored in SsafyDataImportLog.')
         parser.add_argument('--no-ingest', action='store_true', help='Create DB rows only, without vector ingestion.')
+        parser.add_argument(
+            '--replace',
+            action='store_true',
+            help='Delete existing rows for this import type and rebuild the local vectorstore before ingesting.',
+        )
 
     def handle(self, *args, **options):
         user = self._resolve_user(options['user_id'])
         paths = self._resolve_paths(options.get('path'), options.get('dir'))
         total_items = 0
+        import_types = []
 
         for path in paths:
             payload = self._load_json(path)
             import_type, items = self._normalize_payload(payload, options['type'])
+            import_types.append(import_type)
             if not items:
                 self.stdout.write(self.style.WARNING(f'Skipped empty file: {path}'))
                 continue
+            if options['replace']:
+                self._delete_existing_import_type(import_type)
             NoticeImportService().create_import_log(
                 user=user,
                 import_type=import_type,
@@ -38,6 +51,9 @@ class Command(BaseCommand):
             )
             total_items += len(items)
             self.stdout.write(self.style.SUCCESS(f'Ingested {len(items)} item(s) from {path}'))
+
+        if options['replace'] and not options['no_ingest']:
+            self._rebuild_vectorstore()
 
         self.stdout.write(self.style.SUCCESS(f'RAG JSON ingestion completed. files={len(paths)}, items={total_items}'))
 
@@ -87,3 +103,32 @@ class Command(BaseCommand):
             if {'title', 'content'} & set(payload.keys()):
                 return default_import_type, [payload]
         raise CommandError('JSON must be a list, an object with items, or one document object.')
+
+    def _delete_existing_import_type(self, import_type):
+        raw_ids = list(
+            RawSsafyData.objects.filter(import_log__import_type=import_type).values_list('id', flat=True)
+        )
+        deleted_documents, _ = AiDocument.objects.filter(raw_data_id__in=raw_ids).delete()
+        deleted_logs, _ = SsafyDataImportLog.objects.filter(import_type=import_type).delete()
+        self.stdout.write(
+            self.style.WARNING(
+                f'Deleted existing import_type={import_type}: '
+                f'ai_documents={deleted_documents}, import_logs={deleted_logs}'
+            )
+        )
+
+    def _rebuild_vectorstore(self):
+        settings_obj = get_settings()
+        if settings_obj.vectorstore_provider != 'faiss':
+            self.stdout.write(self.style.WARNING('Vectorstore rebuild only clears local faiss JSON files.'))
+            return
+
+        index_path = Path(settings_obj.vectorstore_path)
+        if not index_path.is_absolute():
+            index_path = Path(settings.BASE_DIR) / index_path
+        if index_path.exists():
+            index_path.unlink()
+            self.stdout.write(self.style.WARNING(f'Deleted vectorstore file: {index_path}'))
+
+        stats = RagIngestionService().ingest_all()
+        self.stdout.write(self.style.SUCCESS(f'Rebuilt vectorstore: {stats}'))

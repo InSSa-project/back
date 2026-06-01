@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import logging
 import os
 
 from django.db import transaction
@@ -33,6 +34,7 @@ from sync.services.ssafy_crawler import (
 
 SUCCESS_MESSAGE = 'SSAFY notice collection and schedule import completed.'
 CRAWL_FAILED_MESSAGE = 'Failed to collect SSAFY notices.'
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,6 +80,7 @@ class ImportSummary:
     duplicate_count: int = 0
     duplicate_items: list = field(default_factory=list)
     unique_notice_ids: set = field(default_factory=set)
+    raw_data_ids: list = field(default_factory=list)
 
 
 def run_sample_notice_import():
@@ -95,11 +98,17 @@ def run_notice_import(mode=None):
         raw_items = load_notices_by_mode(selected_mode)
         crawler_debug = get_last_collection_debug()
         summary = _import_raw_items(raw_items)
+        rag_stats = _ingest_raw_data_to_rag(summary.raw_data_ids)
 
         job_log.status = (
             CrawlJobLog.STATUS_PARTIAL_SUCCESS if _has_failed_source(crawler_debug) else CrawlJobLog.STATUS_SUCCESS
         )
-        job_log.message = _build_success_message(selected_mode, summary, crawler_debug=crawler_debug)
+        job_log.message = _build_success_message(
+            selected_mode,
+            summary,
+            crawler_debug=crawler_debug,
+            rag_stats=rag_stats,
+        )
         job_log.raw_count = summary.raw_count
         job_log.event_count = summary.event_count
         job_log.failed_count = summary.failed_count
@@ -180,6 +189,7 @@ def _import_raw_items(raw_items):
         if existing_raw_data:
             if _update_existing_academic_rule_images(existing_raw_data, item, summary):
                 continue
+            summary.raw_data_ids.append(existing_raw_data.id)
             summary.skipped_count += 1
             summary.duplicate_count += 1
             _increment_skipped_source(summary, item.get('source_type', 'notice'))
@@ -192,6 +202,7 @@ def _import_raw_items(raw_items):
         item = _apply_ocr_pipeline(item, summary)
         raw_data = _create_raw_data(item)
         ensure_raw_identity_metadata(raw_data, save=True)
+        summary.raw_data_ids.append(raw_data.id)
 
         summary.raw_count += 1
         _increment_source_count(summary, raw_data.source_type)
@@ -304,7 +315,6 @@ def _store_review_required_candidates(raw_data, grid_debug):
     metadata['review_required_candidates'] = review_required_candidates
     raw_data.metadata_json = metadata
 
-
 def _store_parser_warning(raw_data, warnings):
     metadata = dict(raw_data.metadata_json or {})
     metadata['parser_warnings'] = list(dict.fromkeys([*(metadata.get('parser_warnings') or []), *warnings]))
@@ -331,8 +341,7 @@ def _should_skip_fallback_week_timetable(schedule):
     parser_type = metadata.get('parser_type') or metadata.get('parser')
     return parser_type in {'timetable_grid', 'ocr_timetable_grid'} and metadata.get('date_mapping_source') == 'fallback_week'
 
-
-def _build_success_message(selected_mode, summary, crawler_debug=None):
+def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats=None):
     message = (
         f'{SUCCESS_MESSAGE} mode={selected_mode}, '
         f'{_source_result_summary(summary, crawler_debug)}, '
@@ -372,6 +381,14 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
         f'saved_count={summary.raw_count}, '
         f'updated_count={summary.updated_count}'
     )
+    if rag_stats:
+        message = (
+            f'{message}, rag_raw_total={rag_stats.get("raw_total", 0)}, '
+            f'rag_documents={rag_stats.get("documents", 0)}, '
+            f'rag_vectors_success={rag_stats.get("vectors_success", 0)}, '
+            f'rag_vectors_failed={rag_stats.get("vectors_failed", 0)}, '
+            f'rag_chunks={rag_stats.get("chunks", 0)}'
+        )
     if summary.event_skipped_count:
         message = f'{message}, event_skipped_count={summary.event_skipped_count}'
         message = (
@@ -407,6 +424,25 @@ def _build_success_message(selected_mode, summary, crawler_debug=None):
     if debug_message:
         message = f'{message}, crawler_debug={debug_message}'
     return _append_source_run_logs(message, summary, crawler_debug)
+
+
+def _ingest_raw_data_to_rag(raw_data_ids):
+    if not raw_data_ids:
+        return {'raw_total': 0, 'documents': 0, 'vectors_success': 0, 'vectors_failed': 0, 'chunks': 0}
+    try:
+        from apps.ai.sync_ingestion import SyncRawDataRagIngestionService
+
+        return SyncRawDataRagIngestionService().ingest_raw_data_ids(raw_data_ids, ingest_vectors=True)
+    except Exception as exc:
+        LOGGER.exception('Failed to ingest crawled RawSsafyData into RAG: %s', exc)
+        return {
+            'raw_total': len(raw_data_ids),
+            'documents': 0,
+            'vectors_success': 0,
+            'vectors_failed': len(raw_data_ids),
+            'chunks': 0,
+            'error': str(exc)[:300],
+        }
 
 
 ALLOWED_SOURCE_TYPES = {
@@ -1072,8 +1108,15 @@ def _mark_job_failed(job_log, message, summary=None):
 
 
 def _mark_job_partial_success(job_log, message, summary):
+    rag_stats = _ingest_raw_data_to_rag(summary.raw_data_ids)
     job_log.status = CrawlJobLog.STATUS_PARTIAL_SUCCESS
-    job_log.message = message
+    job_log.message = (
+        f'{message}, rag_raw_total={rag_stats.get("raw_total", 0)}, '
+        f'rag_documents={rag_stats.get("documents", 0)}, '
+        f'rag_vectors_success={rag_stats.get("vectors_success", 0)}, '
+        f'rag_vectors_failed={rag_stats.get("vectors_failed", 0)}, '
+        f'rag_chunks={rag_stats.get("chunks", 0)}'
+    )
     job_log.raw_count = summary.raw_count
     job_log.event_count = summary.event_count
     job_log.failed_count = summary.failed_count + 1
