@@ -1,4 +1,5 @@
 import re
+import logging
 from dataclasses import dataclass, field
 from datetime import date, time, timedelta
 
@@ -8,8 +9,21 @@ from django.db.models import Q
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from sync.services.calendar_quality import (
+    build_month_quality_report,
+    format_merge_candidates,
+    format_suspicious_events,
+    generated_merge_groups,
+    is_deletable_generated_event,
+    parse_month_option,
+    suspicious_events_by_reason,
+)
 from sync.models import RawSsafyData
 from sync.services.reparse_service import reparse_raw_data_to_events
+from sync.services.schedule_identity import choose_representative_title
+from sync.services.tracks import TRACK_ALIASES as CANONICAL_TRACK_ALIASES
+from sync.services.tracks import TRACK_DISPLAY_BY_KEY as CANONICAL_TRACK_DISPLAY_BY_KEY
+from sync.services.tracks import normalize_track_key
 
 
 REPAIR_SOURCE = 'manual_calendar_correction'
@@ -30,6 +44,8 @@ TRACK_ALIASES = {
 TRACK_DISPLAY_BY_KEY = {value: key for key, value in TRACK_ALIASES.items()}
 TRACK_DISPLAY_BY_KEY.update({key: key for key in TRACK_ALIASES})
 TRACK_DISPLAY_BY_KEY.update({'java_non_major': 'Java비전공', 'java_major': 'Java전공'})
+TRACK_ALIASES.update(CANONICAL_TRACK_ALIASES)
+TRACK_DISPLAY_BY_KEY.update(CANONICAL_TRACK_DISPLAY_BY_KEY)
 COMMON_TRACKS = {'', 'common', 'all', '공통'}
 COMMON_TITLE_KEYWORDS = [
     '과목평가', '월말평가', 'SSAFY DAY', '설날', '온라인 위크', '관통', 'PJT',
@@ -63,6 +79,7 @@ OCR_CANDIDATE_KEYWORDS = [
     '온라인 위크',
     '관통 프로젝트',
 ]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -98,6 +115,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--dry-run', action='store_true', help='Print changes without writing them.')
+        parser.add_argument('--confirm', action='store_true', help='Allow writes when --month is provided.')
+        parser.add_argument('--month', help='Inspect and repair one calendar month. Accepts 5 or 2026-05.')
+        parser.add_argument('--year', type=int, default=2026, help='Calendar year used when --month is a number.')
         parser.add_argument(
             '--use-manual-fallback',
             action='store_true',
@@ -105,6 +125,17 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get('month'):
+            deleted_count = _repair_month_quality_report(
+                self.stdout,
+                options['month'],
+                options['year'],
+                confirmed=options['confirm'],
+                dry_run=options['dry_run'] or not options['confirm'],
+            )
+            self.stdout.write(f'deleted_count={deleted_count}')
+            return
+
         summary = repair_calendar_events(
             dry_run=options['dry_run'],
             use_manual_fallback=options['use_manual_fallback'],
@@ -138,6 +169,91 @@ class Command(BaseCommand):
                 f'dry_run={str(summary.dry_run).lower()}'
             )
         )
+
+
+def _repair_month_quality_report(stdout, month_option, year_option, confirmed=False, dry_run=True):
+    year, month = parse_month_option(month_option, year_option)
+    report = build_month_quality_report(year, month)
+    targets = _month_delete_targets(report)
+    merge_groups = generated_merge_groups(report.events)
+    stdout.write(f'month={year}-{month:02d}')
+    stdout.write(f'dry_run={str(dry_run).lower()}')
+    stdout.write(f'confirmed={str(confirmed).lower()}')
+    stdout.write(f'suspicious_events={format_suspicious_events(report.suspicious_events)}')
+    stdout.write(
+        'suspicious_holiday_generated='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "holiday_generated"))}'
+    )
+    stdout.write(
+        'suspicious_fallback_week='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "fallback_week"))}'
+    )
+    stdout.write(
+        'duplicate_events='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "duplicate_title"))}'
+    )
+    stdout.write(
+        'meaningless_title_events='
+        f'{format_suspicious_events(suspicious_events_by_reason(report.suspicious_events, "meaningless_title"))}'
+    )
+    stdout.write(f'merge_candidates={format_merge_candidates(merge_groups)}')
+    for event in targets:
+        metadata = event.metadata_json or {}
+        stdout.write(
+            'delete_target '
+            f'id={event.id} '
+            f'title={_safe_log(event.title)} '
+            f'start_at={timezone.localtime(event.start_at).isoformat()} '
+            f'source_title={_safe_log(metadata.get("source_title"))}'
+        )
+    if confirmed and not dry_run and targets:
+        ScheduleEvent.objects.filter(id__in=[event.id for event in targets]).delete()
+    merged_deleted_count = 0
+    if confirmed and not dry_run:
+        merged_deleted_count = _merge_generated_groups(merge_groups)
+    return len(targets) + merged_deleted_count
+
+
+def _month_delete_targets(report):
+    targets = []
+    for item in report.suspicious_events:
+        if not {'holiday_generated', 'fallback_week', 'meaningless_title'} & set(item.reasons):
+            continue
+        event = item.event
+        if event.event_type == 'holiday' or not is_deletable_generated_event(event):
+            continue
+        targets.append(event)
+    return targets
+
+
+def _safe_log(value):
+    return str(value if value is not None else '').replace('\n', ' ').replace('\r', ' ')
+
+
+def _merge_generated_groups(groups):
+    deleted_count = 0
+    for group in groups:
+        ordered = sorted(group, key=lambda event: (len(event.title or ''), event.id))
+        keep = ordered[0]
+        aliases = {keep.title}
+        merged_ids = set((keep.metadata_json or {}).get('merged_from_event_ids') or [])
+        merged_ids.add(keep.id)
+        for event in ordered[1:]:
+            aliases.add(event.title)
+            aliases.update((event.metadata_json or {}).get('alias_titles') or [])
+            merged_ids.add(event.id)
+        representative = choose_representative_title(aliases)
+        metadata = dict(keep.metadata_json or {})
+        metadata['alias_titles'] = sorted(value for value in aliases if value and value != representative)
+        metadata['merged_from_event_ids'] = sorted(merged_ids)
+        keep.title = representative or keep.title
+        keep.metadata_json = metadata
+        keep.save(update_fields=['title', 'metadata_json'])
+        delete_ids = [event.id for event in ordered[1:]]
+        if delete_ids:
+            deleted_count += len(delete_ids)
+            ScheduleEvent.objects.filter(id__in=delete_ids).delete()
+    return deleted_count
 
 
 @transaction.atomic
@@ -254,6 +370,14 @@ def _correct_weekday_mismatches(summary, dry_run=False):
         corrected_date = _adjacent_date_for_weekday(event_date, target_weekday)
         if not corrected_date:
             continue
+        logger.warning(
+            'schedule_date_corrected event_id=%s title=%r old_date=%s new_date=%s target_weekday=%s',
+            event.id,
+            event.title,
+            event_date.isoformat(),
+            corrected_date.isoformat(),
+            target_weekday,
+        )
         duration = event.end_at - event.start_at
         new_start = _aware(corrected_date)
         summary.weekday_corrected_count += 1
@@ -557,15 +681,7 @@ def _track_from_text(text):
 
 
 def _normalize_track(track):
-    text = str(track or '').strip()
-    if not text:
-        return ''
-    lowered = text.lower().replace('-', '_').replace(' ', '_')
-    alias_by_lower = {key.lower().replace(' ', '_'): value for key, value in TRACK_ALIASES.items()}
-    alias_by_lower.update({value.lower(): value for value in TRACK_ALIASES.values()})
-    if lowered in alias_by_lower:
-        return alias_by_lower[lowered]
-    return TRACK_ALIASES.get(text, text)
+    return normalize_track_key(track)
 
 
 def _strip_weekday_marker(title):
