@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
-from schedules.utils import normalize_schedule_display_title
+from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
 from sync.models import RawSsafyData
 from sync.services.import_service import run_sample_notice_import
 from sync.services.schedule_parser import parse_schedule_candidates
@@ -25,6 +25,18 @@ class ScheduleDisplayTitleTests(TestCase):
         for raw_title, expected in cases.items():
             with self.subTest(raw_title=raw_title):
                 self.assertEqual(normalize_schedule_display_title(raw_title), expected)
+
+    def test_meaningless_title_filter_blocks_fragments_but_keeps_meaningful_titles(self):
+        meaningless_titles = ['00-12', 'DB', 'JS', '&A', '5/12', '5월', '12일', 'SAMSUNG', 'AI ACADEMY', 'FOR YOUTH']
+        meaningful_titles = ['DB 설계', 'JS DOM', 'Django DRF', '실습 Q&A']
+
+        for title in meaningless_titles:
+            with self.subTest(title=title):
+                self.assertTrue(is_meaningless_schedule_title(title))
+
+        for title in meaningful_titles:
+            with self.subTest(title=title):
+                self.assertFalse(is_meaningless_schedule_title(title))
 
 
 class ScheduleEventApiTests(TestCase):
@@ -387,6 +399,28 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload[0]['title'], 'Meister event')
         self.assertEqual(payload[0]['metadata']['track'], 'meister')
 
+    def test_event_list_filters_java_alias_canonically(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Java alias event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'Java'},
+        )
+        ScheduleEvent.objects.create(
+            title='Python event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            metadata_json={'track': 'python'},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'track': 'java_major'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['title'] for item in response.json()], ['Java alias event'])
+
     def test_event_list_track_filter_keeps_common_title_events(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
         ScheduleEvent.objects.create(
@@ -599,6 +633,37 @@ class ScheduleEventApiTests(TestCase):
         payload = response.json()[0]
         self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/1')
         self.assertEqual(payload['source_title'], 'Source notice')
+        self.assertEqual(payload['raw_data_id'], raw_data.id)
+
+    def test_source_fields_resolve_metadata_raw_data_id_when_fk_is_missing(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/actual',
+            title='Actual source notice',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Metadata linked event',
+            description='description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='notice',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_url': 'https://example.com/forged',
+                'source_title': 'Wrong title',
+            },
+        )
+
+        response = self.client.get(reverse('schedule-event-list'))
+
+        payload = response.json()[0]
+        self.assertEqual(payload['raw_data_id'], raw_data.id)
+        self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/actual')
+        self.assertEqual(payload['source_title'], 'Actual source notice')
 
     def test_imported_events_store_audience_metadata_from_raw_data(self):
         run_sample_notice_import()

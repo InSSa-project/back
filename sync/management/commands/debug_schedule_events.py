@@ -1,3 +1,4 @@
+from collections import Counter, defaultdict
 from datetime import datetime
 
 from django.core.management.base import BaseCommand
@@ -6,6 +7,7 @@ from django.utils.dateparse import parse_date
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from schedules.utils import is_meaningless_schedule_title, normalize_event_title_for_dedupe
 from sync.models import RawSsafyData
 from sync.services.calendar_quality import (
     build_month_quality_report,
@@ -16,6 +18,7 @@ from sync.services.calendar_quality import (
     parse_month_option,
 )
 from sync.services.reparse_service import reparse_raw_data_to_events
+from sync.services.tracks import canonical_track_keys, normalize_track_key
 
 MIN_HEALTHY_REPARSE_TARGET_COUNT = 3
 
@@ -72,6 +75,11 @@ class Command(BaseCommand):
         self.stdout.write(f'month_generated_count={quality_report.generated_count}')
         self.stdout.write(f'month_manual_count={quality_report.manual_count}')
         self.stdout.write(f'month_holiday_count={quality_report.holiday_count}')
+        self.stdout.write(f'track_event_counts={_track_event_counts(quality_report.events)}')
+        self.stdout.write(f'evaluation_missing_tracks={_evaluation_missing_tracks(quality_report.events)}')
+        self.stdout.write(f'source_mismatches={_source_mismatches(quality_report.events)}')
+        self.stdout.write(f'meaningless_titles={_meaningless_titles(quality_report.events)}')
+        self.stdout.write(f'duplicate_candidates={_duplicate_candidates(quality_report.events)}')
         self.stdout.write(f'skip_reason_counts={format_count_dict(quality_report.skip_reason_counts)}')
         self.stdout.write(f'suspicious_events={format_suspicious_events(quality_report.suspicious_events)}')
         self.stdout.write(f'suspicious_empty_weekdays={format_empty_weekdays(quality_report.suspicious_empty_weekdays)}')
@@ -143,6 +151,120 @@ def _existing_event_dates():
     for event in ScheduleEvent.objects.order_by('start_at', 'id')[:20]:
         dates.append(f'{timezone.localdate(event.start_at).isoformat()}:{event.title}')
     return '|'.join(dates) or 'none'
+
+
+def _track_event_counts(events):
+    counts = Counter()
+    for event in events:
+        track = _event_track_key(event)
+        counts[track or 'common'] += 1
+    return '|'.join(f'{key}:{counts[key]}' for key in sorted(counts)) or 'none'
+
+
+def _evaluation_missing_tracks(events):
+    required_tracks = set(canonical_track_keys())
+    groups = defaultdict(set)
+    labels = {}
+    for event in events:
+        if not _is_evaluation_event(event):
+            continue
+        key = (timezone.localdate(event.start_at), normalize_event_title_for_dedupe(event.title))
+        track = _event_track_key(event)
+        if track:
+            groups[key].add(track)
+        labels[key] = f'{key[0].isoformat()}:{event.title}'
+
+    missing = []
+    for key, tracks in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1])):
+        absent = sorted(required_tracks - tracks)
+        if absent:
+            missing.append(f'{_safe(labels[key])}:missing={",".join(absent)}')
+    return '|'.join(missing) or 'none'
+
+
+def _source_mismatches(events):
+    mismatches = []
+    for event in events:
+        metadata = event.metadata_json or {}
+        if not event.raw_data_id:
+            if metadata.get('raw_data_id') and not RawSsafyData.objects.filter(pk=metadata.get('raw_data_id')).exists():
+                mismatches.append(f'id={event.id}:missing_raw_data_id={metadata.get("raw_data_id")}')
+            continue
+
+        raw_data = event.raw_data
+        metadata_raw_data_id = metadata.get('raw_data_id')
+        metadata_source_url = metadata.get('source_url')
+        metadata_source_title = metadata.get('source_title')
+        reasons = []
+        if metadata_raw_data_id and str(metadata_raw_data_id) != str(raw_data.id):
+            reasons.append(f'raw_data_id:{metadata_raw_data_id}!={raw_data.id}')
+        if metadata_source_url and metadata_source_url != raw_data.source_url:
+            reasons.append('source_url')
+        if metadata_source_title and metadata_source_title != raw_data.title:
+            reasons.append('source_title')
+        if reasons:
+            mismatches.append(f'id={event.id}:{",".join(reasons)}')
+    return '|'.join(mismatches) or 'none'
+
+
+def _meaningless_titles(events):
+    values = []
+    for event in events:
+        metadata = event.metadata_json or {}
+        title = metadata.get('display_title') or event.title
+        if is_meaningless_schedule_title(title):
+            values.append(f'id={event.id}:{_safe(title)}')
+    return '|'.join(values) or 'none'
+
+
+def _duplicate_candidates(events):
+    groups = defaultdict(list)
+    for event in events:
+        normalized = normalize_event_title_for_dedupe(event.title)
+        if not normalized:
+            continue
+        key = (
+            timezone.localdate(event.start_at),
+            event.start_at,
+            event.end_at,
+            event.event_type,
+            _event_track_key(event),
+            normalized,
+        )
+        groups[key].append(event)
+
+    candidates = []
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+        candidates.append(
+            ','.join(
+                f'{event.id}:{_safe(event.title)}:{_event_track_key(event) or "common"}'
+                for event in group
+            )
+        )
+    return '|'.join(candidates) or 'none'
+
+
+def _is_evaluation_event(event):
+    title = str(event.title or '')
+    metadata = event.metadata_json or {}
+    return (
+        event.event_type == 'exam'
+        and (
+            '월말평가' in title
+            or '과목평가' in title
+            or metadata.get('parser_type') == 'evaluation_notice'
+            or metadata.get('parser') == 'evaluation_notice_ocr'
+        )
+    )
+
+
+def _event_track_key(event):
+    metadata = event.metadata_json or {}
+    audience = metadata.get('audience') or {}
+    track = normalize_track_key(metadata.get('track_key') or metadata.get('track') or audience.get('track') or '')
+    return track if track in set(canonical_track_keys()) else ''
 
 
 def _print_events_for_date(stdout, target_date):

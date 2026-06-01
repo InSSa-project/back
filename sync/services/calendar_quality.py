@@ -11,6 +11,7 @@ from schedules.utils import is_meaningless_schedule_title, normalize_event_title
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.models import RawSsafyData
 from sync.services.schedule_identity import event_identity_key
+from sync.services.tracks import normalize_track_key
 
 
 GENERATED_REPAIR_SOURCES = {'manual_calendar_correction', 'manual_exam_correction'}
@@ -262,7 +263,7 @@ def _duplicate_generated_groups(events):
             continue
         metadata = event.metadata_json or {}
         audience = metadata.get('audience') or {}
-        track = str(metadata.get('track') or audience.get('track') or '').strip().lower()
+        track = normalize_track_key(metadata.get('track_key') or metadata.get('track') or audience.get('track') or '')
         key = (
             timezone.localdate(event.start_at),
             event.start_at,

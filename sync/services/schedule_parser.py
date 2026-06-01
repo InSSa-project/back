@@ -7,7 +7,7 @@ from django.utils import timezone
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
-from sync.services.tracks import canonical_track_display, canonical_track_keys, track_key_from_text
+from sync.services.tracks import canonical_track_display, canonical_track_keys, normalize_track_key, track_key_from_text
 
 
 DEFAULT_YEAR = 2026
@@ -583,7 +583,8 @@ def _dedupe_schedules(schedules):
         if _is_noise_schedule_title(schedule.title):
             continue
         metadata = schedule.metadata_json or {}
-        key = (schedule.title, schedule.start_at, schedule.event_type, metadata.get('track') or 'notice')
+        track_key = normalize_track_key(metadata.get('track_key') or metadata.get('track') or '')
+        key = (schedule.title, schedule.start_at, schedule.event_type, track_key or 'notice')
         if key in seen:
             continue
         seen.add(key)
