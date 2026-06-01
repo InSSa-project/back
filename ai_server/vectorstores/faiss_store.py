@@ -17,7 +17,10 @@ class FaissVectorStore:
         settings = get_settings()
         self.path = Path(path or settings.vectorstore_path)
         if not self.path.is_absolute():
-            self.path = Path.cwd() / self.path
+            self.path = self._project_root() / self.path
+
+    def _project_root(self) -> Path:
+        return Path(__file__).resolve().parents[2]
 
     def upsert(self, records: list[dict]) -> None:
         payload = self._load()
@@ -96,7 +99,10 @@ class FaissVectorStore:
                 continue
             if key == 'intent':
                 continue
-            if str(metadata.get(key, '')) != str(value):
+            metadata_value = metadata.get(key, '')
+            if metadata_value in (None, ''):
+                continue
+            if str(metadata_value) != str(value):
                 return False
         return True
 

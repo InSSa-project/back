@@ -37,6 +37,7 @@ class RawSsafyData(models.Model):
 class CrawlJobLog(models.Model):
     STATUS_RUNNING = 'running'
     STATUS_SUCCESS = 'success'
+    STATUS_PARTIAL_SUCCESS = 'partial_success'
     STATUS_FAILED = 'failed'
 
     STATUS_CHOICES = [

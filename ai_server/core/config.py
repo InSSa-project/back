@@ -6,6 +6,11 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     openai_api_key: str = Field(default='', alias='OPENAI_API_KEY')
     gemini_api_key: str = Field(default='', alias='GEMINI_API_KEY')
+    gms_api_key: str = Field(default='', alias='GMS_KEY')
+    gemini_api_base_url: str = Field(
+        default='https://gms.ssafy.io/gmsapi',
+        alias='GEMINI_API_BASE_URL',
+    )
     llm_provider: str = Field(default='openai', alias='LLM_PROVIDER')
     default_chat_model: str = Field(default='gpt-4.1-mini', alias='DEFAULT_CHAT_MODEL')
     default_gemini_model: str = Field(default='gemini-2.5-flash', alias='DEFAULT_GEMINI_MODEL')

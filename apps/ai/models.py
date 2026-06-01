@@ -7,7 +7,27 @@ class AiDocument(models.Model):
     EMBEDDING_SUCCESS = 'SUCCESS'
     EMBEDDING_FAILED = 'FAILED'
 
-    raw_data = models.ForeignKey('notices.RawSsafyData', on_delete=models.CASCADE, related_name='ai_documents')
+    raw_data = models.ForeignKey(
+        'notices.RawSsafyData',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='ai_documents',
+    )
+    sync_raw_data = models.ForeignKey(
+        'sync.RawSsafyData',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='ai_documents',
+    )
+    schedule_event = models.ForeignKey(
+        'schedules.ScheduleEvent',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='ai_documents',
+    )
     title = models.CharField(max_length=255)
     content = models.TextField()
     document_type = models.CharField(max_length=50)
@@ -18,6 +38,10 @@ class AiDocument(models.Model):
 
     def __str__(self):
         return self.title
+
+    @property
+    def canonical_raw_data_id(self):
+        return self.sync_raw_data_id or self.raw_data_id
 
 
 class ChatSession(models.Model):

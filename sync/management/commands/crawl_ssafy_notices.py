@@ -1,3 +1,6 @@
+import os
+from contextlib import contextmanager
+
 from django.core.management.base import BaseCommand
 from django.db.models import Count
 
@@ -14,10 +17,22 @@ class Command(BaseCommand):
             choices=['sample', 'ssafy_notice'],
             help='Crawler mode. Defaults to SSAFY_CRAWLER_MODE, then sample.',
         )
+        parser.add_argument('--source', help='Comma-separated source list, e.g. notice,academic_rule.')
+        parser.add_argument('--skip-source', help='Comma-separated source list to skip, e.g. mentoring_notice.')
+        parser.add_argument('--max-pages', type=int, help='Limit pages scanned per source for this run.')
+        parser.add_argument('--detail-timeout', type=float, help='Per Playwright action timeout in seconds.')
+        parser.add_argument('--source-timeout', type=float, help='Per source timeout in seconds.')
+        parser.add_argument(
+            '--timeout',
+            dest='source_timeout',
+            type=float,
+            help='Alias for --source-timeout. Limits each source independently.',
+        )
 
     def handle(self, *args, **options):
-        job_log = run_notice_import(mode=options.get('mode'))
-        style = self.style.SUCCESS if job_log.status == 'success' else self.style.ERROR
+        with _temporary_crawler_env(options):
+            job_log = run_notice_import(mode=options.get('mode'))
+        style = self.style.SUCCESS if job_log.status in {'success', 'partial_success'} else self.style.ERROR
         self.stdout.write(
             style(
                 f'{job_log.message} status={job_log.status}, raw_count={job_log.raw_count}, '
@@ -33,4 +48,40 @@ class Command(BaseCommand):
         self.stdout.write('RawSsafyData source counts:')
         for row in source_counts:
             self.stdout.write(f'{row["source_type"]}: {row["count"]}')
+        source_run_logs = _source_run_logs_from_message(job_log.message)
+        if source_run_logs:
+            self.stdout.write('Source run logs:')
+            for source_run_log in source_run_logs:
+                self.stdout.write(source_run_log)
+
+
+@contextmanager
+def _temporary_crawler_env(options):
+    mapping = {
+        'SSAFY_CRAWLER_SOURCES': options.get('source'),
+        'SSAFY_CRAWLER_SKIP_SOURCES': options.get('skip_source'),
+        'SSAFY_NOTICE_MAX_PAGES': options.get('max_pages'),
+        'SSAFY_DETAIL_TIMEOUT': options.get('detail_timeout'),
+        'SSAFY_SOURCE_TIMEOUT': options.get('source_timeout'),
+    }
+    original = {key: os.environ.get(key) for key in mapping}
+    try:
+        for key, value in mapping.items():
+            if value is not None:
+                os.environ[key] = str(value)
+        yield
+    finally:
+        for key, value in original.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _source_run_logs_from_message(message):
+    marker = 'source_run_logs='
+    if marker not in (message or ''):
+        return []
+    source_run_logs = message.split(marker, 1)[1]
+    return [item for item in source_run_logs.split(';') if item]
 
