@@ -7,7 +7,14 @@ from django.utils import timezone
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
-from sync.services.tracks import canonical_track_display, canonical_track_keys, normalize_track_key, track_key_from_text
+from sync.services.tracks import (
+    COMMON_TRACK_KEY,
+    canonical_track_display,
+    canonical_track_keys,
+    common_track_metadata,
+    normalize_track_key,
+    track_key_from_text,
+)
 
 
 DEFAULT_YEAR = 2026
@@ -582,6 +589,7 @@ def _dedupe_schedules(schedules):
     for schedule in schedules:
         if _is_noise_schedule_title(schedule.title):
             continue
+        _ensure_schedule_track_metadata(schedule)
         metadata = schedule.metadata_json or {}
         track_key = normalize_track_key(metadata.get('track_key') or metadata.get('track') or '')
         key = (schedule.title, schedule.start_at, schedule.event_type, track_key or 'notice')
@@ -590,6 +598,25 @@ def _dedupe_schedules(schedules):
         seen.add(key)
         deduped.append(schedule)
     return deduped
+
+
+def _ensure_schedule_track_metadata(schedule):
+    metadata = dict(schedule.metadata_json or {})
+    audience = dict(metadata.get('audience') or {})
+    track_key = normalize_track_key(metadata.get('track_key') or metadata.get('track') or audience.get('track') or '')
+    if track_key and track_key != COMMON_TRACK_KEY:
+        metadata['track_key'] = track_key
+        metadata.setdefault('track', canonical_track_display(track_key))
+        metadata.setdefault('track_display', canonical_track_display(track_key))
+        metadata['is_common'] = False
+        audience['track_key'] = track_key
+        audience['track'] = track_key
+    else:
+        metadata.update(common_track_metadata())
+        audience['track_key'] = COMMON_TRACK_KEY
+        audience['track'] = COMMON_TRACK_KEY
+    metadata['audience'] = audience
+    schedule.metadata_json = metadata
 
 
 def _is_noise_schedule_title(title):
@@ -694,7 +721,7 @@ def _parse_evaluation_notice(raw_text, default_title):
         return [], GridParseDebug(candidates=[], review_required_candidates=[])
 
     track = _extract_clear_track(text)
-    target_tracks = canonical_track_keys()
+    target_tracks = canonical_track_keys() if track else [COMMON_TRACK_KEY]
     debug = GridParseDebug(candidates=[], review_required_candidates=[])
     schedules = []
 
@@ -714,7 +741,8 @@ def _parse_evaluation_notice(raw_text, default_title):
         evaluation_type = type_match.group(1)
         title = f'{evaluation_type}: {subject}'
         for track_key in target_tracks:
-            track_display = canonical_track_display(track_key)
+            track_display = 'All' if track_key == COMMON_TRACK_KEY else canonical_track_display(track_key)
+            common_metadata = common_track_metadata() if track_key == COMMON_TRACK_KEY else {}
             schedules.append(
                 ParsedSchedule(
                     title=title[:255],
@@ -732,6 +760,7 @@ def _parse_evaluation_notice(raw_text, default_title):
                         'track': track_display,
                         'track_key': track_key,
                         'track_display': track_display,
+                        **common_metadata,
                         'candidate_date': event_date.isoformat(),
                         'date_mapping_source': 'explicit_text_date',
                         'confidence': 0.9 if track else 0.8,
@@ -858,7 +887,7 @@ def _parse_evaluation_notice(raw_text, default_title):
         return [], GridParseDebug(candidates=[], review_required_candidates=[])
 
     track = _extract_clear_track(text)
-    target_tracks = canonical_track_keys()
+    target_tracks = canonical_track_keys() if track else [COMMON_TRACK_KEY]
     debug = GridParseDebug(candidates=[], review_required_candidates=[])
     schedules = []
     day = '\uc77c'
@@ -896,7 +925,8 @@ def _parse_evaluation_notice(raw_text, default_title):
             )
             title = f'{type_match.group(1)}: {subject}'
         for track_key in target_tracks:
-            track_display = canonical_track_display(track_key)
+            track_display = 'All' if track_key == COMMON_TRACK_KEY else canonical_track_display(track_key)
+            common_metadata = common_track_metadata() if track_key == COMMON_TRACK_KEY else {}
             schedules.append(
                 ParsedSchedule(
                     title=title[:255],
@@ -914,6 +944,7 @@ def _parse_evaluation_notice(raw_text, default_title):
                         'track': track_display,
                         'track_key': track_key,
                         'track_display': track_display,
+                        **common_metadata,
                         'candidate_date': event_date.isoformat(),
                         'date_mapping_source': 'explicit_text_date',
                         'confidence': 0.9 if track else 0.8,

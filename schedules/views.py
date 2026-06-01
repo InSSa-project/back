@@ -11,7 +11,7 @@ from django.views.decorators.http import require_http_methods
 from .models import ScheduleEvent
 from .services import filter_events_for_user_profile
 from sync.models import RawSsafyData
-from sync.services.tracks import normalize_track_key
+from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
 from .utils import is_meaningless_schedule_title, normalize_schedule_display_title
 
@@ -50,7 +50,7 @@ TRACK_ALIASES = {
     'meister': 'meister',
     '마이스터고': 'meister',
 }
-COMMON_TRACK_VALUES = {'', 'common', 'all', '공통', '전체'}
+COMMON_TRACK_VALUES = {'', 'common', 'all', 'global', '공통', '전체'}
 COMMON_TITLE_KEYWORDS = (
     'SSAFY DAY',
     '설날',
@@ -281,6 +281,8 @@ def _serialize_event(event):
     raw_data = _event_raw_data(event, metadata)
     raw_data_id = raw_data.id if raw_data else (metadata.get('raw_data_id') or None)
     source_title = raw_data.title if raw_data else metadata.get('source_title')
+    is_common = _is_common_event(event, metadata)
+    track_key = COMMON_TRACK_KEY if is_common else _event_track(metadata, metadata.get('audience') or {})
     return {
         'id': event.id,
         'title': event.title,
@@ -298,7 +300,9 @@ def _serialize_event(event):
         'audience': metadata.get('audience', {}),
         'source_url': raw_data.source_url if raw_data else None,
         'source_title': source_title,
-        'track': _event_track(metadata, metadata.get('audience') or {}),
+        'track': track_key,
+        'track_key': track_key,
+        'is_common': is_common,
     }
 
 
@@ -397,6 +401,8 @@ def _event_track(metadata, audience):
 def _is_common_event(event, metadata):
     audience = metadata.get('audience') or {}
     track = _event_track(metadata, audience)
+    if metadata.get('is_common') is True:
+        return True
     if _is_common_track(track):
         return True
     if metadata.get('is_global') is True or getattr(event, 'is_global', False) is True:
@@ -408,7 +414,7 @@ def _is_common_event(event, metadata):
 def _is_common_track(value):
     if _is_blank(value):
         return True
-    return _normalize_track(value) in COMMON_TRACK_VALUES
+    return _normalize_track(value) in COMMON_TRACK_VALUES or _normalize_track(value) == COMMON_TRACK_KEY
 
 
 def _normalize_track(value):

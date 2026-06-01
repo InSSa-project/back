@@ -18,7 +18,7 @@ from sync.services.calendar_quality import (
     parse_month_option,
 )
 from sync.services.reparse_service import reparse_raw_data_to_events
-from sync.services.tracks import canonical_track_keys, normalize_track_key
+from sync.services.tracks import COMMON_TRACK_KEY, canonical_track_keys, normalize_track_key
 
 MIN_HEALTHY_REPARSE_TARGET_COUNT = 3
 
@@ -76,6 +76,10 @@ class Command(BaseCommand):
         self.stdout.write(f'month_manual_count={quality_report.manual_count}')
         self.stdout.write(f'month_holiday_count={quality_report.holiday_count}')
         self.stdout.write(f'track_event_counts={_track_event_counts(quality_report.events)}')
+        self.stdout.write(f'common_all_event_count={_common_all_event_count(quality_report.events)}')
+        self.stdout.write(f'unclassified_track_events={_unclassified_track_events(quality_report.events)}')
+        self.stdout.write(f'track_filter_risk_events={_track_filter_risk_events(quality_report.events)}')
+        self.stdout.write(f'common_candidate_events={_common_candidate_events(quality_report.events)}')
         self.stdout.write(f'evaluation_missing_tracks={_evaluation_missing_tracks(quality_report.events)}')
         self.stdout.write(f'source_mismatches={_source_mismatches(quality_report.events)}')
         self.stdout.write(f'meaningless_titles={_meaningless_titles(quality_report.events)}')
@@ -157,8 +161,51 @@ def _track_event_counts(events):
     counts = Counter()
     for event in events:
         track = _event_track_key(event)
-        counts[track or 'common'] += 1
+        counts[track or 'unclassified'] += 1
     return '|'.join(f'{key}:{counts[key]}' for key in sorted(counts)) or 'none'
+
+
+def _common_all_event_count(events):
+    return sum(1 for event in events if _is_common_event(event))
+
+
+def _unclassified_track_events(events):
+    values = []
+    for event in events:
+        metadata = event.metadata_json or {}
+        audience = metadata.get('audience') or {}
+        has_any_track_value = any(
+            str(value or '').strip()
+            for value in [
+                metadata.get('track_key'),
+                metadata.get('track'),
+                audience.get('track_key'),
+                audience.get('track'),
+            ]
+        )
+        if has_any_track_value or _is_common_event(event):
+            continue
+        values.append(_event_debug_label(event))
+    return '|'.join(values[:30]) or 'none'
+
+
+def _track_filter_risk_events(events):
+    values = []
+    for event in events:
+        track = _event_track_key(event)
+        if track in set(canonical_track_keys()) or _is_common_event(event):
+            continue
+        values.append(_event_debug_label(event))
+    return '|'.join(values[:30]) or 'none'
+
+
+def _common_candidate_events(events):
+    values = []
+    for event in events:
+        if not _is_common_candidate(event):
+            continue
+        values.append(_event_debug_label(event))
+    return '|'.join(values[:30]) or 'none'
 
 
 def _evaluation_missing_tracks(events):
@@ -263,8 +310,36 @@ def _is_evaluation_event(event):
 def _event_track_key(event):
     metadata = event.metadata_json or {}
     audience = metadata.get('audience') or {}
-    track = normalize_track_key(metadata.get('track_key') or metadata.get('track') or audience.get('track') or '')
+    track = normalize_track_key(
+        metadata.get('track_key')
+        or metadata.get('track')
+        or audience.get('track_key')
+        or audience.get('track')
+        or ''
+    )
+    if track == COMMON_TRACK_KEY:
+        return COMMON_TRACK_KEY
     return track if track in set(canonical_track_keys()) else ''
+
+
+def _is_common_event(event):
+    metadata = event.metadata_json or {}
+    if metadata.get('is_common') is True:
+        return True
+    return _event_track_key(event) == COMMON_TRACK_KEY
+
+
+def _is_common_candidate(event):
+    title = f'{event.title or ""} {(event.metadata_json or {}).get("source_title") or ""}'
+    keywords = ['온라인 위크', '?⑤씪???꾪겕', 'common', '공통', '전체 교육생', '전체']
+    return any(keyword in title for keyword in keywords) or (_event_track_key(event) in {'', COMMON_TRACK_KEY})
+
+
+def _event_debug_label(event):
+    return (
+        f'id={event.id}:date={timezone.localdate(event.start_at).isoformat()}:'
+        f'track={_event_track_key(event) or "-"}:title={_safe(event.title)}'
+    )
 
 
 def _print_events_for_date(stdout, target_date):
@@ -324,4 +399,5 @@ def _event_source_url(event):
 
 
 def _safe(value):
-    return str(value if value is not None else '').replace('\n', ' ').replace('\r', ' ')
+    text = str(value if value is not None else '').replace('\n', ' ').replace('\r', ' ')
+    return text.encode('cp949', errors='replace').decode('cp949')

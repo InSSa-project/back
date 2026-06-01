@@ -11,7 +11,7 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     extracted_date_range_for_schedule,
 )
-from sync.services.tracks import normalize_track_key
+from sync.services.tracks import COMMON_TRACK_KEY, common_track_metadata, normalize_track_key
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -38,9 +38,10 @@ def build_event_metadata_from_raw_data(raw_data):
 
 def build_generated_event_metadata(raw_data, schedule):
     metadata = build_event_metadata_from_raw_data(raw_data)
+    raw_audience = dict(metadata.get('audience') or {})
     metadata.update(getattr(schedule, 'metadata_json', None) or {})
-    if metadata.get('track') and not metadata.get('track_key'):
-        metadata['track_key'] = normalize_track_key(metadata.get('track'))
+    metadata['audience'] = {**raw_audience, **(metadata.get('audience') or {})}
+    _normalize_generated_track_metadata(metadata)
     if raw_data:
         raw_metadata = ensure_raw_identity_metadata(raw_data, save=False)
         metadata['raw_data_id'] = raw_data.id
@@ -57,6 +58,27 @@ def build_generated_event_metadata(raw_data, schedule):
     if warnings:
         metadata['parser_warnings'] = warnings
     return metadata
+
+
+def _normalize_generated_track_metadata(metadata):
+    audience = metadata.setdefault('audience', {})
+    explicit_track = metadata.get('track_key') or metadata.get('track')
+    normalized_track = normalize_track_key(explicit_track)
+    if normalized_track:
+        metadata['track_key'] = normalized_track
+        metadata.setdefault('track', normalized_track)
+        metadata['is_common'] = normalized_track == COMMON_TRACK_KEY or bool(metadata.get('is_common'))
+    else:
+        metadata.update(common_track_metadata())
+
+    if metadata.get('is_common'):
+        metadata['track_key'] = COMMON_TRACK_KEY
+        metadata['track'] = COMMON_TRACK_KEY
+        audience['track_key'] = COMMON_TRACK_KEY
+        audience['track'] = COMMON_TRACK_KEY
+    else:
+        audience['track_key'] = metadata.get('track_key')
+        audience['track'] = metadata.get('track_key') or metadata.get('track')
 
 
 def validate_generated_schedule(raw_data, schedule):
@@ -152,6 +174,8 @@ def filter_events_for_user_profile(events, profile):
 def _matches_profile_audience(audience, profile):
     for key in AUDIENCE_METADATA_KEYS:
         event_value = audience.get(key)
+        if key == 'track' and normalize_track_key(event_value) == COMMON_TRACK_KEY:
+            continue
         profile_value = getattr(profile, key, None)
         if event_value and profile_value and str(event_value) != str(profile_value):
             return False
