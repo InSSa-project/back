@@ -2066,6 +2066,46 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('Source run logs:', output.getvalue())
         self.assertIn('source_type=academic_rule', output.getvalue())
 
+    def test_check_crawl_env_succeeds_when_required_values_exist(self):
+        output = StringIO()
+        env = {
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_QUEST_LIST_URL': 'https://example.com/quests',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('SSAFY crawl environment check OK.', rendered)
+        self.assertIn('checked_count=6', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+
+    def test_check_crawl_env_prints_missing_keys_without_values(self):
+        output = StringIO()
+        env = {
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- SSAFY_RULE_LIST_URL', rendered)
+        self.assertIn('- SSAFY_QUEST_LIST_URL', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+        self.assertNotIn('https://example.com/login', rendered)
+
     def test_scheduled_crawl_dry_run_defaults_to_hourly_sources_and_limits(self):
         output = StringIO()
         seen = {}
