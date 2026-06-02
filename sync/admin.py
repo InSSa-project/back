@@ -31,6 +31,16 @@ class CrawlJobLogAdmin(admin.ModelAdmin):
         'notice_count',
         'academic_rule_count',
         'no_schedule_count',
+        'image_count',
+        'ocr_processed_count',
+        'ocr_failed_count',
+        'message_preview',
     )
     list_filter = ('status', 'crawler_mode')
+    search_fields = ('message',)
+
+    def message_preview(self, obj):
+        return obj.message[:180]
+
+    message_preview.short_description = 'message preview'
 

@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand
 from django.db.models import Count
 
 from sync.models import RawSsafyData
-from sync.services.import_service import run_notice_import
+from sync.services.import_service import preview_notice_import, run_notice_import
 
 
 class Command(BaseCommand):
@@ -18,8 +18,24 @@ class Command(BaseCommand):
             help='Crawler mode. Defaults to SSAFY_CRAWLER_MODE, then sample.',
         )
         parser.add_argument('--source', help='Comma-separated source list, e.g. notice,academic_rule.')
+        parser.add_argument(
+            '--source-type',
+            action='append',
+            help='Source type to collect. Can be repeated or comma-separated, e.g. --source-type notice.',
+        )
+        parser.add_argument(
+            '--all',
+            action='store_true',
+            help='Collect all configured sources. This clears --source/--source-type filters.',
+        )
         parser.add_argument('--skip-source', help='Comma-separated source list to skip, e.g. mentoring_notice.')
+        parser.add_argument(
+            '--dry-run',
+            action='store_true',
+            help='Collect and classify candidates without writing RawSsafyData, ScheduleEvent, or CrawlJobLog rows.',
+        )
         parser.add_argument('--max-pages', type=int, help='Limit pages scanned per source for this run.')
+        parser.add_argument('--recent-limit', type=int, help='Limit recent unique items checked per source for this run.')
         parser.add_argument('--detail-timeout', type=float, help='Per Playwright action timeout in seconds.')
         parser.add_argument('--source-timeout', type=float, help='Per source timeout in seconds.')
         parser.add_argument(
@@ -31,6 +47,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         with _temporary_crawler_env(options):
+            if options.get('dry_run'):
+                preview = preview_notice_import(mode=options.get('mode'))
+                return _print_dry_run(self, preview)
             job_log = run_notice_import(mode=options.get('mode'))
         style = self.style.SUCCESS if job_log.status in {'success', 'partial_success'} else self.style.ERROR
         self.stdout.write(
@@ -57,10 +76,12 @@ class Command(BaseCommand):
 
 @contextmanager
 def _temporary_crawler_env(options):
+    source_filter = _source_filter_option(options)
     mapping = {
-        'SSAFY_CRAWLER_SOURCES': options.get('source'),
+        'SSAFY_CRAWLER_SOURCES': source_filter,
         'SSAFY_CRAWLER_SKIP_SOURCES': options.get('skip_source'),
         'SSAFY_NOTICE_MAX_PAGES': options.get('max_pages'),
+        'SSAFY_CRAWLER_RECENT_LIMIT': options.get('recent_limit'),
         'SSAFY_DETAIL_TIMEOUT': options.get('detail_timeout'),
         'SSAFY_SOURCE_TIMEOUT': options.get('source_timeout'),
     }
@@ -84,4 +105,50 @@ def _source_run_logs_from_message(message):
         return []
     source_run_logs = message.split(marker, 1)[1]
     return [item for item in source_run_logs.split(';') if item]
+
+
+def _source_filter_option(options):
+    if options.get('all'):
+        return ''
+    values = []
+    if options.get('source'):
+        values.append(options['source'])
+    for source_type in options.get('source_type') or []:
+        values.append(source_type)
+    return ','.join(values) if values else None
+
+
+def _print_dry_run(command, preview):
+    summary = preview['summary']
+    style = command.style.WARNING if summary.failed_count else command.style.SUCCESS
+    command.stdout.write(
+        style(
+            'dry_run=true, '
+            f'mode={preview["mode"]}, '
+            f'collected={sum(summary.collected_source_counts.values())}, '
+            f'would_create_raw={summary.raw_count}, '
+            f'would_update_raw={summary.updated_count}, '
+            f'would_skip_duplicate={summary.duplicate_count}, '
+            f'would_exclude={summary.excluded_count}, '
+            f'would_process_ocr_images={summary.ocr_processed_count}, '
+            f'would_create_schedule_events={summary.event_count}, '
+            f'failed_count={summary.failed_count}'
+        )
+    )
+    command.stdout.write(f'collected_by_source={_format_count_dict(summary.collected_source_counts)}')
+    command.stdout.write(f'would_create_by_source={_format_count_dict(summary.source_counts)}')
+    command.stdout.write(f'would_update_by_source={_format_count_dict(summary.updated_by_source)}')
+    command.stdout.write(f'would_skip_by_source={_format_count_dict(summary.skipped_by_source)}')
+    command.stdout.write(f'no_schedule_by_source={_format_count_dict(summary.no_schedule_by_type)}')
+    source_run_logs = _source_run_logs_from_message(preview.get('message', ''))
+    if source_run_logs:
+        command.stdout.write('Source run logs:')
+        for source_run_log in source_run_logs:
+            command.stdout.write(source_run_log)
+
+
+def _format_count_dict(values):
+    if not values:
+        return 'none'
+    return '|'.join(f'{key}:{values[key]}' for key in sorted(values))
 

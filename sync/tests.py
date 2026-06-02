@@ -15,7 +15,7 @@ from django.utils import timezone
 from schedules.models import ScheduleEvent
 from schedules.utils import is_wrapper_schedule_title, normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
-from sync.services.import_service import run_notice_import, run_sample_notice_import
+from sync.services.import_service import ImportSummary, preview_notice_import, run_notice_import, run_sample_notice_import
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.reparse_service import reparse_raw_data_to_events
 from sync.services.schedule_parser import ParsedSchedule, parse_schedule_candidates, parse_schedule_candidates_with_debug
@@ -197,10 +197,11 @@ class SampleNoticeImportTests(TestCase):
             job_log = run_notice_import(mode='ssafy_notice')
 
         self.assertEqual(job_log.raw_count, 0)
-        self.assertEqual(job_log.event_count, 0)
-        self.assertEqual(job_log.skipped_count, 1)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(job_log.skipped_count, 0)
+        self.assertIn('updated_count=1', job_log.message)
         self.assertEqual(RawSsafyData.objects.count(), 1)
-        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 2)
 
     def test_raw_data_duplicate_skip_does_not_create_duplicate_schedule_event(self):
         first_item = _notice_item('https://example.com/notices/raw-duplicate', 'notice-raw-duplicate')
@@ -1403,6 +1404,99 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('[OCR_TEXT]', raw_data.raw_text)
         ocr_mock.assert_called_once_with(item['metadata_json']['image_urls'])
 
+    def test_duplicate_notice_updates_changed_image_urls_and_creates_schedule_event(self):
+        source_url = 'https://example.com/notices/image-update'
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=source_url,
+            title='Image notice',
+            raw_text='old notice text',
+            raw_html='<main><img src="/old.png"></main>',
+            metadata_json={'notice_id': 'image-update', 'image_urls': ['https://example.com/old.png']},
+        )
+        item = _notice_item(source_url, 'image-update')
+        item['title'] = 'Image notice'
+        item['raw_text'] = ''
+        item['raw_html'] = '<main><img src="/new.png"></main>'
+        item['metadata_json']['image_urls'] = ['https://example.com/new.png']
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch(
+                'sync.services.import_service.extract_text_from_image_urls',
+                return_value={
+                    'ocr_text': '2026.05.20 업데이트 일정',
+                    'ocr_provider': 'mock',
+                    'ocr_status': 'success',
+                    'ocr_error': '',
+                    'ocr_error_type': '',
+                    'ocr_failed_count': 0,
+                    'ocr_boxes': [],
+                },
+            ):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertIn('updated_count=1', job_log.message)
+        self.assertEqual(existing.metadata_json['image_urls'], ['https://example.com/new.png'])
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+
+    def test_duplicate_notice_updates_changed_body_without_ocr_reprocess(self):
+        source_url = 'https://example.com/notices/body-update'
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=source_url,
+            title='Body notice',
+            raw_text='old notice text',
+            raw_html='<main>old notice text</main>',
+            metadata_json={'notice_id': 'body-update', 'published_at': '2026-05-14', 'image_urls': []},
+        )
+        item = _notice_item(source_url, 'body-update')
+        item['title'] = 'Body notice'
+        item['raw_text'] = 'updated notice schedule 2026.05.21'
+        item['raw_html'] = '<main>updated notice schedule 2026.05.21</main>'
+        item['metadata_json']['image_urls'] = []
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch('sync.services.import_service.extract_text_from_image_urls') as ocr_mock:
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(job_log.ocr_processed_count, 0)
+        self.assertIn('updated_count=1', job_log.message)
+        self.assertIn('updated notice schedule', existing.raw_text)
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+        ocr_mock.assert_not_called()
+
+    def test_notice_original_id_matches_existing_when_source_url_changes(self):
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/notices/old-url',
+            title='Moving notice',
+            raw_text='old schedule 2026.05.20',
+            raw_html='<main>old schedule 2026.05.20</main>',
+            metadata_json={'original_id': 'moving-1', 'published_at': '2026-05-14', 'image_urls': []},
+        )
+        item = _notice_item('https://example.com/notices/new-url', 'moving-1-copy')
+        item['title'] = 'Moving notice'
+        item['raw_text'] = 'updated schedule 2026.05.22'
+        item['raw_html'] = '<main>updated schedule 2026.05.22</main>'
+        item['metadata_json']['original_id'] = 'moving-1'
+        item['metadata_json']['image_urls'] = []
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertIn('updated_count=1', job_log.message)
+        self.assertEqual(existing.source_url, 'https://example.com/notices/new-url')
+
     def test_collect_authenticated_list_skips_failed_detail_pages(self):
         page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a></main>')
 
@@ -1430,6 +1524,64 @@ class SampleNoticeImportTests(TestCase):
             'https://example.com/detail/1',
             'https://example.com/detail/3',
         ])
+
+    def test_collect_authenticated_list_respects_recent_limit(self):
+        page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a><a href="/detail/3">3</a></main>')
+
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_RECENT_LIMIT': '2'}, clear=False):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                side_effect=[
+                    _source_item('notice', 'https://example.com/detail/1', 'First notice', 'detail-1'),
+                    _source_item('notice', 'https://example.com/detail/2', 'Second notice', 'detail-2'),
+                ],
+            ) as detail_mock:
+                items = _collect_authenticated_list(
+                    page=page,
+                    list_url='https://example.com/list',
+                    source_type='notice',
+                    link_extractor=lambda soup, base_url: [
+                        {'url': 'https://example.com/detail/1', 'title': 'First notice'},
+                        {'url': 'https://example.com/detail/2', 'title': 'Second notice'},
+                        {'url': 'https://example.com/detail/3', 'title': 'Third notice'},
+                    ],
+                )
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(detail_mock.call_count, 2)
+        self.assertTrue(any('reason=recent_limit' in message for message in get_last_collection_debug()))
+
+    def test_collect_authenticated_list_skips_existing_item_before_detail(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/detail/1',
+            title='Existing notice',
+            raw_text='existing schedule 2026.05.20',
+            raw_html='<main>existing schedule 2026.05.20</main>',
+            metadata_json={'notice_id': '1'},
+        )
+        page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a></main>')
+
+        with patch(
+            'sync.services.ssafy_crawler.fetch_authenticated_detail',
+            return_value=_source_item('notice', 'https://example.com/detail/2', 'New notice', 'detail-2'),
+        ) as detail_mock:
+            items = _collect_authenticated_list(
+                page=page,
+                list_url='https://example.com/list',
+                source_type='notice',
+                link_extractor=lambda soup, base_url: [
+                    {'url': 'https://example.com/detail/1', 'title': 'Existing notice'},
+                    {'url': 'https://example.com/detail/2', 'title': 'New notice'},
+                ],
+            )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['source_url'], 'https://example.com/detail/2')
+        self.assertEqual(detail_mock.call_count, 1)
+        debug_messages = get_last_collection_debug()
+        self.assertTrue(any(message.startswith('skipped_before_detail ') for message in debug_messages))
+        self.assertTrue(any('skipped_before_detail=1' in message for message in debug_messages))
 
     def test_authenticated_documents_continue_after_source_page_failure(self):
         fake_env = {
@@ -1842,15 +1994,60 @@ class SampleNoticeImportTests(TestCase):
             import os
             seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
             seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            seen['recent_limit'] = os.environ.get('SSAFY_CRAWLER_RECENT_LIMIT')
             seen['source_timeout'] = os.environ.get('SSAFY_SOURCE_TIMEOUT')
             return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
 
         with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
-            call_command('crawl_ssafy_notices', source='notice', max_pages=30, timeout=12, stdout=StringIO())
+            call_command(
+                'crawl_ssafy_notices',
+                source='notice',
+                max_pages=30,
+                recent_limit=10,
+                timeout=12,
+                stdout=StringIO(),
+            )
 
         self.assertEqual(seen['sources'], 'notice')
         self.assertEqual(seen['max_pages'], '30')
+        self.assertEqual(seen['recent_limit'], '10')
         self.assertEqual(seen['source_timeout'], '12')
+
+    def test_crawl_command_sets_source_type_option(self):
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
+
+        with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
+            call_command(
+                'crawl_ssafy_notices',
+                source_type=['notice,academic_rule', 'mentoring_notice'],
+                stdout=StringIO(),
+            )
+
+        self.assertEqual(seen['sources'], 'notice,academic_rule,mentoring_notice')
+
+    def test_crawl_command_dry_run_prints_preview_without_job_log(self):
+        output = StringIO()
+        summary = ImportSummary(raw_count=1, updated_count=1, duplicate_count=1, event_count=2)
+        summary.collected_source_counts = {'notice': 3}
+        summary.source_counts = {'notice': 1}
+        summary.updated_by_source = {'notice': 1}
+        summary.skipped_by_source = {'notice': 1}
+
+        with patch(
+            'sync.management.commands.crawl_ssafy_notices.preview_notice_import',
+            return_value={'mode': 'ssafy_notice', 'summary': summary, 'crawler_debug': [], 'message': ''},
+        ):
+            call_command('crawl_ssafy_notices', dry_run=True, stdout=output)
+
+        self.assertEqual(CrawlJobLog.objects.count(), 0)
+        self.assertIn('dry_run=true', output.getvalue())
+        self.assertIn('would_create_raw=1', output.getvalue())
+        self.assertIn('would_update_raw=1', output.getvalue())
 
     def test_crawl_command_prints_source_run_logs(self):
         output = StringIO()
@@ -1868,6 +2065,144 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertIn('Source run logs:', output.getvalue())
         self.assertIn('source_type=academic_rule', output.getvalue())
+
+    def test_check_crawl_env_succeeds_when_required_values_exist(self):
+        output = StringIO()
+        env = {
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('SSAFY crawl environment check OK.', rendered)
+        self.assertIn('checked_count=5', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+        self.assertNotIn('https://example.com/mentoring', rendered)
+
+    def test_check_crawl_env_prints_missing_keys_without_values(self):
+        output = StringIO()
+        env = {
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_QUEST_LIST_URL': 'https://example.com/quests',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL', rendered)
+        self.assertNotIn('- SSAFY_QUEST_LIST_URL', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+        self.assertNotIn('https://example.com/login', rendered)
+        self.assertNotIn('https://example.com/quests', rendered)
+
+    def test_scheduled_crawl_dry_run_defaults_to_hourly_sources_and_limits(self):
+        output = StringIO()
+        seen = {}
+        summary = ImportSummary(raw_count=0, updated_count=0, duplicate_count=2, event_count=0)
+        summary.collected_source_counts = {'notice': 2}
+
+        def fake_preview_notice_import(mode=None):
+            import os
+            seen['mode'] = mode
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            seen['recent_limit'] = os.environ.get('SSAFY_CRAWLER_RECENT_LIMIT')
+            seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            return {'mode': mode, 'summary': summary, 'crawler_debug': [], 'message': ''}
+
+        with patch(
+            'sync.management.commands.scheduled_ssafy_crawl.preview_notice_import',
+            side_effect=fake_preview_notice_import,
+        ):
+            call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
+
+        self.assertEqual(CrawlJobLog.objects.count(), 0)
+        self.assertEqual(seen['mode'], 'sample')
+        self.assertEqual(seen['sources'], 'notice,mentoring_notice')
+        self.assertEqual(seen['recent_limit'], '30')
+        self.assertEqual(seen['max_pages'], '2')
+        self.assertIn('selected_sources=notice,mentoring_notice', output.getvalue())
+        self.assertIn('dry_run=true', output.getvalue())
+        self.assertIn('no_changes=true', output.getvalue())
+
+    def test_scheduled_crawl_all_keeps_all_sources_without_hourly_limits(self):
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            seen['recent_limit'] = os.environ.get('SSAFY_CRAWLER_RECENT_LIMIT')
+            seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            return CrawlJobLog.objects.create(
+                status=CrawlJobLog.STATUS_SUCCESS,
+                message='ok, updated_count=0, collected_source_counts=notice:1',
+                crawler_mode=mode or '',
+                finished_at=timezone.now(),
+            )
+
+        with patch(
+            'sync.management.commands.scheduled_ssafy_crawl.run_notice_import',
+            side_effect=fake_run_notice_import,
+        ):
+            call_command('scheduled_ssafy_crawl', all=True, stdout=StringIO())
+
+        self.assertEqual(seen['sources'], '')
+        self.assertIsNone(seen['recent_limit'])
+        self.assertIsNone(seen['max_pages'])
+
+    def test_scheduled_crawl_source_type_option_filters_sources(self):
+        output = StringIO()
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            message = 'ok, updated_count=0, collected_source_counts=notice:1, event_skipped_count=0'
+            return CrawlJobLog.objects.create(
+                status=CrawlJobLog.STATUS_SUCCESS,
+                message=message,
+                crawler_mode=mode or '',
+                skipped_count=1,
+                finished_at=timezone.now(),
+            )
+
+        with patch(
+            'sync.management.commands.scheduled_ssafy_crawl.run_notice_import',
+            side_effect=fake_run_notice_import,
+        ):
+            call_command('scheduled_ssafy_crawl', source_type=['notice'], stdout=output)
+
+        self.assertEqual(seen['sources'], 'notice')
+        self.assertIn('fetched_by_source=notice:1', output.getvalue())
+        self.assertIn('no_changes=true', output.getvalue())
+
+    def test_scheduled_crawl_failure_creates_failed_job_log(self):
+        output = StringIO()
+
+        with patch(
+            'sync.management.commands.scheduled_ssafy_crawl.run_notice_import',
+            side_effect=RuntimeError('crawler exploded'),
+        ):
+            call_command('scheduled_ssafy_crawl', mode='sample', stdout=output)
+
+        job_log = CrawlJobLog.objects.get()
+        self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
+        self.assertEqual(job_log.failed_count, 1)
+        self.assertIn('crawler exploded', job_log.message)
+        self.assertIn('status=failed', output.getvalue())
+        self.assertIn('error_message=', output.getvalue())
 
     def test_login_configuration_failure_returns_clear_error(self):
         with patch.dict('os.environ', {}, clear=True):
