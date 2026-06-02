@@ -2073,8 +2073,7 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
-            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
-            'SSAFY_QUEST_LIST_URL': 'https://example.com/quests',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2082,9 +2081,10 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=6', rendered)
+        self.assertIn('checked_count=5', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
+        self.assertNotIn('https://example.com/mentoring', rendered)
 
     def test_check_crawl_env_prints_missing_keys_without_values(self):
         output = StringIO()
@@ -2093,6 +2093,7 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_QUEST_LIST_URL': 'https://example.com/quests',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2100,11 +2101,12 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
-        self.assertIn('- SSAFY_RULE_LIST_URL', rendered)
-        self.assertIn('- SSAFY_QUEST_LIST_URL', rendered)
+        self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL', rendered)
+        self.assertNotIn('- SSAFY_QUEST_LIST_URL', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/login', rendered)
+        self.assertNotIn('https://example.com/quests', rendered)
 
     def test_scheduled_crawl_dry_run_defaults_to_hourly_sources_and_limits(self):
         output = StringIO()
@@ -2128,10 +2130,10 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(CrawlJobLog.objects.count(), 0)
         self.assertEqual(seen['mode'], 'sample')
-        self.assertEqual(seen['sources'], 'notice,academic_rule,quest')
+        self.assertEqual(seen['sources'], 'notice,mentoring_notice')
         self.assertEqual(seen['recent_limit'], '30')
         self.assertEqual(seen['max_pages'], '2')
-        self.assertIn('selected_sources=notice,academic_rule,quest', output.getvalue())
+        self.assertIn('selected_sources=notice,mentoring_notice', output.getvalue())
         self.assertIn('dry_run=true', output.getvalue())
         self.assertIn('no_changes=true', output.getvalue())
 
