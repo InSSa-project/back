@@ -35,6 +35,7 @@ class Command(BaseCommand):
             help='Collect and classify candidates without writing RawSsafyData, ScheduleEvent, or CrawlJobLog rows.',
         )
         parser.add_argument('--max-pages', type=int, help='Limit pages scanned per source for this run.')
+        parser.add_argument('--recent-limit', type=int, help='Limit recent unique items checked per source for this run.')
         parser.add_argument('--detail-timeout', type=float, help='Per Playwright action timeout in seconds.')
         parser.add_argument('--source-timeout', type=float, help='Per source timeout in seconds.')
         parser.add_argument(
@@ -80,6 +81,7 @@ def _temporary_crawler_env(options):
         'SSAFY_CRAWLER_SOURCES': source_filter,
         'SSAFY_CRAWLER_SKIP_SOURCES': options.get('skip_source'),
         'SSAFY_NOTICE_MAX_PAGES': options.get('max_pages'),
+        'SSAFY_CRAWLER_RECENT_LIMIT': options.get('recent_limit'),
         'SSAFY_DETAIL_TIMEOUT': options.get('detail_timeout'),
         'SSAFY_SOURCE_TIMEOUT': options.get('source_timeout'),
     }

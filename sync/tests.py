@@ -1525,6 +1525,64 @@ class SampleNoticeImportTests(TestCase):
             'https://example.com/detail/3',
         ])
 
+    def test_collect_authenticated_list_respects_recent_limit(self):
+        page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a><a href="/detail/3">3</a></main>')
+
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_RECENT_LIMIT': '2'}, clear=False):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                side_effect=[
+                    _source_item('notice', 'https://example.com/detail/1', 'First notice', 'detail-1'),
+                    _source_item('notice', 'https://example.com/detail/2', 'Second notice', 'detail-2'),
+                ],
+            ) as detail_mock:
+                items = _collect_authenticated_list(
+                    page=page,
+                    list_url='https://example.com/list',
+                    source_type='notice',
+                    link_extractor=lambda soup, base_url: [
+                        {'url': 'https://example.com/detail/1', 'title': 'First notice'},
+                        {'url': 'https://example.com/detail/2', 'title': 'Second notice'},
+                        {'url': 'https://example.com/detail/3', 'title': 'Third notice'},
+                    ],
+                )
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(detail_mock.call_count, 2)
+        self.assertTrue(any('reason=recent_limit' in message for message in get_last_collection_debug()))
+
+    def test_collect_authenticated_list_skips_existing_item_before_detail(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/detail/1',
+            title='Existing notice',
+            raw_text='existing schedule 2026.05.20',
+            raw_html='<main>existing schedule 2026.05.20</main>',
+            metadata_json={'notice_id': '1'},
+        )
+        page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a></main>')
+
+        with patch(
+            'sync.services.ssafy_crawler.fetch_authenticated_detail',
+            return_value=_source_item('notice', 'https://example.com/detail/2', 'New notice', 'detail-2'),
+        ) as detail_mock:
+            items = _collect_authenticated_list(
+                page=page,
+                list_url='https://example.com/list',
+                source_type='notice',
+                link_extractor=lambda soup, base_url: [
+                    {'url': 'https://example.com/detail/1', 'title': 'Existing notice'},
+                    {'url': 'https://example.com/detail/2', 'title': 'New notice'},
+                ],
+            )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['source_url'], 'https://example.com/detail/2')
+        self.assertEqual(detail_mock.call_count, 1)
+        debug_messages = get_last_collection_debug()
+        self.assertTrue(any(message.startswith('skipped_before_detail ') for message in debug_messages))
+        self.assertTrue(any('skipped_before_detail=1' in message for message in debug_messages))
+
     def test_authenticated_documents_continue_after_source_page_failure(self):
         fake_env = {
             'SSAFY_LOGIN_URL': 'https://example.com/login',
@@ -1936,14 +1994,23 @@ class SampleNoticeImportTests(TestCase):
             import os
             seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
             seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            seen['recent_limit'] = os.environ.get('SSAFY_CRAWLER_RECENT_LIMIT')
             seen['source_timeout'] = os.environ.get('SSAFY_SOURCE_TIMEOUT')
             return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
 
         with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
-            call_command('crawl_ssafy_notices', source='notice', max_pages=30, timeout=12, stdout=StringIO())
+            call_command(
+                'crawl_ssafy_notices',
+                source='notice',
+                max_pages=30,
+                recent_limit=10,
+                timeout=12,
+                stdout=StringIO(),
+            )
 
         self.assertEqual(seen['sources'], 'notice')
         self.assertEqual(seen['max_pages'], '30')
+        self.assertEqual(seen['recent_limit'], '10')
         self.assertEqual(seen['source_timeout'], '12')
 
     def test_crawl_command_sets_source_type_option(self):
@@ -1999,7 +2066,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('Source run logs:', output.getvalue())
         self.assertIn('source_type=academic_rule', output.getvalue())
 
-    def test_scheduled_crawl_dry_run_defaults_to_all_sources(self):
+    def test_scheduled_crawl_dry_run_defaults_to_hourly_sources_and_limits(self):
         output = StringIO()
         seen = {}
         summary = ImportSummary(raw_count=0, updated_count=0, duplicate_count=2, event_count=0)
@@ -2009,6 +2076,8 @@ class SampleNoticeImportTests(TestCase):
             import os
             seen['mode'] = mode
             seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            seen['recent_limit'] = os.environ.get('SSAFY_CRAWLER_RECENT_LIMIT')
+            seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
             return {'mode': mode, 'summary': summary, 'crawler_debug': [], 'message': ''}
 
         with patch(
@@ -2019,9 +2088,37 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(CrawlJobLog.objects.count(), 0)
         self.assertEqual(seen['mode'], 'sample')
-        self.assertEqual(seen['sources'], '')
+        self.assertEqual(seen['sources'], 'notice,academic_rule,quest')
+        self.assertEqual(seen['recent_limit'], '30')
+        self.assertEqual(seen['max_pages'], '2')
+        self.assertIn('selected_sources=notice,academic_rule,quest', output.getvalue())
         self.assertIn('dry_run=true', output.getvalue())
         self.assertIn('no_changes=true', output.getvalue())
+
+    def test_scheduled_crawl_all_keeps_all_sources_without_hourly_limits(self):
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            seen['recent_limit'] = os.environ.get('SSAFY_CRAWLER_RECENT_LIMIT')
+            seen['max_pages'] = os.environ.get('SSAFY_NOTICE_MAX_PAGES')
+            return CrawlJobLog.objects.create(
+                status=CrawlJobLog.STATUS_SUCCESS,
+                message='ok, updated_count=0, collected_source_counts=notice:1',
+                crawler_mode=mode or '',
+                finished_at=timezone.now(),
+            )
+
+        with patch(
+            'sync.management.commands.scheduled_ssafy_crawl.run_notice_import',
+            side_effect=fake_run_notice_import,
+        ):
+            call_command('scheduled_ssafy_crawl', all=True, stdout=StringIO())
+
+        self.assertEqual(seen['sources'], '')
+        self.assertIsNone(seen['recent_limit'])
+        self.assertIsNone(seen['max_pages'])
 
     def test_scheduled_crawl_source_type_option_filters_sources(self):
         output = StringIO()

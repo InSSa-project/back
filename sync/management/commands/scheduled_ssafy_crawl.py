@@ -12,6 +12,11 @@ from sync.models import CrawlJobLog
 from sync.services.import_service import preview_notice_import, run_notice_import
 
 
+DEFAULT_SCHEDULED_SOURCES = ('notice', 'academic_rule', 'quest')
+DEFAULT_RECENT_LIMIT = 30
+DEFAULT_MAX_PAGES = 2
+
+
 class Command(BaseCommand):
     help = 'Run the operational SSAFY notice crawl once for hourly schedulers.'
 
@@ -31,7 +36,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--all',
             action='store_true',
-            help='Collect all configured sources. This is the default when no source filter is supplied.',
+            help='Collect all configured sources. Hourly default only checks notice, academic_rule, and quest.',
         )
         parser.add_argument('--skip-source', help='Comma-separated source list to skip, e.g. mentoring_notice.')
         parser.add_argument(
@@ -40,6 +45,7 @@ class Command(BaseCommand):
             help='Collect and classify candidates without writing RawSsafyData, ScheduleEvent, or CrawlJobLog rows.',
         )
         parser.add_argument('--max-pages', type=int, help='Limit pages scanned per source for this run.')
+        parser.add_argument('--recent-limit', type=int, help='Limit recent unique items checked per source for this run.')
         parser.add_argument('--detail-timeout', type=float, help='Per Playwright action timeout in seconds.')
         parser.add_argument('--source-timeout', type=float, help='Per source timeout in seconds.')
         parser.add_argument(
@@ -53,6 +59,12 @@ class Command(BaseCommand):
         started_at = timezone.now()
         self.stdout.write(f'scheduled_ssafy_crawl started_at={started_at.isoformat()}')
         options = _scheduled_options(options)
+        self.stdout.write(
+            'scheduled_ssafy_crawl '
+            f'selected_sources={_selected_sources_display(options)} '
+            f'recent_limit={options.get("recent_limit") or "-"} '
+            f'max_pages={options.get("max_pages") or "-"}'
+        )
 
         try:
             with _temporary_crawler_env(options):
@@ -75,8 +87,22 @@ class Command(BaseCommand):
 def _scheduled_options(options):
     prepared = dict(options)
     if not prepared.get('all') and not prepared.get('source') and not prepared.get('source_type'):
-        prepared['all'] = True
+        prepared['source_type'] = list(DEFAULT_SCHEDULED_SOURCES)
+    if not prepared.get('all'):
+        prepared['recent_limit'] = prepared.get('recent_limit') or DEFAULT_RECENT_LIMIT
+        prepared['max_pages'] = prepared.get('max_pages') or DEFAULT_MAX_PAGES
     return prepared
+
+
+def _selected_sources_display(options):
+    if options.get('all'):
+        return 'all'
+    values = []
+    if options.get('source'):
+        values.append(options['source'])
+    for source_type in options.get('source_type') or []:
+        values.append(source_type)
+    return ','.join(values) if values else 'none'
 
 
 def _print_scheduled_dry_run(command, preview, started_at):
@@ -93,6 +119,8 @@ def _print_scheduled_dry_run(command, preview, started_at):
             f'fetched_by_source={_format_count_dict(summary.collected_source_counts)}, '
             f'created_count={summary.raw_count}, updated_count={summary.updated_count}, '
             f'skipped_count={summary.duplicate_count}, failed_count={summary.failed_count}, '
+            f'skipped_before_detail_count={_message_int(preview.get("message", ""), "skipped_before_detail_count")}, '
+            f'detail_fetched_count={_message_int(preview.get("message", ""), "detail_fetched_count")}, '
             f'ocr_processed_count={summary.ocr_processed_count}, '
             f'schedule_event_created_count={summary.event_count}, '
             f'schedule_event_updated_count=0, schedule_event_skipped_count={summary.event_skipped_count}, '
@@ -123,6 +151,8 @@ def _print_scheduled_job(command, job_log, started_at):
             f'duration_seconds={duration:.3f}, fetched_by_source={_message_value(job_log.message, "collected_source_counts") or "none"}, '
             f'created_count={job_log.raw_count}, updated_count={updated_count}, '
             f'skipped_count={job_log.skipped_count}, failed_count={job_log.failed_count}, '
+            f'skipped_before_detail_count={_message_int(job_log.message, "skipped_before_detail_count")}, '
+            f'detail_fetched_count={_message_int(job_log.message, "detail_fetched_count")}, '
             f'ocr_processed_count={job_log.ocr_processed_count}, '
             f'schedule_event_created_count={job_log.event_count}, '
             f'schedule_event_updated_count={duplicate_event_count}, '
