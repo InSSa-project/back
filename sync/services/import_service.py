@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import json
 import logging
 import os
 
@@ -200,7 +201,7 @@ def _import_raw_items(raw_items):
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         existing_raw_data = _find_existing_raw_data(item)
         if existing_raw_data:
-            if _update_existing_raw_images(existing_raw_data, item, summary):
+            if _update_existing_raw_data_if_changed(existing_raw_data, item, summary):
                 continue
             summary.raw_data_ids.append(existing_raw_data.id)
             summary.skipped_count += 1
@@ -315,9 +316,13 @@ def _preview_raw_items(raw_items):
 
         existing_raw_data = _find_existing_raw_data(item)
         if existing_raw_data:
-            if _raw_images_changed(existing_raw_data, item):
+            if _raw_data_changed(existing_raw_data, item):
                 summary.updated_count += 1
                 _increment_updated_source(summary, existing_raw_data.source_type)
+                if _raw_images_changed(existing_raw_data, item):
+                    image_urls = _item_image_urls(item)
+                    summary.image_count += len(image_urls)
+                    summary.ocr_processed_count += len(image_urls)
             else:
                 summary.skipped_count += 1
                 summary.duplicate_count += 1
@@ -935,14 +940,16 @@ def _apply_ocr_pipeline(item, summary):
     return prepared
 
 
-def _update_existing_raw_images(raw_data, item, summary):
+def _update_existing_raw_data_if_changed(raw_data, item, summary):
     if item.get('source_type') not in {'academic_rule', 'notice'} or raw_data.source_type != item.get('source_type'):
         return False
 
-    if not _raw_images_changed(raw_data, item):
+    if not _raw_data_changed(raw_data, item):
         return False
 
-    updated_item = _apply_ocr_pipeline(item, summary)
+    images_changed = _raw_images_changed(raw_data, item)
+    updated_item = _apply_ocr_pipeline(item, summary) if images_changed else _prepare_update_item_without_ocr(raw_data, item)
+    raw_data.source_url = updated_item.get('source_url', raw_data.source_url)
     raw_data.title = updated_item.get('title', raw_data.title)
     raw_data.raw_text = updated_item.get('raw_text', '')
     raw_data.raw_html = updated_item.get('raw_html', '')
@@ -952,6 +959,7 @@ def _update_existing_raw_images(raw_data, item, summary):
     raw_data.status = RawSsafyData.STATUS_PARSED
     raw_data.save(
         update_fields=[
+            'source_url',
             'title',
             'raw_text',
             'raw_html',
@@ -969,6 +977,25 @@ def _update_existing_raw_images(raw_data, item, summary):
         summary.no_schedule_count += 1
         summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
     return True
+
+
+def _update_existing_raw_images(raw_data, item, summary):
+    return _update_existing_raw_data_if_changed(raw_data, item, summary)
+
+
+def _prepare_update_item_without_ocr(raw_data, item):
+    prepared = dict(item)
+    metadata = dict(raw_data.metadata_json or {})
+    metadata.update(prepared.get('metadata_json') or {})
+    metadata['image_urls'] = _item_image_urls(prepared)
+    prepared['metadata_json'] = metadata
+    prepared['ocr_boxes'] = raw_data.ocr_boxes or []
+    incoming_text = prepared.get('raw_text', '')
+    existing_ocr_text = _existing_ocr_text(raw_data.raw_text)
+    if existing_ocr_text and '[OCR_TEXT]' not in incoming_text:
+        incoming_text = _merge_ocr_text(incoming_text, existing_ocr_text)
+    prepared['raw_text'] = incoming_text
+    return prepared
 
 
 def _create_schedule_events_for_raw_data(raw_data, summary):
@@ -1038,6 +1065,54 @@ def _raw_images_changed(raw_data, item):
     incoming_image_urls = _item_image_urls(item)
     existing_image_urls = list((raw_data.metadata_json or {}).get('image_urls') or [])
     return incoming_image_urls != existing_image_urls
+
+
+def _raw_data_changed(raw_data, item):
+    if raw_data.source_type != item.get('source_type', 'notice'):
+        return True
+    if str(raw_data.title or '') != str(item.get('title', '') or ''):
+        return True
+    if str(raw_data.source_url or '') != str(item.get('source_url', '') or ''):
+        return True
+    if _raw_text_for_compare(raw_data.raw_text) != _raw_text_for_compare(item.get('raw_text', '')):
+        return True
+    if str(raw_data.raw_html or '') != str(item.get('raw_html', '') or ''):
+        return True
+    if _raw_images_changed(raw_data, item):
+        return True
+    return _metadata_for_compare(raw_data.metadata_json or {}) != _metadata_for_compare(item.get('metadata_json') or {})
+
+
+def _raw_text_for_compare(raw_text):
+    return str(raw_text or '').split('[OCR_TEXT]', 1)[0].strip()
+
+
+def _existing_ocr_text(raw_text):
+    if '[OCR_TEXT]' not in str(raw_text or ''):
+        return ''
+    return str(raw_text or '').split('[OCR_TEXT]', 1)[1].strip()
+
+
+def _metadata_for_compare(metadata):
+    selected = {}
+    for key in (
+        'published_at',
+        'date',
+        'body',
+        'content',
+        'raw_json',
+        'image_urls',
+    ):
+        if key in metadata:
+            selected[key] = metadata.get(key)
+    return _stable_json(selected)
+
+
+def _stable_json(value):
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
 
 
 def _item_image_urls(item):
@@ -1217,25 +1292,70 @@ def _infer_track_from_text(text):
 
 
 def _find_existing_raw_data(item):
+    source_type = item.get('source_type', 'notice')
     source_url = item.get('source_url')
     if source_url:
-        existing = RawSsafyData.objects.filter(source_url=source_url).first()
+        existing = RawSsafyData.objects.filter(source_type=source_type, source_url=source_url).first()
         if existing:
             return existing
 
-    notice_id = item.get('metadata_json', {}).get('notice_id')
-    if notice_id:
-        existing = RawSsafyData.objects.filter(metadata_json__notice_id=notice_id).first()
+    identity_values = _raw_identity_values_from_item(item)
+    for identity_value in identity_values:
+        existing = RawSsafyData.objects.filter(source_type=source_type, metadata_json__notice_id=identity_value).first()
+        if existing:
+            return existing
+        existing = RawSsafyData.objects.filter(source_type=source_type, metadata_json__original_id=identity_value).first()
+        if existing:
+            return existing
+        existing = RawSsafyData.objects.filter(source_type=source_type, source_url__contains=f'brdItmSeq={identity_value}').first()
         if existing:
             return existing
 
-    if source_url or notice_id:
+    if source_url or identity_values:
         return None
 
+    title = item.get('title', '')
+    published_at = _published_at_from_item(item)
+    if published_at:
+        for existing in RawSsafyData.objects.filter(source_type=source_type, title=title).order_by('-collected_at')[:20]:
+            if _published_at_from_metadata(existing.metadata_json or {}) == published_at:
+                return existing
+
     return RawSsafyData.objects.filter(
-        source_type=item.get('source_type', 'notice'),
-        title=item.get('title', ''),
+        source_type=source_type,
+        title=title,
     ).first()
+
+
+def _raw_identity_values_from_item(item):
+    metadata = item.get('metadata_json') or {}
+    values = []
+    for value in (
+        metadata.get('notice_id'),
+        metadata.get('original_id'),
+        metadata.get('brdItmSeq'),
+        _notice_id_from_item(item),
+    ):
+        normalized = str(value or '').strip()
+        if not normalized:
+            continue
+        if 'brdItmSeq=' in normalized:
+            normalized = normalized.split('brdItmSeq=', 1)[1].split('&', 1)[0]
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return values
+
+
+def _published_at_from_item(item):
+    return _published_at_from_metadata(item.get('metadata_json') or {})
+
+
+def _published_at_from_metadata(metadata):
+    for key in ('published_at', 'date', 'posted_at', 'created_at', 'source_published_at'):
+        value = str(metadata.get(key) or '').strip()
+        if value:
+            return value
+    return ''
 
 
 def _mark_job_failed(job_log, message, summary=None):
