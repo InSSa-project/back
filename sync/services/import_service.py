@@ -462,6 +462,8 @@ def _build_success_message(selected_mode, summary, crawler_debug=None, rag_stats
         f'real_content_count={summary.real_content_count}, '
         f'image_found_count={summary.image_found_count}, '
         f'menu_only_content_count={summary.menu_only_content_count}, '
+        f'skipped_before_detail_count={_skipped_before_detail_count(crawler_debug)}, '
+        f'detail_fetched_count={_detail_fetched_count(crawler_debug)}, '
         f'saved_count={summary.raw_count}, '
         f'updated_count={summary.updated_count}'
     )
@@ -537,6 +539,7 @@ ALLOWED_SOURCE_TYPES = {
     'learning_material',
     'faq',
     'quest',
+    'event',
 }
 CALENDAR_SOURCE_TYPES = {'notice'}
 PLACEHOLDER_TITLES = {
@@ -656,12 +659,12 @@ def _latest_notice_title(raw_items=None):
 
 
 def _source_type_counts():
-    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq']
+    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq', 'event']
     return '|'.join(f'{source_type}:{RawSsafyData.objects.filter(source_type=source_type).count()}' for source_type in wanted)
 
 
 def _raw_all_notice_like_count():
-    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq']
+    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq', 'event']
     return RawSsafyData.objects.filter(source_type__in=wanted).count()
 
 
@@ -873,6 +876,38 @@ def _sources_from_debug(crawler_debug):
 
 def _has_failed_source(crawler_debug):
     return any('failed_source=' in str(message) for message in crawler_debug or [])
+
+
+def _skipped_before_detail_count(crawler_debug):
+    summary_total = 0
+    individual_total = 0
+    for message in crawler_debug or []:
+        text = str(message)
+        if text.startswith('skipped_before_detail '):
+            individual_total += 1
+            continue
+        if 'skipped_before_detail=' in text:
+            summary_total += _debug_int_value(text, 'skipped_before_detail')
+    return summary_total if summary_total else individual_total
+
+
+def _detail_fetched_count(crawler_debug):
+    total = 0
+    for message in crawler_debug or []:
+        text = str(message)
+        if 'details_fetched=' in text:
+            total += _debug_int_value(text, 'details_fetched')
+    return total
+
+
+def _debug_int_value(message, key):
+    marker = f'{key}='
+    if marker not in message:
+        return 0
+    try:
+        return int(message.split(marker, 1)[1].split()[0])
+    except (TypeError, ValueError):
+        return 0
 
 
 def _failed_source_from_debug(crawler_debug, source_type):
