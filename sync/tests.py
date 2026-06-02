@@ -15,7 +15,7 @@ from django.utils import timezone
 from schedules.models import ScheduleEvent
 from schedules.utils import is_wrapper_schedule_title, normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
-from sync.services.import_service import run_notice_import, run_sample_notice_import
+from sync.services.import_service import ImportSummary, preview_notice_import, run_notice_import, run_sample_notice_import
 from sync.services.ocr_service import extract_text_from_image_urls
 from sync.services.reparse_service import reparse_raw_data_to_events
 from sync.services.schedule_parser import ParsedSchedule, parse_schedule_candidates, parse_schedule_candidates_with_debug
@@ -1403,6 +1403,45 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('[OCR_TEXT]', raw_data.raw_text)
         ocr_mock.assert_called_once_with(item['metadata_json']['image_urls'])
 
+    def test_duplicate_notice_updates_changed_image_urls_and_creates_schedule_event(self):
+        source_url = 'https://example.com/notices/image-update'
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=source_url,
+            title='Image notice',
+            raw_text='old notice text',
+            raw_html='<main><img src="/old.png"></main>',
+            metadata_json={'notice_id': 'image-update', 'image_urls': ['https://example.com/old.png']},
+        )
+        item = _notice_item(source_url, 'image-update')
+        item['title'] = 'Image notice'
+        item['raw_text'] = ''
+        item['raw_html'] = '<main><img src="/new.png"></main>'
+        item['metadata_json']['image_urls'] = ['https://example.com/new.png']
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            with patch(
+                'sync.services.import_service.extract_text_from_image_urls',
+                return_value={
+                    'ocr_text': '2026.05.20 업데이트 일정',
+                    'ocr_provider': 'mock',
+                    'ocr_status': 'success',
+                    'ocr_error': '',
+                    'ocr_error_type': '',
+                    'ocr_failed_count': 0,
+                    'ocr_boxes': [],
+                },
+            ):
+                job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertIn('updated_count=1', job_log.message)
+        self.assertEqual(existing.metadata_json['image_urls'], ['https://example.com/new.png'])
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+
     def test_collect_authenticated_list_skips_failed_detail_pages(self):
         page = _StaticPage('<main><a href="/detail/1">1</a><a href="/detail/2">2</a></main>')
 
@@ -1851,6 +1890,42 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(seen['sources'], 'notice')
         self.assertEqual(seen['max_pages'], '30')
         self.assertEqual(seen['source_timeout'], '12')
+
+    def test_crawl_command_sets_source_type_option(self):
+        seen = {}
+
+        def fake_run_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            return CrawlJobLog.objects.create(status=CrawlJobLog.STATUS_SUCCESS, message='ok', crawler_mode=mode or '')
+
+        with patch('sync.management.commands.crawl_ssafy_notices.run_notice_import', side_effect=fake_run_notice_import):
+            call_command(
+                'crawl_ssafy_notices',
+                source_type=['notice,academic_rule', 'mentoring_notice'],
+                stdout=StringIO(),
+            )
+
+        self.assertEqual(seen['sources'], 'notice,academic_rule,mentoring_notice')
+
+    def test_crawl_command_dry_run_prints_preview_without_job_log(self):
+        output = StringIO()
+        summary = ImportSummary(raw_count=1, updated_count=1, duplicate_count=1, event_count=2)
+        summary.collected_source_counts = {'notice': 3}
+        summary.source_counts = {'notice': 1}
+        summary.updated_by_source = {'notice': 1}
+        summary.skipped_by_source = {'notice': 1}
+
+        with patch(
+            'sync.management.commands.crawl_ssafy_notices.preview_notice_import',
+            return_value={'mode': 'ssafy_notice', 'summary': summary, 'crawler_debug': [], 'message': ''},
+        ):
+            call_command('crawl_ssafy_notices', dry_run=True, stdout=output)
+
+        self.assertEqual(CrawlJobLog.objects.count(), 0)
+        self.assertIn('dry_run=true', output.getvalue())
+        self.assertIn('would_create_raw=1', output.getvalue())
+        self.assertIn('would_update_raw=1', output.getvalue())
 
     def test_crawl_command_prints_source_run_logs(self):
         output = StringIO()

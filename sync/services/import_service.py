@@ -87,6 +87,19 @@ def run_sample_notice_import():
     return run_notice_import(mode=MODE_SAMPLE)
 
 
+def preview_notice_import(mode=None):
+    selected_mode = get_crawler_mode(mode)
+    raw_items = load_notices_by_mode(selected_mode)
+    crawler_debug = get_last_collection_debug()
+    summary = _preview_raw_items(raw_items)
+    return {
+        'mode': selected_mode,
+        'summary': summary,
+        'crawler_debug': crawler_debug,
+        'message': _build_success_message(selected_mode, summary, crawler_debug=crawler_debug),
+    }
+
+
 def run_notice_import(mode=None):
     job_log = CrawlJobLog.objects.create(
         status=CrawlJobLog.STATUS_RUNNING,
@@ -187,7 +200,7 @@ def _import_raw_items(raw_items):
         _increment_collected_source_count(summary, item.get('source_type', 'notice'))
         existing_raw_data = _find_existing_raw_data(item)
         if existing_raw_data:
-            if _update_existing_academic_rule_images(existing_raw_data, item, summary):
+            if _update_existing_raw_images(existing_raw_data, item, summary):
                 continue
             summary.raw_data_ids.append(existing_raw_data.id)
             summary.skipped_count += 1
@@ -271,6 +284,72 @@ def _import_raw_items(raw_items):
             raw_data.status = RawSsafyData.STATUS_FAILED
             raw_data.save(update_fields=['status', 'metadata_json'])
             summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
+
+    return summary
+
+
+def _preview_raw_items(raw_items):
+    summary = ImportSummary()
+
+    for item in raw_items:
+        source_type = (item or {}).get('source_type', 'notice')
+        summary.scanned_by_source[source_type] = summary.scanned_by_source.get(source_type, 0) + 1
+        normalized_item, excluded_debug = _normalize_import_item(item)
+        if excluded_debug:
+            summary.skipped_count += 1
+            summary.excluded_count += 1
+            excluded_source = excluded_debug['source_type']
+            _increment_skipped_source(summary, excluded_source)
+            summary.excluded_by_source[excluded_source] = summary.excluded_by_source.get(excluded_source, 0) + 1
+            summary.excluded_items.append(_format_excluded_debug(excluded_debug))
+            continue
+
+        item = normalized_item
+        item_source = item.get('source_type', 'notice')
+        _increment_collected_source_count(summary, item_source)
+        _increment_detail_quality_counts(summary, item.get('metadata_json') or {})
+        if (item.get('metadata_json') or {}).get('document_type') == 'evaluation_notice':
+            summary.keyword_candidate_count += 1
+            summary.saved_evaluation_notice_count += 1
+            summary.keyword_candidates_by_source[item_source] = summary.keyword_candidates_by_source.get(item_source, 0) + 1
+
+        existing_raw_data = _find_existing_raw_data(item)
+        if existing_raw_data:
+            if _raw_images_changed(existing_raw_data, item):
+                summary.updated_count += 1
+                _increment_updated_source(summary, existing_raw_data.source_type)
+            else:
+                summary.skipped_count += 1
+                summary.duplicate_count += 1
+                _increment_skipped_source(summary, item_source)
+            continue
+
+        image_urls = _item_image_urls(item)
+        summary.image_count += len(image_urls)
+        summary.ocr_processed_count += len(image_urls)
+        summary.raw_count += 1
+        _increment_source_count(summary, item_source)
+
+        if item_source != 'notice':
+            summary.no_schedule_count += 1
+            summary.no_schedule_by_type[item_source] = summary.no_schedule_by_type.get(item_source, 0) + 1
+            continue
+
+        try:
+            parsed_schedules, _grid_debug = parse_schedule_candidates_with_debug(
+                item.get('raw_text', ''),
+                default_title=item.get('title', ''),
+                ocr_boxes=item.get('ocr_boxes') or [],
+            )
+            summary.parse_candidate_count += len(parsed_schedules)
+            summary.event_count += len(parsed_schedules)
+            if not parsed_schedules:
+                summary.no_schedule_count += 1
+                summary.no_schedule_by_type[item_source] = summary.no_schedule_by_type.get(item_source, 0) + 1
+        except Exception as exc:
+            summary.failed_count += 1
+            summary.failed_by_source[item_source] = summary.failed_by_source.get(item_source, 0) + 1
+            summary.failed_items.append(f'{item_source}:{exc.__class__.__name__}')
 
     return summary
 
@@ -856,13 +935,11 @@ def _apply_ocr_pipeline(item, summary):
     return prepared
 
 
-def _update_existing_academic_rule_images(raw_data, item, summary):
-    if item.get('source_type') != 'academic_rule' or raw_data.source_type != 'academic_rule':
+def _update_existing_raw_images(raw_data, item, summary):
+    if item.get('source_type') not in {'academic_rule', 'notice'} or raw_data.source_type != item.get('source_type'):
         return False
 
-    incoming_image_urls = _item_image_urls(item)
-    existing_image_urls = list((raw_data.metadata_json or {}).get('image_urls') or [])
-    if incoming_image_urls == existing_image_urls:
+    if not _raw_images_changed(raw_data, item):
         return False
 
     updated_item = _apply_ocr_pipeline(item, summary)
@@ -886,9 +963,81 @@ def _update_existing_academic_rule_images(raw_data, item, summary):
     )
     summary.updated_count += 1
     _increment_updated_source(summary, raw_data.source_type)
-    summary.no_schedule_count += 1
-    summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
+    if raw_data.source_type == 'notice':
+        _create_schedule_events_for_raw_data(raw_data, summary)
+    else:
+        summary.no_schedule_count += 1
+        summary.no_schedule_by_type[raw_data.source_type] = summary.no_schedule_by_type.get(raw_data.source_type, 0) + 1
     return True
+
+
+def _create_schedule_events_for_raw_data(raw_data, summary):
+    try:
+        parsed_schedules, grid_debug = parse_schedule_candidates_with_debug(
+            raw_data.raw_text,
+            default_title=raw_data.title,
+            ocr_boxes=raw_data.ocr_boxes,
+        )
+        summary.parse_candidate_count += len(parsed_schedules)
+        _store_review_required_candidates(raw_data, grid_debug)
+        if not parsed_schedules:
+            _mark_no_schedule(raw_data, summary)
+            return
+
+        for schedule in parsed_schedules:
+            title = str(getattr(schedule, 'title', '') or '').strip()
+            if not title:
+                _store_parser_warning(raw_data, ['empty_schedule_title'])
+                _mark_event_skipped(summary, 'empty_title')
+                continue
+            if _should_skip_fallback_week_timetable(schedule):
+                _store_parser_warning(raw_data, ['fallback_week_timetable_blocked'])
+                _mark_event_skipped(summary, 'validation')
+                continue
+            warnings = validate_generated_schedule(raw_data, schedule)
+            if warnings:
+                _store_parser_warning(raw_data, warnings)
+            blocking_warnings = [warning for warning in warnings if is_blocking_generated_schedule_warning(warning)]
+            if 'timetable_title_equals_source_title' in blocking_warnings:
+                _mark_event_skipped(summary, 'wrapper')
+                continue
+            if blocking_warnings:
+                _mark_event_skipped(summary, 'validation')
+                continue
+            existing_event = find_existing_schedule_event(schedule, raw_data)
+            if existing_event:
+                merge_schedule_candidate_into_event(existing_event, schedule, raw_data)
+                _mark_event_skipped(summary, 'duplicate')
+                continue
+
+            ScheduleEvent.objects.create(
+                raw_data=raw_data,
+                title=schedule.title,
+                start_at=schedule.start_at,
+                description=schedule.description,
+                end_at=schedule.end_at,
+                is_all_day=schedule.is_all_day,
+                event_type=schedule.event_type,
+                source_type=raw_data.source_type,
+                source_id=str(raw_data.pk),
+                metadata_json=build_generated_event_metadata(raw_data, schedule),
+            )
+            summary.event_count += 1
+
+        raw_data.status = RawSsafyData.STATUS_PARSED
+        raw_data.save(update_fields=['status', 'metadata_json'])
+    except Exception as exc:
+        summary.failed_count += 1
+        summary.failed_by_source[raw_data.source_type] = summary.failed_by_source.get(raw_data.source_type, 0) + 1
+        raw_data.status = RawSsafyData.STATUS_FAILED
+        raw_data.save(update_fields=['status', 'metadata_json'])
+        summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
+
+
+def _raw_images_changed(raw_data, item):
+    incoming_image_urls = _item_image_urls(item)
+    existing_image_urls = list((raw_data.metadata_json or {}).get('image_urls') or [])
+    return incoming_image_urls != existing_image_urls
 
 
 def _item_image_urls(item):
