@@ -1,14 +1,18 @@
+import logging
 from datetime import datetime, time, timedelta
 
 import json
 
+from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from rest_framework.exceptions import AuthenticationFailed
 
 from .models import ScheduleEvent
+from apps.users.authentication import JwtAuthentication
 from .services import filter_events_for_user_profile
 from sync.models import RawSsafyData
 from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
@@ -78,18 +82,26 @@ ALLOWED_EVENT_TYPES = OTHER_EVENT_TYPES | {
     'personal',
     'holiday',
 }
+logger = logging.getLogger(__name__)
 
 
 @csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def event_list(request):
+    user = _authenticate_request(request)
+    if user is None:
+        return JsonResponse({'detail': 'Authentication credentials were invalid.'}, status=401)
     if request.method == 'POST':
-        return _create_event(request)
+        return _create_event(request, user)
 
     start_at = _parse_boundary(request.GET.get('start'), is_end=False)
     end_at = _parse_boundary(request.GET.get('end'), is_end=True)
 
     events = ScheduleEvent.objects.all()
+    if getattr(user, 'is_authenticated', False):
+        events = events.filter(Q(owner__isnull=True) | Q(owner=user))
+    else:
+        events = events.filter(owner__isnull=True)
     if start_at:
         events = events.filter(end_at__gte=start_at)
     if end_at:
@@ -105,8 +117,9 @@ def event_list(request):
     return JsonResponse([_serialize_event(event) for event in events], safe=False)
 
 
-def _create_event(request):
-    # TODO: Require authentication and attach created_by before production use.
+def _create_event(request, user):
+    if not getattr(user, 'is_authenticated', False):
+        return JsonResponse({'detail': 'Authentication credentials were not provided.'}, status=401)
     try:
         payload = json.loads(request.body.decode('utf-8') or '{}')
     except json.JSONDecodeError:
@@ -161,12 +174,12 @@ def _create_event(request):
         return JsonResponse({'detail': f'Unsupported event_type: {event_type}'}, status=400)
 
     metadata_json = dict(metadata_json)
-    if getattr(request.user, 'is_authenticated', False):
-        metadata_json['user_id'] = request.user.id
+    metadata_json.pop('owner', None)
+    metadata_json.pop('created_by', None)
+    metadata_json['user_id'] = user.id
     if payload.get('track') is not None:
         metadata_json['track'] = payload['track']
-    if payload.get('is_global') is not None:
-        metadata_json['is_global'] = payload['is_global']
+    metadata_json['is_global'] = False
     metadata_json['is_important'] = bool(payload.get('is_important', metadata_json.get('is_important', False)))
     if payload.get('deadline_at'):
         deadline_at = _parse_patch_datetime(payload['deadline_at'])
@@ -181,8 +194,9 @@ def _create_event(request):
         end_at=end_at,
         is_all_day=payload.get('is_all_day', False),
         event_type=event_type,
-        source_type=str(payload.get('source_type') or 'manual').strip() or 'manual',
+        source_type='manual',
         metadata_json=metadata_json,
+        owner=user,
     )
     _ingest_schedule_event_to_rag(event)
     return JsonResponse(_serialize_event(event), status=201)
@@ -191,14 +205,22 @@ def _create_event(request):
 @csrf_exempt
 @require_http_methods(['PATCH', 'DELETE'])
 def event_detail(request, event_id):
-    # TODO: Require authentication and per-user/admin permission before production use.
+    user = _authenticate_request(request)
+    if user is None:
+        return JsonResponse({'detail': 'Authentication credentials were invalid.'}, status=401)
+    if not getattr(user, 'is_authenticated', False):
+        return JsonResponse({'detail': 'Authentication credentials were not provided.'}, status=401)
     try:
         event = ScheduleEvent.objects.get(pk=event_id)
     except ScheduleEvent.DoesNotExist:
         return JsonResponse({'detail': 'Schedule event not found.'}, status=404)
 
+    permission_error = _event_write_permission_error(event, user)
+    if permission_error:
+        return permission_error
+
     if request.method == 'DELETE':
-        return _delete_event(event)
+        return _delete_event(event, user)
 
     try:
         payload = json.loads(request.body.decode('utf-8') or '{}')
@@ -231,22 +253,48 @@ def event_detail(request, event_id):
     return JsonResponse(_serialize_event(event))
 
 
-def _delete_event(event):
-    if event.raw_data_id:
-        return JsonResponse({'detail': 'Generated schedule events cannot be deleted from the personal event API.'}, status=403)
+def _delete_event(event, user):
     event.delete()
     return JsonResponse({'detail': 'Schedule event deleted.'})
+
+
 def _ingest_schedule_event_to_rag(event):
-    if event.raw_data_id:
+    if event.raw_data_id or event.owner_id:
         return
     try:
         from apps.ai.calendar_ingestion import ScheduleEventRagIngestionService
 
         ScheduleEventRagIngestionService().ingest_event(event, ingest_vectors=True)
-    except Exception:
-        # Calendar writes should not fail because the AI index is unavailable.
+    except Exception as exc:
+        logger.warning('schedule_event_rag_ingestion_failed event_id=%s error=%s', event.id, exc)
         return
 
+
+def _authenticate_request(request):
+    if getattr(request.user, 'is_authenticated', False):
+        return request.user
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if not auth_header:
+        return request.user
+    try:
+        authenticated = JwtAuthentication().authenticate(request)
+    except AuthenticationFailed:
+        return None
+    if authenticated is None:
+        return request.user
+    user, _auth = authenticated
+    request.user = user
+    return user
+
+
+def _event_write_permission_error(event, user):
+    if event.owner_id:
+        if event.owner_id == user.id:
+            return None
+        return JsonResponse({'detail': 'You do not have permission to modify this schedule event.'}, status=403)
+    if getattr(user, 'is_staff', False):
+        return None
+    return JsonResponse({'detail': 'Public schedule events require admin permission.'}, status=403)
 
 def _parse_boundary(value, is_end):
     if not value:
@@ -317,6 +365,8 @@ def _serialize_event(event):
         'track': track_key,
         'track_key': track_key,
         'is_common': is_common,
+        'owner_id': event.owner_id,
+        'created_by_id': event.owner_id,
     }
 
 

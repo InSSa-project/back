@@ -87,6 +87,7 @@ open ai api 연동 채팅 사용법 :
     back/ai_server/prompts/templates/general_chat_template.md
     back/ai_server/prompts/templates/no_context_template.md
 -----------------------------------------------------
+
 크롤링 데이터 저장위치
 
 - 크롤링 원본: db.sqlite3 / sync_rawssafydata
@@ -104,5 +105,4 @@ open ai api 연동 채팅 사용법 :
 - 수동 RAG 파일: data/rag/*.json
   경로: \back\data\rag\*.json
   ㄴ 수정내용 반영 명령어 : python manage.py ingest_rag_json --path data/rag/ssafy_1.json --replace
-
 
