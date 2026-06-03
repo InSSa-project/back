@@ -1,7 +1,10 @@
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from ai_server.classification.query_classifier import QueryClassifier, QueryType
+from ai_server.pipelines.chat_pipeline import ChatPipeline
 from ai_server.policies.answer_policy import AnswerPolicy, AnswerPolicyRouter
 from ai_server.prompts.builder import PromptBuilder
 from ai_server.retrieval.policy_router import RetrievalPolicyRouter
@@ -9,9 +12,10 @@ from ai_server.retrieval.query_parser import DateExtractor, ScheduleQueryParser,
 from ai_server.retrieval.schedule_retrieval import ScheduleRetrievalService
 from ai_server.retrievers.evaluator import RetrievalEvaluator
 from ai_server.rag.schemas.documents import RetrievedChunk
+from ai_server.schemas.chat import ChatRequest, UserContext
 from ai_server.vectorstores.faiss_store import FaissVectorStore
 
-from datetime import date
+from datetime import date, timedelta
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -158,6 +162,109 @@ class RagFallbackPolicyTests(SimpleTestCase):
         self.assertLessEqual(result.metadata['context_count'], 4)
 
 
+
+class ScheduleDbChatPipelineTests(TestCase):
+    def setUp(self):
+        self.user_a = get_user_model().objects.create_user(
+            username='ai-user-a',
+            email='ai-user-a@example.com',
+            password='password',
+        )
+        self.user_b = get_user_model().objects.create_user(
+            username='ai-user-b',
+            email='ai-user-b@example.com',
+            password='password',
+        )
+        self.start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))
+        ScheduleEvent.objects.create(
+            title='공식 SSAFY 일정',
+            start_at=self.start_at,
+            end_at=self.start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='공휴일 일정',
+            start_at=self.start_at,
+            end_at=self.start_at + timedelta(hours=1),
+            event_type='holiday',
+            source_type='holiday',
+        )
+        ScheduleEvent.objects.create(
+            owner=self.user_a,
+            title='A 개인 일정',
+            start_at=self.start_at,
+            end_at=self.start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+        ScheduleEvent.objects.create(
+            owner=self.user_b,
+            title='B 개인 일정',
+            start_at=self.start_at,
+            end_at=self.start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+    def _ask(self, user, message='2026-06-01 일정 알려줘'):
+        return ChatPipeline().run(
+            ChatRequest(
+                message=message,
+                user_context=UserContext(user_id=user.id, campus='', generation='', track='', risk_level=''),
+            )
+        )
+
+    def test_schedule_question_returns_public_and_own_personal_events(self):
+        response = self._ask(self.user_a)
+
+        self.assertEqual(response.answer_policy, 'SCHEDULE_DB_DIRECT')
+        self.assertIn('공식 SSAFY 일정', response.answer)
+        self.assertIn('공휴일 일정', response.answer)
+        self.assertIn('A 개인 일정', response.answer)
+        self.assertNotIn('B 개인 일정', response.answer)
+
+    def test_other_user_only_sees_own_personal_events(self):
+        response = self._ask(self.user_b)
+
+        self.assertIn('공식 SSAFY 일정', response.answer)
+        self.assertIn('공휴일 일정', response.answer)
+        self.assertIn('B 개인 일정', response.answer)
+        self.assertNotIn('A 개인 일정', response.answer)
+
+    def test_exact_date_does_not_include_event_ending_at_day_start(self):
+        previous_day_start = timezone.make_aware(timezone.datetime(2026, 1, 5, 0, 0))
+        target_day_start = timezone.make_aware(timezone.datetime(2026, 1, 6, 9, 0))
+        ScheduleEvent.objects.create(
+            title='전날 자정 종료 일정',
+            start_at=previous_day_start,
+            end_at=previous_day_start + timedelta(days=1),
+            event_type='notice',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='1월 6일 실제 일정',
+            start_at=target_day_start,
+            end_at=target_day_start + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+
+        response = self._ask(self.user_a, message='1월 6일 일정 알려줘')
+
+        self.assertIn('1월 6일 실제 일정', response.answer)
+        self.assertNotIn('전날 자정 종료 일정', response.answer)
+    def test_empty_schedule_date_returns_no_confirmed_schedule_message(self):
+        response = self._ask(self.user_a, message='2026-06-03 일정 알려줘')
+
+        self.assertEqual(response.answer_policy, 'SCHEDULE_DB_NO_MATCH')
+        self.assertIn('확인', response.answer)
+        self.assertIn('없', response.answer)
+
+    def test_non_schedule_question_keeps_existing_rag_llm_flow(self):
+        response = self._ask(self.user_a, message='Django ForeignKey 설명해줘')
+
+        self.assertNotIn(response.answer_policy, {'SCHEDULE_DB_DIRECT', 'SCHEDULE_DB_NO_MATCH'})
 class CrawledDataRagIngestionSmokeTests(TestCase):
     def test_crawl_command_creates_raw_events_ai_documents_and_vectors(self):
         index_path = Path(settings.BASE_DIR) / 'var' / 'test' / f'{uuid4().hex}.json'

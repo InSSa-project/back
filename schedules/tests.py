@@ -5,12 +5,14 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from ai_server.core.config import get_settings
 from apps.ai.models import AiDocument
+from apps.users.jwt.service import JwtService
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
@@ -46,6 +48,22 @@ class ScheduleDisplayTitleTests(TestCase):
 
 
 class ScheduleEventApiTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username='user-a',
+            email='user-a@example.com',
+            password='password',
+        )
+        self.other_user = get_user_model().objects.create_user(
+            username='user-b',
+            email='user-b@example.com',
+            password='password',
+        )
+        self.client.force_login(self.user)
+
+    def _bearer(self, user):
+        return f"Bearer {JwtService().issue_token(user, token_type='access')}"
+
     def test_event_list_filters_by_start_and_end_dates(self):
         run_sample_notice_import()
 
@@ -107,7 +125,8 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(event.title, 'Manual study session')
         self.assertEqual(event.source_type, 'manual')
         self.assertIsNone(event.raw_data)
-        self.assertEqual(event.metadata_json, {'is_important': False})
+        self.assertEqual(event.owner, self.user)
+        self.assertEqual(event.metadata_json, {'user_id': self.user.id, 'is_global': False, 'is_important': False})
         self.assertEqual(payload['event_type'], 'personal')
         self.assertIsNone(payload['source_url'])
         self.assertIsNone(payload['source_title'])
@@ -150,7 +169,7 @@ class ScheduleEventApiTests(TestCase):
         payload = response.json()[0]
         self.assertEqual(payload['display_title'], 'Basic Syntax')
 
-    def test_post_event_ingests_personal_event_to_rag(self):
+    def test_post_event_does_not_ingest_personal_event_to_rag(self):
         index_path = Path(settings.BASE_DIR) / 'var' / 'test' / f'{uuid4().hex}.json'
         try:
             with patch.dict(
@@ -178,12 +197,8 @@ class ScheduleEventApiTests(TestCase):
 
             self.assertEqual(response.status_code, 201)
             event = ScheduleEvent.objects.get(title='Personal RAG study')
-            document = AiDocument.objects.get(schedule_event=event)
-            self.assertEqual(document.embedding_status, AiDocument.EMBEDDING_SUCCESS)
-            self.assertEqual(document.metadata_json['schedule_event_id'], event.id)
-            self.assertEqual(document.metadata_json['start_date'], '2026-05-28')
-            self.assertTrue(index_path.exists())
-            self.assertIn('Personal RAG study', index_path.read_text(encoding='utf-8'))
+            self.assertFalse(AiDocument.objects.filter(schedule_event=event).exists())
+            self.assertFalse(index_path.exists())
         finally:
             get_settings.cache_clear()
             if index_path.exists():
@@ -216,6 +231,7 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['source_type'], 'manual')
         self.assertEqual(payload['metadata_json']['track'], 'python')
         self.assertFalse(payload['metadata_json']['is_global'])
+        self.assertEqual(payload['owner_id'], self.user.id)
         self.assertTrue(payload['metadata_json']['is_important'])
         self.assertTrue(payload['is_important'])
         self.assertIn('deadline_at', payload['metadata_json'])
@@ -319,6 +335,7 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(ScheduleEvent.objects.get().title, 'Holiday personal plan')
+        self.assertEqual(ScheduleEvent.objects.get().owner, self.user)
 
     def test_event_list_returns_important_event_first_on_same_date(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 22, 9, 0))
@@ -343,8 +360,15 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual([item['title'] for item in response.json()], ['Important later event', 'Normal early event'])
 
     def test_patch_event_updates_editable_fields(self):
-        run_sample_notice_import()
-        event = ScheduleEvent.objects.first()
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Owned personal event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
 
         response = self.client.patch(
             reverse('schedule-event-detail', args=[event.id]),
@@ -590,8 +614,15 @@ class ScheduleEventApiTests(TestCase):
         self.assertTrue(online_week['is_common'])
 
     def test_patch_event_rejects_source_fields(self):
-        run_sample_notice_import()
-        event = ScheduleEvent.objects.first()
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Owned personal event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
 
         response = self.client.patch(
             reverse('schedule-event-detail', args=[event.id]),
@@ -610,8 +641,15 @@ class ScheduleEventApiTests(TestCase):
         self.assertNotEqual(event.title, 'Should not update')
 
     def test_patch_event_rejects_invalid_datetime(self):
-        run_sample_notice_import()
-        event = ScheduleEvent.objects.first()
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Owned personal event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
 
         response = self.client.patch(
             reverse('schedule-event-detail', args=[event.id]),
@@ -628,6 +666,7 @@ class ScheduleEventApiTests(TestCase):
             end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
             event_type='personal',
             source_type='manual',
+            owner=self.user,
         )
 
         response = self.client.delete(reverse('schedule-event-detail', args=[event.id]))
@@ -651,6 +690,112 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
+    def test_other_user_cannot_see_modify_or_delete_owned_personal_event(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            owner=self.user,
+            title='User A private event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+        public_event = ScheduleEvent.objects.create(
+            title='Public SSAFY event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+
+        self.client.force_login(self.other_user)
+        response = self.client.get(reverse('schedule-event-list'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['title'] for item in response.json()], ['Public SSAFY event'])
+
+        private_event = ScheduleEvent.objects.get(title='User A private event')
+        patch_response = self.client.patch(
+            reverse('schedule-event-detail', args=[private_event.id]),
+            data=json.dumps({'title': 'Stolen title'}),
+            content_type='application/json',
+        )
+        delete_response = self.client.delete(reverse('schedule-event-detail', args=[private_event.id]))
+        self.assertEqual(patch_response.status_code, 403)
+        self.assertEqual(delete_response.status_code, 403)
+        self.assertTrue(ScheduleEvent.objects.filter(pk=private_event.pk).exists())
+        self.assertTrue(ScheduleEvent.objects.filter(pk=public_event.pk).exists())
+
+    def test_regular_user_cannot_modify_public_event(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Public SSAFY event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+
+        response = self.client.patch(
+            reverse('schedule-event-detail', args=[event.id]),
+            data=json.dumps({'title': 'Nope'}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        event.refresh_from_db()
+        self.assertEqual(event.title, 'Public SSAFY event')
+
+    def test_anonymous_user_cannot_create_modify_or_delete_personal_event(self):
+        self.client.logout()
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='User A private event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        create_response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Anonymous event',
+                    'start_at': '2026-05-20T09:00:00+09:00',
+                    'end_at': '2026-05-20T10:00:00+09:00',
+                }
+            ),
+            content_type='application/json',
+        )
+        patch_response = self.client.patch(
+            reverse('schedule-event-detail', args=[event.id]),
+            data=json.dumps({'title': 'Anonymous patch'}),
+            content_type='application/json',
+        )
+        delete_response = self.client.delete(reverse('schedule-event-detail', args=[event.id]))
+
+        self.assertEqual(create_response.status_code, 401)
+        self.assertEqual(patch_response.status_code, 401)
+        self.assertEqual(delete_response.status_code, 401)
+
+    def test_bearer_jwt_authenticates_legacy_schedule_api(self):
+        self.client.logout()
+        response = self.client.post(
+            reverse('schedule-event-list'),
+            data=json.dumps(
+                {
+                    'title': 'Bearer-created event',
+                    'start_at': '2026-05-20T09:00:00+09:00',
+                    'end_at': '2026-05-20T10:00:00+09:00',
+                }
+            ),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=self._bearer(self.user),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ScheduleEvent.objects.get().owner, self.user)
     def test_deadline_single_time_does_not_become_one_hour_event(self):
         schedules = parse_schedule_candidates('2026.05.20 23:59 제출 마감', default_title='과제 제출 마감')
 
