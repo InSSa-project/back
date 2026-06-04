@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 from datetime import time
 
@@ -27,10 +27,9 @@ class ScheduleRetrievalService:
         )
         tokens = self._query_tokens(query)
         if tokens:
-            matched_records = [record for record in records if self._match_count(record, tokens) > 0]
-            if matched_records:
-                records = matched_records
-        return sorted(records, key=lambda chunk: self._sort_key(chunk, tokens))
+            records = [record for record in records if self._match_count(record, tokens) > 0]
+        records = sorted(records, key=lambda chunk: self._sort_key(chunk, tokens))
+        return records[: parsed_query.result_limit] if parsed_query.result_limit else records
 
     def _retrieve_from_db(self, parsed_query, filters: dict, query: str = ''):
         self._ensure_django_ready()
@@ -56,9 +55,9 @@ class ScheduleRetrievalService:
         events = list(queryset.order_by('start_at', 'id')[:100])
         tokens = self._query_tokens(query)
         if tokens:
-            matched_events = [event for event in events if self._event_match_count(event, tokens) > 0]
-            if matched_events:
-                events = matched_events
+            events = [event for event in events if self._event_match_count(event, tokens) > 0]
+        if parsed_query.result_limit:
+            events = events[: parsed_query.result_limit]
         return [self._chunk_from_event(event) for event in events]
 
     def _chunk_from_event(self, event):
@@ -146,5 +145,22 @@ class ScheduleRetrievalService:
 
     def _query_tokens(self, query: str) -> list[str]:
         tokens = re.findall(r'[\w가-힣]+', query.lower())
-        ignored = {'일정', '알려줘', '개인', '내', '오늘', '내일', '어제', '이번', '다음', 'ssafy'}
-        return [token for token in tokens if len(token) >= 2 and token not in ignored]
+        ignored = {'일정', '알려줘', '개인', '내', '오늘', '내일', '어제', '이번', '다음', '가까운', '다가오는', '예정된', '예정인', '앞으로', '곧', '가장', '제일', 'ssafy'}
+        filtered = [
+            token
+            for token in tokens
+            if len(token) >= 2
+            and token not in ignored
+            and not re.fullmatch(r'\d+(?:년|월|일)?', token)
+        ]
+        synonyms = {
+            '시험': ['시험', '평가', '과목평가', '월말평가', 'exam'],
+            '평가': ['평가', '과목평가', '월말평가', '시험', 'exam'],
+        }
+        expanded = []
+        for token in filtered:
+            expanded.extend(synonyms.get(token, [token]))
+        return list(dict.fromkeys(expanded))
+
+
+

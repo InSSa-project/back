@@ -6,6 +6,7 @@ from django.utils import timezone
 from schedules.models import ScheduleEvent
 
 from .models import EvaluationResult, RiskStatus
+from .recommendation_service import ScheduleRecommendationService
 
 
 class RiskService:
@@ -18,13 +19,13 @@ class RiskService:
     EVALUATION_RULES = {
         EvaluationResult.TYPE_SUBJECT: {
             'label': '과목평가',
-            'total': 10,
-            'target': 7,
+            'total': 13,
+            'target': 8,
         },
         EvaluationResult.TYPE_MONTHLY: {
             'label': '월말평가',
-            'total': 5,
-            'target': 3,
+            'total': 7,
+            'target': 4,
         },
     }
 
@@ -35,9 +36,16 @@ class RiskService:
         evaluations = list(EvaluationResult.objects.filter(user=user).order_by('evaluation_type', 'round_number'))
         summaries = [self._evaluation_summary(evaluations, evaluation_type) for evaluation_type in self.EVALUATION_RULES]
         recommendations = self._schedule_recommendations(user)
+        recommended_schedules = ScheduleRecommendationService().get_recommended_schedule_cards(
+            user=user,
+            events=list(self._visible_events(user, until_days=14)),
+            evaluations=evaluations,
+            summaries=summaries,
+        )
         upcoming = self._upcoming_deadlines(user)
         overall_level = self._overall_level(summaries, recommendations, upcoming)
-        message = self._status_message(overall_level, summaries, recommendations, upcoming)
+        status_details = self._status_details(overall_level, summaries)
+        message = status_details['summary']
         status, _ = RiskStatus.objects.get_or_create(user=user)
         fail_count = sum(summary['fail_count'] + summary['absent_count'] for summary in summaries)
         status.risk_level = overall_level
@@ -50,30 +58,37 @@ class RiskService:
         return {
             'status_model': status,
             'status': self._status_payload(status),
+            'status_details': status_details,
             'evaluation_summary': summaries,
             'evaluations': [self._evaluation_payload(evaluation) for evaluation in evaluations],
             'recommendations': recommendations,
+            'recommended_schedules': recommended_schedules,
             'upcoming_items': upcoming,
         }
 
     def upsert_evaluation(self, user, data):
-        evaluation_type = data['evaluation_type']
-        round_number = data['round_number']
-        defaults = {
-            'title': data.get('title', ''),
-            'status': data.get('status', EvaluationResult.STATUS_SCHEDULED),
-            'scheduled_at': data.get('scheduled_at'),
-            'note': data.get('note', ''),
-        }
-        evaluation, _created = EvaluationResult.objects.update_or_create(
+        evaluation, _created = EvaluationResult.objects.get_or_create(
             user=user,
-            evaluation_type=evaluation_type,
-            round_number=round_number,
-            defaults=defaults,
+            evaluation_type=data['evaluation_type'],
+            round_number=data['round_number'],
         )
+        editable_fields = [
+            'title',
+            'subject_name',
+            'score',
+            'status',
+            'scheduled_at',
+            'note',
+        ]
+        update_fields = []
+        for field in editable_fields:
+            if field in data:
+                setattr(evaluation, field, data[field])
+                update_fields.append(field)
+        if update_fields:
+            evaluation.save(update_fields=[*update_fields, 'updated_at'])
         self.calculate_dashboard(user)
         return evaluation
-
     def _visible_events(self, user, until_days):
         now = timezone.now()
         end_at = now + timedelta(days=until_days)
@@ -124,7 +139,16 @@ class RiskService:
         remaining_count = max(rule['total'] - fixed_count, 0)
         needed_count = max(rule['target'] - pass_count, 0)
         max_possible_pass = pass_count + remaining_count
-        risk_level = self._evaluation_risk_level(needed_count, remaining_count)
+        allowed_fail_count = rule['total'] - rule['target']
+        risk_level = self._evaluation_risk_level(
+            pass_count=pass_count,
+            fail_count=fail_count + absent_count,
+            needed_count=needed_count,
+            remaining_count=remaining_count,
+            target_count=rule['target'],
+            allowed_fail_count=allowed_fail_count,
+            evaluated_count=fixed_count,
+        )
         if max_possible_pass < rule['target']:
             risk_level = RiskStatus.LEVEL_DANGER
         return {
@@ -139,21 +163,43 @@ class RiskService:
             'remaining_count': remaining_count,
             'needed_pass_count': needed_count,
             'max_possible_pass_count': max_possible_pass,
+            'allowed_fail_count': allowed_fail_count,
+            'remaining_fail_allowance': max(allowed_fail_count - fail_count - absent_count, 0),
+            'projected_half_pass_count': pass_count + (remaining_count / 2),
             'risk_level': risk_level,
-            'message': self._evaluation_message(rule['label'], risk_level, pass_count, needed_count, remaining_count),
+            'message': self._evaluation_message(
+                rule['label'], risk_level, pass_count, needed_count, remaining_count,
+                fixed_count, fail_count + absent_count, allowed_fail_count,
+            ),
         }
 
-    def _evaluation_risk_level(self, needed_count, remaining_count):
-        if needed_count <= 0:
+    def _evaluation_risk_level(
+        self,
+        *,
+        pass_count,
+        fail_count,
+        needed_count,
+        remaining_count,
+        target_count,
+        allowed_fail_count,
+        evaluated_count,
+    ):
+        if pass_count >= target_count:
             return RiskStatus.LEVEL_SAFE
         if remaining_count <= 0 or needed_count > remaining_count:
             return RiskStatus.LEVEL_DANGER
-        ratio = needed_count / remaining_count
-        if ratio <= 0.35:
+        if evaluated_count <= 0:
             return RiskStatus.LEVEL_CAUTION
-        if ratio <= 0.75:
+
+        remaining_fail_allowance = allowed_fail_count - fail_count
+        projected_half_pass = pass_count + (remaining_count / 2)
+        if remaining_fail_allowance <= 0 or projected_half_pass < target_count:
             return RiskStatus.LEVEL_WARNING
-        return RiskStatus.LEVEL_WARNING
+        if projected_half_pass == target_count:
+            return RiskStatus.LEVEL_CAUTION
+        if projected_half_pass >= target_count + 1 and remaining_fail_allowance >= 2:
+            return RiskStatus.LEVEL_SAFE
+        return RiskStatus.LEVEL_CAUTION
 
     def _classify_event(self, event):
         title = event.title or ''
@@ -225,22 +271,38 @@ class RiskService:
         return RiskStatus.LEVEL_SAFE
 
     def _overall_level(self, summaries, recommendations, upcoming):
+        # The current-status card represents evaluation completion risk only.
         levels = [summary['risk_level'] for summary in summaries]
-        levels.extend(item['risk_level'] for item in recommendations[:3])
-        if upcoming:
-            levels.append(RiskStatus.LEVEL_CAUTION)
         return max(levels or [RiskStatus.LEVEL_SAFE], key=lambda level: self.LEVEL_ORDER[level])
 
-    def _status_message(self, level, summaries, recommendations, upcoming):
-        if level == RiskStatus.LEVEL_DANGER:
-            return '목표 달성이 어려운 평가 항목이 있습니다. 평가 결과와 남은 기회를 먼저 확인하세요.'
-        if level == RiskStatus.LEVEL_WARNING:
-            return '남은 평가나 임박 일정에서 주의가 필요합니다.'
-        if level == RiskStatus.LEVEL_CAUTION:
-            return '확인해야 할 일정 또는 추가 합격이 필요한 평가가 있습니다.'
-        if recommendations or upcoming:
-            return '현재 큰 위험은 없지만 가까운 일정은 확인하세요.'
-        return '현재 확인된 주요 리스크가 없습니다.'
+    def _status_details(self, level, summaries):
+        highest = max(summaries, key=lambda summary: self.LEVEL_ORDER[summary['risk_level']])
+        level_label = {
+            RiskStatus.LEVEL_SAFE: '안정',
+            RiskStatus.LEVEL_CAUTION: '보통',
+            RiskStatus.LEVEL_WARNING: '주의',
+            RiskStatus.LEVEL_DANGER: '위험',
+        }[level]
+        return {
+            'level_label': level_label,
+            'summary': f"{highest['label']} 기준으로 {level_label} 단계입니다. {highest['message']}",
+            'evidence_items': [self._status_evidence_item(summary) for summary in summaries],
+        }
+
+    def _status_evidence_item(self, summary):
+        fail_count = summary['fail_count'] + summary['absent_count']
+        projected = summary['projected_half_pass_count']
+        return {
+            'label': summary['label'],
+            'value': summary['message'],
+            'metrics': (
+                f"합격 {summary['pass_count']}/{summary['target_pass_count']} · "
+                f"과락 {fail_count}/{summary['allowed_fail_count']} · "
+                f"잔여 {summary['remaining_count']}"
+            ),
+            'projected_half_pass_count': projected,
+            'risk_level': summary['risk_level'],
+        }
 
     def _status_payload(self, status):
         return {
@@ -258,14 +320,31 @@ class RiskService:
             'evaluation_type': evaluation.evaluation_type,
             'round_number': evaluation.round_number,
             'title': evaluation.title,
+            'subject_name': evaluation.subject_name,
+            'score': str(evaluation.score) if evaluation.score is not None else None,
+            'max_score': str(evaluation.max_score) if evaluation.max_score is not None else None,
+            'score_percentage': str(round((evaluation.score / evaluation.max_score) * 100, 2)) if evaluation.score is not None and evaluation.max_score else None,
             'status': evaluation.status,
             'scheduled_at': evaluation.scheduled_at.isoformat() if evaluation.scheduled_at else None,
             'note': evaluation.note,
+            'created_at': evaluation.created_at.isoformat(),
+            'updated_at': evaluation.updated_at.isoformat(),
         }
-
-    def _evaluation_message(self, label, risk_level, pass_count, needed_count, remaining_count):
+    def _evaluation_message(
+        self, label, risk_level, pass_count, needed_count, remaining_count,
+        evaluated_count, fail_count, allowed_fail_count,
+    ):
+        if evaluated_count <= 0:
+            return f'{label} 결과가 아직 없어 기본 보통 단계입니다.'
         if risk_level == RiskStatus.LEVEL_SAFE:
-            return f'{label} 합격 기준을 이미 충족했습니다.'
+            return f'{label}은 현재 {pass_count}회 합격으로 수료 기준에 여유가 있습니다.'
         if risk_level == RiskStatus.LEVEL_DANGER:
-            return f'{label}은 현재 {pass_count}회 합격이며 남은 {remaining_count}회로 목표 달성이 어렵습니다.'
-        return f'{label}은 현재 {pass_count}회 합격입니다. 남은 {remaining_count}회 중 {needed_count}회 합격이 필요합니다.'
+            return f'{label}은 남은 시험을 모두 합격해도 수료 기준을 달성할 수 없습니다.'
+        if allowed_fail_count - fail_count <= 0:
+            return f'{label}은 추가 과락 여유가 없어 한 번 더 과락하면 수료 기준을 달성할 수 없습니다.'
+        projected_half_pass = pass_count + (remaining_count / 2)
+        if risk_level == RiskStatus.LEVEL_WARNING:
+            return f'{label}은 남은 {remaining_count}회 중 {needed_count}회 합격이 필요해 절반보다 더 높은 합격률이 필요합니다.'
+        if projected_half_pass == pass_count:
+            return f'{label}은 현재 결과 기준으로 수료 커트라인에 맞춰져 있습니다.'
+        return f'{label}은 남은 시험을 절반 합격하면 수료 커트라인에 도달하는 보통 단계입니다.'

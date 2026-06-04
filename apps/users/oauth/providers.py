@@ -58,7 +58,7 @@ class GoogleOAuthProvider:
             raise OAuthTokenVerificationError(f'Google token exchange failed: {error} {description}'.strip())
         access_token = response.json().get('access_token')
         if not access_token:
-            logger.error('Google token exchange response missing access_token redirect_uri=%s response=%s', token_redirect_uri, response.json())
+            logger.error('Google token exchange response missing access_token status=%s', response.status_code)
             raise OAuthTokenVerificationError('Google did not return an access token.')
         return access_token
 
