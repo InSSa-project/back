@@ -11,6 +11,8 @@ from django.conf import settings
 import requests
 from bs4 import BeautifulSoup
 
+from sync.models import RawSsafyData
+
 
 SAMPLE_JSON_PATH = settings.BASE_DIR / 'sync' / 'samples' / 'sample_ssafy_notice.json'
 DEFAULT_CRAWLER_MODE = 'sample'
@@ -201,7 +203,18 @@ def load_ssafy_authenticated_documents(
             page = context.new_page()
             page.set_default_timeout(_detail_timeout_ms())
             _login_ssafy(page, login_url, ssafy_id, ssafy_password)
-            discovered_urls = _discover_source_urls(page, main_url, login_url=login_url) if main_url else {}
+            selected_sources = _env_source_set('SSAFY_CRAWLER_SOURCES')
+            discovery_source_types = selected_sources or {'quest', 'curriculum', 'faq', 'learning_material', 'event'}
+            discovered_urls = (
+                _discover_source_urls(
+                    page,
+                    main_url,
+                    login_url=login_url,
+                    source_types=discovery_source_types,
+                )
+                if main_url
+                else {}
+            )
             faq_url = faq_url or discovered_urls.get('faq')
             quest_url = quest_url or discovered_urls.get('quest')
             curriculum_url = curriculum_url or discovered_urls.get('curriculum')
@@ -325,6 +338,7 @@ def _login_ssafy(page, login_url, ssafy_id, ssafy_password):
 
 def _collect_authenticated_list(page, list_url, source_type, link_extractor, login_url=None):
     max_pages = _crawler_max_pages()
+    recent_limit = _crawler_recent_limit()
     source_deadline = _source_deadline()
     seen_page_urls = set()
     seen_detail_urls = set()
@@ -387,6 +401,8 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
 
         new_link_count = 0
         for link in page_links:
+            if recent_limit and len(links) >= recent_limit:
+                break
             detail_url = link['url'] if isinstance(link, dict) else link
             if detail_url in seen_detail_urls:
                 continue
@@ -399,6 +415,12 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
                     f'evaluation_notice_candidate source_type={source_type} page={page_index} '
                     f'title={link_title or "-"} url={detail_url} detail=pending'
                 )
+        if recent_limit and len(links) >= recent_limit:
+            _record_collection_debug(
+                f'pagination_stopped source_type={source_type} reason=recent_limit recent_limit={recent_limit}',
+                level='warning',
+            )
+            break
         page_stats.append(
             {
                 'page': page_index,
@@ -463,6 +485,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         raise SsafyCrawlerError(f'No {source_type} detail links were found: {list_url}')
     details = []
     failed_detail_count = 0
+    skipped_before_detail_count = 0
     for link in links:
         _raise_if_source_timed_out(source_type, source_deadline)
         if isinstance(link, dict):
@@ -471,6 +494,14 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         else:
             detail_url = link
             list_title = ''
+        skip_reason = _existing_list_item_skip_reason(source_type, detail_url, list_title)
+        if skip_reason:
+            skipped_before_detail_count += 1
+            _record_collection_debug(
+                f'skipped_before_detail source_type={source_type} url={detail_url} '
+                f'title={_compact_debug_value(list_title) or "-"} reason={skip_reason}'
+            )
+            continue
         try:
             detail = fetch_authenticated_detail(
                 page,
@@ -503,7 +534,8 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
         f'list_summary source_type={source_type} pages_scanned={len(seen_page_signatures)} '
         f'total_rows_seen={sum(stat["row_count"] for stat in page_stats)} '
         f'unique_items_extracted={len(links)} duplicated_items={sum(stat["duplicate_count"] for stat in page_stats)} '
-        f'details_fetched={len(details)} target_total_notice_count={total_notice_count or "-"} '
+        f'details_fetched={len(details)} skipped_before_detail={skipped_before_detail_count} '
+        f'target_total_notice_count={total_notice_count or "-"} '
         f'last_page={last_page or "-"} page_size={page_size or "-"} '
         f'total_count_unavailable={str(not bool(total_notice_count)).lower()} '
         f'discovered_filter_conditions={_discovered_filter_conditions(page_stats)} '
@@ -518,6 +550,42 @@ def _crawler_max_pages():
         return max(1, int(os.getenv('SSAFY_NOTICE_MAX_PAGES') or os.getenv('SSAFY_CRAWLER_MAX_PAGES', '20')))
     except ValueError:
         return 20
+
+
+def _crawler_recent_limit():
+    value = os.getenv('SSAFY_CRAWLER_RECENT_LIMIT') or os.getenv('SSAFY_NOTICE_RECENT_LIMIT') or ''
+    if not value:
+        return 0
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return 0
+
+
+def _existing_list_item_skip_reason(source_type, detail_url, list_title):
+    if not list_title:
+        return ''
+
+    existing_by_url = RawSsafyData.objects.filter(source_type=source_type, source_url=detail_url).first()
+    if existing_by_url and str(existing_by_url.title or '').strip() == str(list_title or '').strip():
+        return 'source_url_title_match'
+
+    notice_id = _guess_notice_id(detail_url)
+    if notice_id:
+        existing = (
+            RawSsafyData.objects.filter(source_type=source_type, metadata_json__notice_id=notice_id).first()
+            or RawSsafyData.objects.filter(source_type=source_type, metadata_json__original_id=notice_id).first()
+            or RawSsafyData.objects.filter(source_type=source_type, metadata_json__brdItmSeq=notice_id).first()
+            or RawSsafyData.objects.filter(source_type=source_type, source_url__contains=f'brdItmSeq={notice_id}').first()
+        )
+        if existing and str(existing.title or '').strip() == str(list_title or '').strip():
+            return 'notice_id_title_match'
+
+    return ''
+
+
+def _compact_debug_value(value):
+    return ' '.join(str(value or '').split())[:80]
 
 
 def _detail_timeout_ms():
@@ -1177,8 +1245,9 @@ def _env_source_set(name):
     return {item.strip() for item in value.split(',') if item.strip()}
 
 
-def _discover_source_urls(page, main_url, login_url=None):
+def _discover_source_urls(page, main_url, login_url=None, source_types=None):
     discovered = {}
+    source_types = set(source_types or {'quest', 'curriculum', 'faq', 'learning_material', 'event'})
     try:
         page.goto(main_url, wait_until='networkidle')
         session_reason = _session_expired_reason(page, login_url=login_url)
@@ -1187,7 +1256,7 @@ def _discover_source_urls(page, main_url, login_url=None):
             return discovered
         if session_reason == 'login_or_session_text':
             _record_collection_debug('source_discovery_ignored_session_text reason=login_or_session_text')
-        candidates = _extract_source_url_candidates(page.content(), main_url)
+        candidates = _extract_source_url_candidates(page.content(), main_url, source_types=source_types)
         for source_type, urls in candidates.items():
             _record_collection_debug(f'source_url_candidates source_type={source_type} urls={",".join(urls[:10])}')
             for url in urls:
@@ -1200,9 +1269,10 @@ def _discover_source_urls(page, main_url, login_url=None):
     return discovered
 
 
-def _extract_source_url_candidates(html, base_url):
+def _extract_source_url_candidates(html, base_url, source_types=None):
     soup = BeautifulSoup(html, 'html.parser')
-    candidates = {source_type: [] for source_type in ['quest', 'curriculum', 'faq', 'learning_material', 'event']}
+    source_types = set(source_types or {'quest', 'curriculum', 'faq', 'learning_material', 'event'})
+    candidates = {source_type: [] for source_type in source_types}
     seen = set()
     for node in soup.select('a, button, li, div, span'):
         text = _clean_text(node.get_text(' ', strip=True))
@@ -1210,7 +1280,7 @@ def _extract_source_url_candidates(html, base_url):
         for raw_target in raw_targets:
             for url in _urls_from_menu_target(raw_target, base_url):
                 source_type = _guess_source_type_from_menu(url, text, raw_target)
-                if not source_type or (source_type, url) in seen:
+                if not source_type or source_type not in candidates or (source_type, url) in seen:
                     continue
                 seen.add((source_type, url))
                 candidates[source_type].append(url)
