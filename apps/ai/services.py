@@ -1,12 +1,17 @@
+﻿import logging
+
 import requests
 from django.conf import settings
 
 from .models import AiChatReference, AiDocument, ChatMessage, ChatSession
 
+logger = logging.getLogger(__name__)
 
-class AiServerClient:
+
+class FastAPIAIClient:
     def __init__(self, base_url=None):
         self.base_url = (base_url or getattr(settings, 'AI_SERVER_BASE_URL', 'http://localhost:8001')).rstrip('/')
+        self.timeout = getattr(settings, 'AI_REQUEST_TIMEOUT', 20)
 
     def chat(self, user, message, session_id=None):
         try:
@@ -24,42 +29,40 @@ class AiServerClient:
                     },
                     'stream': False,
                 },
-                timeout=15,
+                timeout=self.timeout,
             )
+        except requests.Timeout as exc:
+            logger.warning('ai_server_timeout error_type=%s', exc.__class__.__name__)
+            return self._error_payload('AI 응답 시간이 초과됐어요. 잠시 후 다시 시도해 주세요.', 'ai_server_timeout', exc)
         except requests.RequestException as exc:
-            return {
-                'answer': f'AI 서버에 연결할 수 없습니다. AI_SERVER_BASE_URL={self.base_url}, error={exc}',
-                'references': [],
-                'intent': 'error',
-                'query_type': 'UNKNOWN',
-                'answer_policy': 'ERROR',
-                'usage': {'mode': 'ai_server_connection_error'},
-            }
+            logger.warning('ai_server_connection_error error_type=%s', exc.__class__.__name__)
+            return self._error_payload('AI 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.', 'ai_server_connection_error', exc)
 
         if not response.ok:
-            return {
-                'answer': f'AI 서버 오류가 발생했습니다. status={response.status_code}, body={response.text[:500]}',
-                'references': [],
-                'intent': 'error',
-                'query_type': 'UNKNOWN',
-                'answer_policy': 'ERROR',
-                'usage': {'mode': 'ai_server_error'},
-            }
+            logger.warning('ai_server_error status=%s', response.status_code)
+            return self._error_payload('AI 서버가 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.', 'ai_server_error')
 
         try:
             payload = response.json()
-        except ValueError:
-            return {
-                'answer': f'AI 서버가 JSON이 아닌 응답을 반환했습니다. body={response.text[:500]}',
-                'references': [],
-                'intent': 'error',
-                'query_type': 'UNKNOWN',
-                'answer_policy': 'ERROR',
-                'usage': {'mode': 'ai_server_non_json'},
-            }
+        except ValueError as exc:
+            logger.warning('ai_server_non_json error_type=%s', exc.__class__.__name__)
+            return self._error_payload('AI 서버 응답을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.', 'ai_server_non_json', exc)
 
         payload['references'] = [self._normalize_reference(ref) for ref in payload.get('references', [])]
         return payload
+
+    def _error_payload(self, answer, mode, exc=None):
+        usage = {'mode': mode}
+        if exc is not None:
+            usage['error_type'] = exc.__class__.__name__
+        return {
+            'answer': answer,
+            'references': [],
+            'intent': 'error',
+            'query_type': 'UNKNOWN',
+            'answer_policy': 'ERROR',
+            'usage': usage,
+        }
 
     def _normalize_reference(self, reference):
         metadata = reference.get('metadata') or {}
@@ -74,11 +77,11 @@ class AiServerClient:
         }
 
 
-class AiChatService:
+class AIService:
     def __init__(self, ai_server_client=None):
-        self.ai_server_client = ai_server_client or AiServerClient()
+        self.ai_server_client = ai_server_client or FastAPIAIClient()
 
-    def answer(self, user, message, session_id=None):
+    def answer(self, user, message, session_id=None, options=None):
         if getattr(settings, 'AI_SERVER_ENABLED', False):
             payload = self.ai_server_client.chat(user=user, message=message, session_id=session_id)
             self._persist_chat(user=user, message=message, payload=payload, session_id=session_id)
@@ -100,6 +103,7 @@ class AiChatService:
                 session=session,
                 role=ChatMessage.ROLE_ASSISTANT,
                 content=payload.get('answer', ''),
+                usage_json=payload.get('usage') or {},
             )
             for reference in payload.get('references', []):
                 document_id = reference.get('document_id')
@@ -123,3 +127,11 @@ class AiChatService:
                 return session
         title = (message[:40] or '새 채팅').strip()
         return ChatSession.objects.create(user=user, title=title)
+
+
+
+# Backward-compatible aliases for existing imports and tests.
+AiServerClient = FastAPIAIClient
+AiChatService = AIService
+
+
