@@ -1,4 +1,3 @@
-
 import tempfile
 from io import BytesIO
 
@@ -46,9 +45,8 @@ class UserProfileApiTests(TestCase):
             data={
                 'generation': 12,
                 'campus': '서울',
-                'track': 'Java',
-                'class_number': 5,
-                'notification_email': 'notice@example.com',
+                'track': 'java_major',
+                'class_number': 17,
             },
             content_type='application/json',
             **self._auth(self.user),
@@ -58,25 +56,48 @@ class UserProfileApiTests(TestCase):
         profile = UserProfile.objects.get(user=self.user)
         self.assertEqual(profile.generation, 12)
         self.assertEqual(profile.campus, '서울')
-        self.assertEqual(profile.track, 'Java')
-        self.assertEqual(profile.class_number, 5)
-        self.assertEqual(profile.notification_email, 'notice@example.com')
+        self.assertEqual(profile.track, 'java_major')
+        self.assertEqual(profile.class_number, 17)
+        self.assertEqual(profile.notification_email, 'user-a@example.com')
 
-    def test_notification_email_is_required_when_any_notification_enabled(self):
+    def test_notification_email_can_be_blank_when_notifications_enabled(self):
         response = self.client.patch(
             reverse('users-me-profile'),
             data={
                 'notification_email': '',
                 'notice_notification_enabled': True,
-                'schedule_reminder_enabled': False,
-                'ai_question_notification_enabled': False,
+                'schedule_reminder_enabled': True,
+                'ai_question_notification_enabled': True,
             },
             content_type='application/json',
             **self._auth(self.user),
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('notification_email', response.json())
+        self.assertEqual(response.status_code, 200)
+        profile = UserProfile.objects.get(user=self.user)
+        self.assertEqual(profile.notification_email, '')
+        self.assertTrue(profile.notice_notification_enabled)
+        self.assertTrue(profile.schedule_reminder_enabled)
+        self.assertTrue(profile.ai_question_notification_enabled)
+
+    def test_notification_email_can_be_omitted_when_notifications_enabled(self):
+        UserProfile.objects.create(user=self.user, notification_email=None)
+
+        response = self.client.patch(
+            reverse('users-me-profile'),
+            data={
+                'notice_notification_enabled': True,
+                'schedule_reminder_enabled': True,
+                'ai_question_notification_enabled': True,
+            },
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = UserProfile.objects.get(user=self.user)
+        self.assertIsNone(profile.notification_email)
+        self.assertTrue(profile.notice_notification_enabled)
 
     def test_notification_email_can_be_blank_when_all_notifications_disabled(self):
         response = self.client.patch(
