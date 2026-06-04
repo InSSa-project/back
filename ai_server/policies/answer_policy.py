@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
 
 from ai_server.classification.query_classifier import QueryType
+from ai_server.prompts.response_style import ResponseStyle
 
 
 class AnswerPolicy:
@@ -40,7 +41,7 @@ class AnswerPolicyRouter:
                 answer_policy=AnswerPolicy.GENERAL_KNOWLEDGE_FALLBACK,
                 use_llm=True,
                 use_references=False,
-                fallback_prefix='SSAFY 공식 자료 기준은 아니지만, 일반적인 개발 기준으로 설명하면',
+                fallback_prefix='SSAFY 공식 자료 기준은 아니지만, 일반적인 개발 지식으로 답하면',
             )
 
         if query_type == QueryType.GENERAL_ADVICE:
@@ -48,7 +49,7 @@ class AnswerPolicyRouter:
                 answer_policy=AnswerPolicy.GENERAL_ADVICE_FALLBACK,
                 use_llm=True,
                 use_references=False,
-                fallback_prefix='SSAFY 공식 안내는 아니지만, 일반적으로는',
+                fallback_prefix='공식 규정 안내가 아니라 일반적인 SSAFY 선배/멘토 관점에서 말하면',
             )
 
         return AnswerPolicyDecision(
@@ -60,8 +61,4 @@ class AnswerPolicyRouter:
 
 
 def official_no_context_answer() -> str:
-    return (
-        '현재 등록된 SSAFY 자료에서는 확인되지 않습니다.\n'
-        '정확한 내용은 최신 공지사항, LMS, Mattermost 반 공지방, '
-        '담당 컨설턴트/코치를 통해 확인하는 것이 안전합니다.'
-    )
+    return ResponseStyle().official_no_context()

@@ -1,4 +1,4 @@
-import re
+﻿import re
 
 
 class QueryType:
@@ -9,39 +9,64 @@ class QueryType:
 
 
 class QueryClassifier:
-    """Rule-based classifier that can be replaced by an LLM classifier later."""
+    """Rule-based intent classifier for SSAFY official facts vs general support."""
 
-    SSAFY_OFFICIAL_KEYWORDS = [
-        'ssafy', '싸피', '공지', '일정', '언제', '마감', '제출', '평가', '월말평가',
-        '과락', '출결', '결석', '지각', '캠퍼스', '반 공지', '반정보', 'lms',
-        'mattermost', '매터모스트', '컨설턴트', '코치', '운영', '규정', '기준',
-    ]
     GENERAL_TECH_KEYWORDS = [
-        'python', 'django', 'fastapi', 'git', 'github', 'javascript', 'react',
-        'sql', 'db', 'database', 'api', 'rest', 'http', '배포', '서버', '오류',
-        '에러', '코드', '알고리즘', '자료구조', 'dfs', 'bfs', 'foreignkey',
-        '모델', 'serializer', 'viewset', '함수', '클래스',
+        'python', 'django', 'fastapi', 'git', 'github', 'javascript', 'vue', 'react',
+        'sql', 'db', 'database', 'api', 'rest', 'http', '배포', '서버', '오류', '에러',
+        '코드', '알고리즘', '자료구조', 'dfs', 'bfs', 'foreignkey', 'serializer', 'viewset',
+        '컴포넌트', '함수', '클래스', '모델', '마이그레이션', '충돌', 'merge', 'commit',
+    ]
+    EMOTIONAL_SUPPORT_KEYWORDS = [
+        '힘들', '불안', '걱정', '스트레스', '우울', '멘탈', '버틸', '포기', '지쳤',
+        '따라가기 힘', '못 따라가', '팀플이 힘', '팀원이', '갈등', '괴롭', '막막',
+        '맞았는데', '떨어졌는데', '망했', '괜찮을까', '잘할 수 있을까',
     ]
     GENERAL_ADVICE_KEYWORDS = [
-        '어떻게 하면', '어떻게 해', '어떻게 하지', '준비', '관리', '멘토링',
-        '역할 분담', '팀원', '협업', '프로젝트 일정', '시험 대비', '공부',
-        '계획', '가이드', '추천', '조언',
+        '어떻게 하면', '어떻게 해야', '어떻게 하지', '준비', '관리', '멘토링',
+        '공부 방향', '공부법', '계획', '가이드', '추천', '조언', '시간 관리',
+        '집중력', '운동 루틴', '배달음식', '취업이 걱정', '프로젝트 때문에',
+    ]
+    SSAFY_DOMAIN_KEYWORDS = [
+        'ssafy', '싸피', '과락', '수료', '재시험', '월말평가', '과목평가', '평가',
+        '출결', '결석', '지각', '공지', '공지사항', 'lms', 'mattermost', '매터모스트',
+        '컨설턴트', '코치', '멘토링', '프로젝트 제출', '제출일', '마감', '기준', '규정',
+    ]
+    OFFICIAL_FACT_PATTERNS = [
+        r'기준(이|은|을|가)?\s*(뭐|무엇|알려|설명)',
+        r'조건(이|은|을|가)?\s*(뭐|무엇|알려|설명)',
+        r'(수료|과락|재시험|평가|출결|결석|지각).*(기준|조건|규정|점수|횟수|처리)',
+        r'(일정|제출일|마감|공지|공지사항|내용).*(알려|언제|뭐|무엇|확인|보여)',
+        r'(언제|몇\s*시|몇\s*일).*(평가|시험|멘토링|마감|제출|프로젝트)',
+        r'(통과|합격|불합격).*(기준|조건|점수|횟수)',
     ]
 
     def classify(self, question: str) -> str:
         normalized = question.lower().strip()
+        if not normalized:
+            return QueryType.UNKNOWN
+
         if self._contains_any(normalized, self.GENERAL_TECH_KEYWORDS):
             return QueryType.GENERAL_TECH
-        if self._contains_any(normalized, self.SSAFY_OFFICIAL_KEYWORDS):
-            if self._looks_like_general_advice(normalized):
-                return QueryType.GENERAL_ADVICE
+
+        if self._is_support_or_advice(normalized):
+            return QueryType.GENERAL_ADVICE
+
+        if self._is_official_fact_question(normalized):
             return QueryType.SSAFY_OFFICIAL
+
         if self._contains_any(normalized, self.GENERAL_ADVICE_KEYWORDS):
             return QueryType.GENERAL_ADVICE
+
         return QueryType.UNKNOWN
 
     def _contains_any(self, text: str, keywords: list[str]) -> bool:
         return any(keyword.lower() in text for keyword in keywords)
 
-    def _looks_like_general_advice(self, text: str) -> bool:
-        return bool(re.search(r'(어떻게|준비|관리|조언|추천|가이드)', text))
+    def _is_support_or_advice(self, text: str) -> bool:
+        return self._contains_any(text, self.EMOTIONAL_SUPPORT_KEYWORDS) or self._contains_any(text, self.GENERAL_ADVICE_KEYWORDS)
+
+    def _is_official_fact_question(self, text: str) -> bool:
+        if not self._contains_any(text, self.SSAFY_DOMAIN_KEYWORDS):
+            return False
+        return any(re.search(pattern, text) for pattern in self.OFFICIAL_FACT_PATTERNS)
