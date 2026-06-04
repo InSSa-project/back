@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ai_server.core.config import get_settings
 from ai_server.optimization.token_budget import TokenBudgetManager
@@ -45,6 +47,7 @@ class PromptBuilder:
         memory_context: str,
         fallback_prefix: str = '',
     ) -> PromptBuildResult:
+        current_date = datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y-%m-%d')
         selection = self.selector.select(query_type, answer_policy, insufficient_context)
         base_files = selection['base']
         style_files = selection['styles']
@@ -63,6 +66,7 @@ class PromptBuilder:
             *base_prompts,
             policy_prompt,
             question,
+            f'Current Date (Asia/Seoul): {current_date}',
             f'Query Type: {query_type}',
             f'Answer Policy: {answer_policy}',
             f'Extracted Date: {extracted_date}',
@@ -84,7 +88,9 @@ class PromptBuilder:
             policy_prompt,
             budget.style_prompt,
             '[Runtime Metadata]',
+            f'Current Date (Asia/Seoul): {current_date}',
             f'Intent: {intent}',
+            f'Current Date (Asia/Seoul): {current_date}',
             f'Query Type: {query_type}',
             f'Answer Policy: {answer_policy}',
             f'Extracted Date: {extracted_date}',
@@ -108,6 +114,7 @@ class PromptBuilder:
                 {'role': 'user', 'content': user_content},
             ],
             metadata={
+                'current_date': current_date,
                 'query_type': query_type,
                 'answer_policy': answer_policy,
                 'used_prompt_files': used_prompt_files,
@@ -126,3 +133,4 @@ class PromptBuilder:
                 f"Assistant: {item.get('assistant', '')}",
             ]))
         return '\n\n'.join(blocks)
+
