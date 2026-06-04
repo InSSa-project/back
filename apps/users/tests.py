@@ -1,11 +1,13 @@
 import tempfile
 from io import BytesIO
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from PIL import Image
+import requests
 
 from apps.users.jwt.service import JwtService
 from apps.users.models import UserProfile
@@ -182,3 +184,102 @@ class UserProfileApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['data']['email'], 'user-a@example.com')
         self.assertNotEqual(response.json()['data']['email'], 'user-b@example.com')
+
+
+@override_settings(MATTERMOST_BASE_URL='https://meeting.ssafy.com', MATTERMOST_TIMEOUT_SECONDS=5, DEBUG=False)
+class MattermostLoginApiTests(TestCase):
+    def _mattermost_response(self, status_code=200, payload=None):
+        response = Mock()
+        response.status_code = status_code
+        response.json.return_value = payload or {
+            'id': 'mm-user-1',
+            'username': 'ssafy-user',
+            'nickname': '김싸피',
+            'email': 'ssafy@example.com',
+        }
+        return response
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_success_issues_tokens_and_saves_profile(self, mock_post):
+        mock_post.return_value = self._mattermost_response()
+
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'ssafy-user', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertIn('access_token', payload)
+        self.assertIn('refresh_token', payload)
+        self.assertEqual(payload['user']['mattermost_user_id'], 'mm-user-1')
+        self.assertEqual(payload['user']['mattermost_username'], 'ssafy-user')
+        self.assertNotIn('secret-password', str(response.json()))
+        profile = UserProfile.objects.get(mattermost_user_id='mm-user-1')
+        self.assertEqual(profile.mattermost_username, 'ssafy-user')
+        self.assertEqual(profile.user.email, 'ssafy@example.com')
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.kwargs['json']['login_id'], 'ssafy-user')
+        self.assertEqual(mock_post.call_args.kwargs['json']['password'], 'secret-password')
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_alias_path_also_works(self, mock_post):
+        mock_post.return_value = self._mattermost_response(
+            payload={
+                'id': 'mm-user-2',
+                'username': 'alias-user',
+                'nickname': '',
+                'email': 'alias@example.com',
+            }
+        )
+
+        response = self.client.post(
+            '/api/users/auth/mattermost/login/',
+            data={'login_id': 'alias-user', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['data']['user']['mattermost_user_id'], 'mm-user-2')
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_auth_failure_returns_401(self, mock_post):
+        mock_post.return_value = self._mattermost_response(status_code=401)
+
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'ssafy-user', 'password': 'wrong-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()['message'], 'Mattermost 인증에 실패했습니다.')
+        self.assertNotIn('wrong-password', str(response.json()))
+
+    @patch('django.core.handlers.base.log_response')
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_timeout_returns_503(self, mock_post, _mock_log_response):
+        mock_post.side_effect = requests.Timeout()
+
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'ssafy-user', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['message'], 'Mattermost 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.')
+        self.assertNotIn('secret-password', str(response.json()))
+
+    @override_settings(MATTERMOST_BASE_URL='')
+    @patch('django.core.handlers.base.log_response')
+    def test_mattermost_login_missing_config_returns_503(self, _mock_log_response):
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'ssafy-user', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['message'], 'Mattermost 연동 설정이 필요합니다.')

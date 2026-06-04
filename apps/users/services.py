@@ -1,14 +1,19 @@
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.core import signing
 from django.db import transaction
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.crypto import get_random_string
 import logging
+from urllib.parse import urljoin
+
+import requests
 
 from apps.users.jwt.service import JwtService
 from apps.users.oauth.registry import OAuthProviderRegistry
 
-from .models import OAuthAccount, User
+from .models import OAuthAccount, User, UserProfile
 
 
 logger = logging.getLogger(__name__)
@@ -237,6 +242,129 @@ class OAuthLoginService:
 
     def _build_unique_username(self, base_username):
         normalized = ''.join(char for char in base_username if char.isalnum() or char in ['_', '-']) or 'oauth_user'
+        candidate = normalized[:120]
+        suffix = 1
+        while User.objects.filter(username=candidate).exists():
+            suffix += 1
+            candidate = f'{normalized[:110]}_{suffix}'
+        return candidate
+
+
+class MattermostAuthError(Exception):
+    pass
+
+
+class MattermostUnavailableError(Exception):
+    pass
+
+
+class MattermostConfigError(Exception):
+    pass
+
+
+class MattermostLoginService:
+    def __init__(self, jwt_service=None):
+        self.jwt_service = jwt_service or JwtService()
+
+    @transaction.atomic
+    def login(self, login_id, password):
+        mattermost_user = self.authenticate_mattermost_user(login_id, password)
+        user, profile = self._get_or_create_user(mattermost_user, login_id)
+        tokens = self.jwt_service.issue_pair(user)
+        return {
+            'user': user,
+            'profile': profile,
+            **tokens,
+        }
+
+    def authenticate_mattermost_user(self, login_id, password):
+        base_url = str(getattr(settings, 'MATTERMOST_BASE_URL', '') or '').strip()
+        if not base_url:
+            raise MattermostConfigError('Mattermost base URL is not configured.')
+
+        timeout = float(getattr(settings, 'MATTERMOST_TIMEOUT_SECONDS', 5))
+        login_url = urljoin(base_url.rstrip('/') + '/', 'api/v4/users/login')
+        try:
+            response = requests.post(
+                login_url,
+                json={'login_id': login_id, 'password': password},
+                timeout=timeout,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            raise MattermostUnavailableError('Mattermost server is unavailable.') from exc
+
+        if response.status_code in {401, 403}:
+            raise MattermostAuthError('Mattermost authentication failed.')
+        if response.status_code >= 500:
+            raise MattermostUnavailableError('Mattermost server is unavailable.')
+        if response.status_code >= 400:
+            raise MattermostAuthError('Mattermost authentication failed.')
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise MattermostUnavailableError('Mattermost response is invalid.') from exc
+
+    def _get_or_create_user(self, mattermost_user, login_id):
+        mattermost_user_id = str(mattermost_user.get('id') or '').strip()
+        mattermost_username = str(mattermost_user.get('username') or login_id or '').strip()
+        mattermost_email = str(mattermost_user.get('email') or '').strip()
+        mattermost_nickname = str(mattermost_user.get('nickname') or '').strip()
+
+        profile = None
+        if mattermost_user_id:
+            profile = UserProfile.objects.select_related('user').filter(mattermost_user_id=mattermost_user_id).first()
+        if profile is None and mattermost_username:
+            profile = UserProfile.objects.select_related('user').filter(mattermost_username=mattermost_username).first()
+        if profile:
+            self._sync_profile(profile, mattermost_user_id, mattermost_username, mattermost_nickname)
+            return profile.user, profile
+
+        user = self._find_user(mattermost_email, mattermost_username)
+        if user is None:
+            user = self._create_user(mattermost_email, mattermost_username, mattermost_nickname, mattermost_user_id)
+
+        profile, _created = UserProfile.objects.get_or_create(user=user)
+        self._sync_profile(profile, mattermost_user_id, mattermost_username, mattermost_nickname)
+        return user, profile
+
+    def _find_user(self, email, username):
+        if email:
+            user = User.objects.filter(email=email).first()
+            if user:
+                return user
+        if username:
+            return User.objects.filter(username=username).first()
+        return None
+
+    def _create_user(self, email, username, nickname, mattermost_user_id):
+        base_username = username or nickname or f'mattermost_{mattermost_user_id or get_random_string(8)}'
+        user = User(
+            email=email or f'{base_username}@mattermost.local',
+            username=self._build_unique_username(base_username),
+            name=nickname or username or '',
+        )
+        user.set_unusable_password()
+        user.save()
+        return user
+
+    def _sync_profile(self, profile, mattermost_user_id, mattermost_username, mattermost_nickname):
+        profile.mattermost_user_id = mattermost_user_id or profile.mattermost_user_id
+        profile.mattermost_username = mattermost_username or profile.mattermost_username
+        profile.mattermost_nickname = mattermost_nickname
+        profile.mattermost_connected_at = timezone.now()
+        profile.save(
+            update_fields=[
+                'mattermost_user_id',
+                'mattermost_username',
+                'mattermost_nickname',
+                'mattermost_connected_at',
+                'updated_at',
+            ]
+        )
+
+    def _build_unique_username(self, base_username):
+        normalized = ''.join(char for char in str(base_username) if char.isalnum() or char in ['_', '-']) or 'mattermost_user'
         candidate = normalized[:120]
         suffix = 1
         while User.objects.filter(username=candidate).exists():

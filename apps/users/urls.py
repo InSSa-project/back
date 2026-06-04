@@ -1,8 +1,18 @@
 from django.urls import path
 
-from .views import MeView, MyProfileImageView, MyProfileView, OAuthAuthorizeView, OAuthCallbackView, OAuthDebugView, OAuthLoginView
+from .views import (
+    MattermostLoginView,
+    MeView,
+    MyProfileImageView,
+    MyProfileView,
+    OAuthAuthorizeView,
+    OAuthCallbackView,
+    OAuthDebugView,
+    OAuthLoginView,
+)
 
 urlpatterns = [
+    path('auth/mattermost/login/', MattermostLoginView.as_view(), name='users-mattermost-login'),
     path('oauth/login', OAuthLoginView.as_view(), name='users-oauth-login'),
     path('oauth/<str:provider>/debug', OAuthDebugView.as_view(), name='users-oauth-debug'),
     path('oauth/<str:provider>/authorize', OAuthAuthorizeView.as_view(), name='users-oauth-authorize'),

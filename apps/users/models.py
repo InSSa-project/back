@@ -61,6 +61,10 @@ class UserProfile(models.Model):
     notice_notification_enabled = models.BooleanField(default=True)
     schedule_reminder_enabled = models.BooleanField(default=True)
     ai_question_notification_enabled = models.BooleanField(default=True)
+    mattermost_user_id = models.CharField(max_length=100, null=True, blank=True)
+    mattermost_username = models.CharField(max_length=100, null=True, blank=True)
+    mattermost_nickname = models.CharField(max_length=100, null=True, blank=True)
+    mattermost_connected_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
