@@ -1,4 +1,5 @@
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from django.contrib.auth import login
@@ -11,7 +12,8 @@ from common.utils.api_response import error_response, success_response
 
 from .oauth.exceptions import OAuthError
 from .oauth.registry import OAuthProviderRegistry
-from .serializers import OAuthLoginSerializer, UserSerializer
+from .models import UserProfile
+from .serializers import OAuthLoginSerializer, ProfileImageUploadSerializer, UserProfileSerializer, UserSerializer
 from .services import OAuthLoginService, UserService
 
 
@@ -22,6 +24,54 @@ class MeView(APIView):
     def get(self, request):
         user = self.service_class().get_profile(request.user)
         return success_response(UserSerializer(user).data)
+
+
+class MyProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile = self._get_or_create_profile(request.user)
+        return success_response(UserProfileSerializer(profile, context={'request': request}).data)
+
+    def patch(self, request):
+        profile = self._get_or_create_profile(request.user)
+        serializer = UserProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return success_response(serializer.data)
+
+    def _get_or_create_profile(self, user):
+        profile, _created = UserProfile.objects.get_or_create(
+            user=user,
+            defaults={'notification_email': user.email or None},
+        )
+        return profile
+
+
+class MyProfileImageView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        profile = self._get_or_create_profile(request.user)
+        serializer = ProfileImageUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile.profile_image = serializer.validated_data['image']
+        profile.save(update_fields=['profile_image', 'updated_at'])
+        return success_response(UserProfileSerializer(profile, context={'request': request}).data)
+
+    def delete(self, request):
+        profile = self._get_or_create_profile(request.user)
+        profile.profile_image = None
+        profile.save(update_fields=['profile_image', 'updated_at'])
+        return success_response(UserProfileSerializer(profile, context={'request': request}).data)
+
+    def _get_or_create_profile(self, user):
+        profile, _created = UserProfile.objects.get_or_create(
+            user=user,
+            defaults={'notification_email': user.email or None},
+        )
+        return profile
 
 
 class OAuthLoginView(APIView):
