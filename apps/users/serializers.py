@@ -41,6 +41,22 @@ class UserProfileSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='user.name', read_only=True)
     email = serializers.EmailField(source='user.email', read_only=True)
     profile_image_url = serializers.SerializerMethodField()
+    track = serializers.ChoiceField(
+        choices=[
+            *[choice[0] for choice in UserProfile.TRACK_CHOICES],
+            'java_major',
+            'java_non_major',
+            'python',
+            'embedded',
+            'mobile',
+            'data',
+            'ai',
+            'etc',
+        ],
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+    )
 
     class Meta:
         model = UserProfile
@@ -75,27 +91,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if value is not None and value < 1:
             raise serializers.ValidationError('Class number must be at least 1.')
         return value
-
-    def validate(self, attrs):
-        notification_email = attrs.get(
-            'notification_email',
-            self.instance.notification_email if self.instance else None,
-        )
-        notice_enabled = attrs.get(
-            'notice_notification_enabled',
-            self.instance.notice_notification_enabled if self.instance else True,
-        )
-        schedule_enabled = attrs.get(
-            'schedule_reminder_enabled',
-            self.instance.schedule_reminder_enabled if self.instance else True,
-        )
-        ai_enabled = attrs.get(
-            'ai_question_notification_enabled',
-            self.instance.ai_question_notification_enabled if self.instance else True,
-        )
-        if any([notice_enabled, schedule_enabled, ai_enabled]) and not notification_email:
-            raise serializers.ValidationError({'notification_email': 'Notification email is required when notifications are enabled.'})
-        return attrs
 
 
 class ProfileImageUploadSerializer(serializers.Serializer):
