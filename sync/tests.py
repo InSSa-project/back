@@ -43,6 +43,33 @@ from sync.services.ssafy_crawler import (
 
 
 class SampleNoticeImportTests(TestCase):
+    def setUp(self):
+        self.admin_user = get_user_model().objects.create_user(
+            username='sync-admin',
+            email='sync-admin@example.com',
+            password='pass',
+            is_staff=True,
+        )
+        self.client.force_login(self.admin_user)
+
+    def test_management_sync_apis_require_staff_user(self):
+        member = get_user_model().objects.create_user(username='sync-member', password='pass')
+        self.client.force_login(member)
+
+        crawl_response = self.client.post(reverse('sync-crawl-run'))
+        raw_data_response = self.client.get(reverse('sync-raw-data-list'))
+
+        self.assertEqual(crawl_response.status_code, 403)
+        self.assertEqual(raw_data_response.status_code, 403)
+
+    def test_management_sync_apis_reject_anonymous_user(self):
+        self.client.logout()
+
+        crawl_response = self.client.post(reverse('sync-crawl-run'))
+        raw_data_response = self.client.get(reverse('sync-raw-data-list'))
+
+        self.assertEqual(crawl_response.status_code, 401)
+        self.assertEqual(raw_data_response.status_code, 401)
     def test_run_crawl_api_imports_raw_data_and_schedule_events(self):
         response = self.client.post(reverse('sync-crawl-run'))
 

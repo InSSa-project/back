@@ -1,4 +1,4 @@
-from ai_server.core.config import get_settings
+﻿from ai_server.core.config import get_settings
 
 
 class OpenAiProvider:
@@ -17,12 +17,13 @@ class OpenAiProvider:
 
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.settings.openai_api_key)
+        client = OpenAI(api_key=self.settings.openai_api_key, timeout=self.settings.llm_request_timeout)
         try:
             response = client.chat.completions.create(
                 model=kwargs.get('model') or self.settings.default_chat_model,
                 messages=messages,
                 temperature=kwargs.get('temperature', 0.3),
+                max_completion_tokens=kwargs.get('max_completion_tokens', self.settings.max_completion_tokens),
             )
             return {
                 'answer': response.choices[0].message.content or '',
@@ -30,7 +31,7 @@ class OpenAiProvider:
             }
         except Exception as exc:
             return {
-                'answer': f'OpenAI 호출 중 오류가 발생했습니다: {exc}',
+                'answer': 'AI 답변을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.',
                 'usage': {'mode': 'openai_error', 'error_type': exc.__class__.__name__},
             }
 
@@ -41,12 +42,20 @@ class OpenAiProvider:
 
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.settings.openai_api_key)
+        client = OpenAI(api_key=self.settings.openai_api_key, timeout=self.settings.llm_request_timeout)
         with client.chat.completions.stream(
             model=kwargs.get('model') or self.settings.default_chat_model,
             messages=messages,
             temperature=kwargs.get('temperature', 0.3),
+            max_completion_tokens=kwargs.get('max_completion_tokens', self.settings.max_completion_tokens),
         ) as stream:
             for event in stream:
                 if event.type == 'content.delta':
                     yield event.delta
+
+
+
+
+# Explicit client name for provider-independent wiring.
+OpenAIClient = OpenAiProvider
+
