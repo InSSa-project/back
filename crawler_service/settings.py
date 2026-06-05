@@ -190,6 +190,9 @@ AI_SERVER_ENABLED = env('AI_SERVER_ENABLED', default='false').lower() == 'true'
 AI_SERVER_BASE_URL = env('AI_SERVER_BASE_URL', default='http://localhost:8001')
 AI_REQUEST_TIMEOUT = int(env('AI_REQUEST_TIMEOUT', default='20'))
 
+MATTERMOST_BASE_URL = env('MATTERMOST_BASE_URL', default='https://meeting.ssafy.com')
+MATTERMOST_TIMEOUT_SECONDS = int(env('MATTERMOST_TIMEOUT_SECONDS', default=5))
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

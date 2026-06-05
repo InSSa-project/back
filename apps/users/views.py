@@ -13,8 +13,15 @@ from common.utils.api_response import error_response, success_response
 from .oauth.exceptions import OAuthError
 from .oauth.registry import OAuthProviderRegistry
 from .models import UserProfile
-from .serializers import OAuthLoginSerializer, ProfileImageUploadSerializer, UserProfileSerializer, UserSerializer
-from .services import OAuthLoginService, UserService
+from .serializers import MattermostLoginSerializer, OAuthLoginSerializer, ProfileImageUploadSerializer, UserProfileSerializer, UserSerializer
+from .services import (
+    MattermostAuthError,
+    MattermostConfigError,
+    MattermostLoginService,
+    MattermostUnavailableError,
+    OAuthLoginService,
+    UserService,
+)
 
 
 class MeView(APIView):
@@ -99,6 +106,47 @@ class OAuthLoginView(APIView):
             'is_created': result['is_created'],
             'user': UserSerializer(result['user']).data,
         })
+
+
+class MattermostLoginView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = MattermostLoginSerializer
+    service_class = MattermostLoginService
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = self.service_class().login(
+                login_id=serializer.validated_data['login_id'],
+                password=serializer.validated_data['password'],
+            )
+        except MattermostAuthError:
+            return error_response('Mattermost 인증에 실패했습니다.', code=status.HTTP_401_UNAUTHORIZED, status_code=status.HTTP_401_UNAUTHORIZED)
+        except MattermostConfigError:
+            return error_response('Mattermost 연동 설정이 필요합니다.', code=status.HTTP_503_SERVICE_UNAVAILABLE, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except MattermostUnavailableError:
+            return error_response(
+                'Mattermost 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        profile = result['profile']
+        return success_response(
+            {
+                'access_token': result['access_token'],
+                'refresh_token': result['refresh_token'],
+                'user': {
+                    'id': result['user'].id,
+                    'email': result['user'].email,
+                    'name': result['user'].name,
+                    'mattermost_user_id': profile.mattermost_user_id,
+                    'mattermost_username': profile.mattermost_username,
+                    'mattermost_nickname': profile.mattermost_nickname,
+                },
+            }
+        )
 
 
 class OAuthAuthorizeView(APIView):
