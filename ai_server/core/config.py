@@ -1,4 +1,4 @@
-from functools import lru_cache
+﻿from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -12,6 +12,12 @@ class Settings(BaseSettings):
         alias='GEMINI_API_BASE_URL',
     )
     llm_provider: str = Field(default='openai', alias='LLM_PROVIDER')
+    llm_request_timeout: float = Field(default=20, alias='LLM_REQUEST_TIMEOUT')
+    llm_request_retries: int = Field(default=0, alias='LLM_REQUEST_RETRIES')
+    llm_http_base_url: str = Field(default='', alias='LLM_HTTP_BASE_URL')
+    llm_http_endpoint: str = Field(default='/v1/chat/completions', alias='LLM_HTTP_ENDPOINT')
+    llm_http_api_key: str = Field(default='', alias='LLM_HTTP_API_KEY')
+    llm_http_model: str = Field(default='', alias='LLM_HTTP_MODEL')
     default_chat_model: str = Field(default='gpt-4.1-mini', alias='DEFAULT_CHAT_MODEL')
     default_gemini_model: str = Field(default='gemini-2.5-flash', alias='DEFAULT_GEMINI_MODEL')
     embedding_model: str = Field(default='text-embedding-3-small', alias='EMBEDDING_MODEL')
@@ -24,6 +30,9 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=800, alias='CHUNK_SIZE')
     chunk_overlap: int = Field(default=120, alias='CHUNK_OVERLAP')
     max_prompt_tokens: int = Field(default=2400, alias='MAX_PROMPT_TOKENS')
+    max_completion_tokens: int = Field(default=300, alias='MAX_COMPLETION_TOKENS')
+    max_answer_chars: int = Field(default=700, alias='MAX_ANSWER_CHARS')
+    max_schedule_answer_items: int = Field(default=8, alias='MAX_SCHEDULE_ANSWER_ITEMS')
     max_context_chunks: int = Field(default=4, alias='MAX_CONTEXT_CHUNKS')
     max_few_shots: int = Field(default=2, alias='MAX_FEW_SHOTS')
 
@@ -35,3 +44,5 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings():
     return Settings()
+
+

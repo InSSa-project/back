@@ -1,4 +1,4 @@
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser
 from rest_framework.views import APIView
 
 from common.utils.api_response import success_response
@@ -8,7 +8,7 @@ from .services import NoticeImportService
 
 
 class SsafySyncView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     service_class = NoticeImportService
 
     def post(self, request):
