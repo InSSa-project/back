@@ -7,6 +7,9 @@ from apps.users.models import User
 class JwtAuthentication(authentication.BaseAuthentication):
     keyword = 'Bearer'
 
+    def authenticate_header(self, request):
+        return self.keyword
+
     def authenticate(self, request):
         auth_header = authentication.get_authorization_header(request).decode('utf-8')
         if not auth_header:
