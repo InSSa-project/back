@@ -36,6 +36,11 @@ class OAuthLoginSerializer(serializers.Serializer):
         return normalized_provider
 
 
+class MattermostLoginSerializer(serializers.Serializer):
+    login_id = serializers.CharField(max_length=255, trim_whitespace=True)
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+
 class UserProfileSerializer(serializers.ModelSerializer):
     TRACK_INPUT_ALIASES = {
         'java_major': UserProfile.TRACK_JAVA,
@@ -78,6 +83,16 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'notice_notification_enabled',
             'schedule_reminder_enabled',
             'ai_question_notification_enabled',
+            'mattermost_user_id',
+            'mattermost_username',
+            'mattermost_nickname',
+            'mattermost_connected_at',
+        ]
+        read_only_fields = [
+            'mattermost_user_id',
+            'mattermost_username',
+            'mattermost_nickname',
+            'mattermost_connected_at',
         ]
 
     def get_profile_image_url(self, profile):
