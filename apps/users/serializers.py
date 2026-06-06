@@ -37,26 +37,31 @@ class OAuthLoginSerializer(serializers.Serializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    TRACK_INPUT_ALIASES = {
+        'java_major': UserProfile.TRACK_JAVA,
+        'java_non_major': UserProfile.TRACK_JAVA,
+        'python': UserProfile.TRACK_PYTHON,
+        'embedded': UserProfile.TRACK_EMBEDDED,
+        'mobile': UserProfile.TRACK_MOBILE,
+        'data': UserProfile.TRACK_DATA,
+        'ai': UserProfile.TRACK_AI,
+        'etc': UserProfile.TRACK_ETC,
+    }
+    TRACK_OUTPUT_ALIASES = {
+        UserProfile.TRACK_JAVA: 'java_major',
+        UserProfile.TRACK_PYTHON: 'python',
+        UserProfile.TRACK_EMBEDDED: 'embedded',
+        UserProfile.TRACK_MOBILE: 'mobile',
+        UserProfile.TRACK_DATA: 'data',
+        UserProfile.TRACK_AI: 'ai',
+        UserProfile.TRACK_ETC: 'etc',
+    }
+
     id = serializers.IntegerField(read_only=True)
     name = serializers.CharField(source='user.name', read_only=True)
     email = serializers.EmailField(source='user.email', read_only=True)
     profile_image_url = serializers.SerializerMethodField()
-    track = serializers.ChoiceField(
-        choices=[
-            *[choice[0] for choice in UserProfile.TRACK_CHOICES],
-            'java_major',
-            'java_non_major',
-            'python',
-            'embedded',
-            'mobile',
-            'data',
-            'ai',
-            'etc',
-        ],
-        required=False,
-        allow_null=True,
-        allow_blank=True,
-    )
+    track = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     class Meta:
         model = UserProfile
@@ -91,6 +96,25 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if value is not None and value < 1:
             raise serializers.ValidationError('Class number must be at least 1.')
         return value
+
+    def validate_track(self, value):
+        if value in (None, ''):
+            return value
+
+        if value in self.TRACK_INPUT_ALIASES:
+            return self.TRACK_INPUT_ALIASES[value]
+
+        valid_track_values = {choice[0] for choice in UserProfile.TRACK_CHOICES}
+        if value in valid_track_values:
+            return value
+
+        raise serializers.ValidationError('Invalid track.')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.track in self.TRACK_OUTPUT_ALIASES:
+            data['track'] = self.TRACK_OUTPUT_ALIASES[instance.track]
+        return data
 
 
 class ProfileImageUploadSerializer(serializers.Serializer):
