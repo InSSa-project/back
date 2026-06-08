@@ -91,6 +91,8 @@ def _scheduled_options(options):
     if not prepared.get('all'):
         prepared['recent_limit'] = prepared.get('recent_limit') or DEFAULT_RECENT_LIMIT
         prepared['max_pages'] = prepared.get('max_pages') or DEFAULT_MAX_PAGES
+    elif not prepared.get('recent_limit') and not prepared.get('max_pages'):
+        prepared['_clear_env_keys'] = ['SSAFY_CRAWLER_RECENT_LIMIT', 'SSAFY_NOTICE_MAX_PAGES']
     return prepared
 
 
