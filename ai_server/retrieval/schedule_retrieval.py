@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 from datetime import time
 
@@ -145,7 +145,13 @@ class ScheduleRetrievalService:
 
     def _query_tokens(self, query: str) -> list[str]:
         tokens = re.findall(r'[\w가-힣]+', query.lower())
-        ignored = {'일정', '알려줘', '개인', '내', '오늘', '내일', '어제', '이번', '다음', '가까운', '다가오는', '예정된', '예정인', '앞으로', '곧', '가장', '제일', 'ssafy'}
+        ignored = {
+            '일정', '알려줘', '알려', '개인', '내', '오늘', '내일', '어제',
+            '이번', '이번주', '이번달', '다음', '다음주', '다음달',
+            '가까운', '다가오는', '예정된', '예정인', '앞으로', '곧',
+            '가장', '제일', '큰', '주요', '중요', '뭐', '뭐야', '뭐니',
+            '뭐있니', '뭐있어', '있니', '있어', '있는지', 'ssafy',
+        }
         filtered = [
             token
             for token in tokens
@@ -161,6 +167,3 @@ class ScheduleRetrievalService:
         for token in filtered:
             expanded.extend(synonyms.get(token, [token]))
         return list(dict.fromkeys(expanded))
-
-
-

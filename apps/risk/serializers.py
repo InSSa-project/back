@@ -1,4 +1,4 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 
 from rest_framework import serializers
 
@@ -70,7 +70,7 @@ class EvaluationResultSerializer(serializers.ModelSerializer):
             status = None
         if score is None and not status:
             raise serializers.ValidationError({'non_field_errors': ['Score or status is required.']})
-        if score is not None and not status:
+        if score is not None:
             attrs['status'] = EvaluationResult.STATUS_PASS if score >= 60 else EvaluationResult.STATUS_FAIL
 
         if 'subject_name' in attrs:
