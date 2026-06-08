@@ -1,4 +1,4 @@
-﻿import calendar
+import calendar
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -99,7 +99,11 @@ class ScheduleQueryParser:
         if start_date and exact and has_schedule_word:
             return ParsedQuery(ScheduleQueryType.SCHEDULE_EXACT_DATE, start_date, end_date, True)
         if start_date and end_date and has_schedule_word:
-            if start_date[:7] == end_date[:7] and start_date.endswith('-01'):
+            if (
+                start_date[:7] == end_date[:7]
+                and start_date.endswith('-01')
+                and not any(word in question for word in ['이번주', '이번 주', '다음주', '다음 주'])
+            ):
                 return ParsedQuery(ScheduleQueryType.SCHEDULE_MONTH, start_date, end_date, False)
             return ParsedQuery(ScheduleQueryType.SCHEDULE_RANGE, start_date, end_date, False)
         if has_schedule_word:
@@ -119,7 +123,3 @@ class ScheduleQueryParser:
         if has_notice_word:
             return ParsedQuery(ScheduleQueryType.GENERAL_NOTICE)
         return ParsedQuery(ScheduleQueryType.GENERAL_CHAT)
-
-
-
-

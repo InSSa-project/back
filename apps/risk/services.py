@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
 
 from .models import EvaluationResult, RiskStatus
 from .recommendation_service import ScheduleRecommendationService
@@ -28,6 +29,7 @@ class RiskService:
             'target': 4,
         },
     }
+    ROUTINE_TITLES = ('온라인 위크', 'online week')
 
     def get_status(self, user):
         return self.calculate_dashboard(user)['status_model']
@@ -72,57 +74,59 @@ class RiskService:
             evaluation_type=data['evaluation_type'],
             round_number=data['round_number'],
         )
-        editable_fields = [
-            'title',
-            'subject_name',
-            'score',
-            'status',
-            'scheduled_at',
-            'note',
-        ]
+        editable_fields = ['title', 'subject_name', 'score', 'status', 'scheduled_at', 'note']
         update_fields = []
         for field in editable_fields:
             if field in data:
                 setattr(evaluation, field, data[field])
                 update_fields.append(field)
+        if evaluation.score is not None:
+            evaluation.status = EvaluationResult.STATUS_PASS if evaluation.score >= 60 else EvaluationResult.STATUS_FAIL
+            if 'status' not in update_fields:
+                update_fields.append('status')
         if update_fields:
             evaluation.save(update_fields=[*update_fields, 'updated_at'])
         self.calculate_dashboard(user)
         return evaluation
+
     def _visible_events(self, user, until_days):
         now = timezone.now()
         end_at = now + timedelta(days=until_days)
         legacy_unowned_personal = Q(owner__isnull=True, raw_data__isnull=True, source_type='manual', event_type='personal')
-        return (
-            ScheduleEvent.objects.filter(start_at__gte=now, start_at__lte=end_at)
+        events = (
+            ScheduleEvent.objects.filter(end_at__gte=now, start_at__lte=end_at)
             .filter(Q(owner__isnull=True) | Q(owner=user))
             .exclude(legacy_unowned_personal)
+            .exclude(event_type='holiday')
             .order_by('start_at', 'id')
         )
+        return [event for event in events if not self._is_hidden_meaningless_event(event)]
 
     def _schedule_recommendations(self, user):
         items = []
         for event in self._visible_events(user, until_days=7):
+            if self._is_routine_public_event(event):
+                continue
             classified = self._classify_event(event)
             urgency = self._urgency(event.start_at)
             score = classified['score'] + urgency['score']
             if score < 55:
                 continue
             items.append(self._event_payload(event, classified, urgency, score))
-        return sorted(items, key=lambda item: (-item['score'], item['start_at'], item['id']))[:6]
+        return sorted(items, key=lambda item: (-item['score'], item['priority'], item['start_at'], item['id']))[:6]
 
     def _upcoming_deadlines(self, user):
         items = []
         for event in self._visible_events(user, until_days=5):
-            classified = self._classify_event(event)
-            if classified['priority'] > 3 and classified['score'] < 45:
+            if self._is_routine_public_event(event):
                 continue
+            classified = self._classify_event(event)
             urgency = self._urgency(event.start_at)
             score = classified['score'] + urgency['score']
             payload = self._event_payload(event, classified, urgency, score)
             payload['priority'] = classified['priority']
             items.append(payload)
-        return sorted(items, key=lambda item: (item['priority'], -item['score'], item['start_at'], item['id']))[:10]
+        return sorted(items, key=lambda item: (item['priority'], item.get('days', 0), item['start_at'], -item['score'], item['id']))[:10]
 
     def _evaluation_summary(self, evaluations, evaluation_type):
         rule = self.EVALUATION_RULES[evaluation_type]
@@ -202,25 +206,52 @@ class RiskService:
         return RiskStatus.LEVEL_CAUTION
 
     def _classify_event(self, event):
-        title = event.title or ''
-        event_type = event.event_type or ''
-        source_type = event.source_type or ''
         metadata = event.metadata_json or {}
-        haystack = ' '.join([title, event_type, source_type, str(metadata.get('category', '')), str(metadata.get('type', ''))]).lower()
+        haystack = self._event_haystack(event, metadata)
         is_personal = bool(event.owner_id)
+        is_important = bool(metadata.get('is_important'))
 
-        if '과목평가' in haystack or '과목 평가' in haystack:
-            return {'type': 'subject_exam', 'label': '과목평가', 'priority': 1, 'score': 90}
+        if is_important:
+            return {'type': 'important', 'label': '중요 지정', 'priority': 1, 'score': 95}
         if '월말평가' in haystack or '월말 평가' in haystack:
-            return {'type': 'monthly_exam', 'label': '월말평가', 'priority': 1, 'score': 90}
-        if is_personal:
-            return {'type': 'personal', 'label': '개인 일정', 'priority': 2, 'score': 75}
+            return {'type': 'monthly_exam', 'label': '월말평가', 'priority': 2, 'score': 90}
+        if '과목평가' in haystack or '과목 평가' in haystack:
+            return {'type': 'subject_exam', 'label': '과목평가', 'priority': 2, 'score': 90}
         if any(keyword in haystack for keyword in ['시험', '평가', 'exam']):
-            return {'type': 'exam', 'label': '시험/평가', 'priority': 1, 'score': 82}
-        if any(keyword in haystack for keyword in ['마감', '제출', '과제', 'deadline', 'assignment']):
-            return {'type': 'deadline', 'label': '마감/과제', 'priority': 2, 'score': 70}
-        if not is_personal:
-            return {'type': 'official', 'label': '공식 일정', 'priority': 3, 'score': 45}
+            return {'type': 'exam', 'label': '시험/평가', 'priority': 2, 'score': 82}
+        if is_personal:
+            return {'type': 'personal', 'label': '개인 일정', 'priority': 3, 'score': 75}
+        if any(keyword in haystack for keyword in ['프로젝트', 'project', '마감', '제출', '과제', 'deadline', 'assignment']):
+            return {'type': 'deadline', 'label': '마감/과제', 'priority': 4, 'score': 70}
+        return {'type': 'official', 'label': '공용 일정', 'priority': 4, 'score': 45}
+
+    def _event_haystack(self, event, metadata):
+        return ' '.join([
+            event.title or '',
+            event.event_type or '',
+            event.source_type or '',
+            str(metadata.get('category', '')),
+            str(metadata.get('type', '')),
+            str(metadata.get('display_title', '')),
+        ]).lower()
+
+    def _is_hidden_meaningless_event(self, event):
+        metadata = event.metadata_json or {}
+        display_title = str(metadata.get('display_title') or '').strip()
+        if not display_title:
+            display_title = normalize_schedule_display_title(event.title) or event.title
+        if not is_meaningless_schedule_title(display_title):
+            return False
+        source_title = metadata.get('source_title') or ''
+        raw_title = metadata.get('raw_title') or event.title
+        fallback_title = normalize_schedule_display_title(raw_title or source_title)
+        return is_meaningless_schedule_title(fallback_title)
+    def _is_routine_public_event(self, event):
+        metadata = event.metadata_json or {}
+        haystack = self._event_haystack(event, metadata)
+        if event.event_type == 'holiday' or event.source_type == 'holiday':
+            return True
+        return any(title in haystack for title in self.ROUTINE_TITLES)
 
     def _urgency(self, start_at):
         now = timezone.localtime(timezone.now())
@@ -248,6 +279,7 @@ class RiskService:
             'risk_level': self._score_to_level(score),
             'priority': classified['priority'],
             'score': score,
+            'days': urgency['days'],
             'reason': self._event_reason(event, classified, urgency),
         }
 
@@ -271,7 +303,6 @@ class RiskService:
         return RiskStatus.LEVEL_SAFE
 
     def _overall_level(self, summaries, recommendations, upcoming):
-        # The current-status card represents evaluation completion risk only.
         levels = [summary['risk_level'] for summary in summaries]
         return max(levels or [RiskStatus.LEVEL_SAFE], key=lambda level: self.LEVEL_ORDER[level])
 
@@ -330,6 +361,7 @@ class RiskService:
             'created_at': evaluation.created_at.isoformat(),
             'updated_at': evaluation.updated_at.isoformat(),
         }
+
     def _evaluation_message(
         self, label, risk_level, pass_count, needed_count, remaining_count,
         evaluated_count, fail_count, allowed_fail_count,
@@ -339,12 +371,12 @@ class RiskService:
         if risk_level == RiskStatus.LEVEL_SAFE:
             return f'{label}은 현재 {pass_count}회 합격으로 수료 기준에 여유가 있습니다.'
         if risk_level == RiskStatus.LEVEL_DANGER:
-            return f'{label}은 남은 시험을 모두 합격해도 수료 기준을 달성할 수 없습니다.'
+            return f'{label}은 남은 평가를 모두 합격해도 수료 기준 달성이 어렵습니다.'
         if allowed_fail_count - fail_count <= 0:
-            return f'{label}은 추가 과락 여유가 없어 한 번 더 과락하면 수료 기준을 달성할 수 없습니다.'
+            return f'{label}은 추가 과락 여유가 없어 한 번 더 과락하면 수료 기준 달성이 어렵습니다.'
         projected_half_pass = pass_count + (remaining_count / 2)
         if risk_level == RiskStatus.LEVEL_WARNING:
-            return f'{label}은 남은 {remaining_count}회 중 {needed_count}회 합격이 필요해 절반보다 더 높은 합격률이 필요합니다.'
+            return f'{label}은 남은 {remaining_count}회 중 {needed_count}회 합격이 필요해 주의가 필요합니다.'
         if projected_half_pass == pass_count:
             return f'{label}은 현재 결과 기준으로 수료 커트라인에 맞춰져 있습니다.'
-        return f'{label}은 남은 시험을 절반 합격하면 수료 커트라인에 도달하는 보통 단계입니다.'
+        return f'{label}은 남은 평가를 절반 합격하면 수료 커트라인에 도달하는 보통 단계입니다.'
