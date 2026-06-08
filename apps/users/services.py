@@ -76,13 +76,9 @@ class OAuthLoginService:
         request.session.modified = True
         authorization_url = provider.get_authorization_url(state, redirect_uri=redirect_uri)
         logger.info(
-            'OAuth authorize generated provider=%s host=%s session_key=%s state_key=%s state=%s redirect_uri=%s has_client_id=%s',
+            'OAuth authorize generated provider=%s host=%s has_client_id=%s',
             provider_name,
             request.get_host(),
-            request.session.session_key,
-            state_session_key,
-            state,
-            redirect_uri,
             'client_id=' in authorization_url and 'client_id=&' not in authorization_url,
         )
         return authorization_url
@@ -105,16 +101,11 @@ class OAuthLoginService:
             frontend_next = signed_state_payload.get('frontend_next', '')
         request.session.modified = True
         logger.info(
-            'OAuth callback received provider=%s host=%s session_key=%s state_key=%s expected_state=%s received_state=%s state_matched=%s signed_state_valid=%s redirect_uri=%s',
+            'OAuth callback received provider=%s host=%s state_matched=%s signed_state_valid=%s',
             provider_name,
             request.get_host(),
-            request.session.session_key,
-            state_session_key,
-            expected_state,
-            state,
             bool(expected_state and expected_state == state),
             signed_state_valid,
-            redirect_uri,
         )
         if not ((expected_state and expected_state == state) or signed_state_valid):
             from apps.users.oauth.exceptions import OAuthTokenVerificationError

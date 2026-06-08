@@ -85,10 +85,13 @@ def _temporary_crawler_env(options):
         'SSAFY_DETAIL_TIMEOUT': options.get('detail_timeout'),
         'SSAFY_SOURCE_TIMEOUT': options.get('source_timeout'),
     }
+    clear_keys = set(options.get('_clear_env_keys') or [])
     original = {key: os.environ.get(key) for key in mapping}
     try:
         for key, value in mapping.items():
-            if value is not None:
+            if key in clear_keys:
+                os.environ.pop(key, None)
+            elif value is not None:
                 os.environ[key] = str(value)
         yield
     finally:

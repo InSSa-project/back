@@ -1,4 +1,4 @@
-import calendar
+﻿import calendar
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -18,6 +18,8 @@ class ParsedQuery:
     start_date: str = ''
     end_date: str = ''
     exact_match_required: bool = False
+    display_label: str = ''
+    result_limit: int = 0
 
 
 class DateExtractor:
@@ -35,14 +37,17 @@ class DateExtractor:
             target = self.today - timedelta(days=1)
             return target.isoformat(), target.isoformat(), True
 
+        full_date = re.search(
+            r'(?P<year>\d{4})\s*(?:년|[-./])\s*(?P<month>\d{1,2})\s*(?:월|[-./])\s*(?P<day>\d{1,2})\s*일?',
+            normalized,
+        )
+        if full_date:
+            parsed = date(int(full_date.group('year')), int(full_date.group('month')), int(full_date.group('day')))
+            return parsed.isoformat(), parsed.isoformat(), True
+
         month_day = re.search(r'(?P<month>\d{1,2})\s*월\s*(?P<day>\d{1,2})\s*일', normalized)
         if month_day:
             parsed = date(self.today.year, int(month_day.group('month')), int(month_day.group('day')))
-            return parsed.isoformat(), parsed.isoformat(), True
-
-        iso_date = re.search(r'(?P<year>\d{4})[-./](?P<month>\d{1,2})[-./](?P<day>\d{1,2})', normalized)
-        if iso_date:
-            parsed = date(int(iso_date.group('year')), int(iso_date.group('month')), int(iso_date.group('day')))
             return parsed.isoformat(), parsed.isoformat(), True
 
         month_only = re.search(r'(?P<month>\d{1,2})\s*월', normalized)
@@ -73,10 +78,15 @@ class DateExtractor:
         end = self.today + timedelta(days=days)
         return start.isoformat(), end.isoformat(), False
 
+    def future_range(self, days: int = 365) -> tuple[str, str, bool]:
+        end = self.today + timedelta(days=days)
+        return self.today.isoformat(), end.isoformat(), False
+
 
 class ScheduleQueryParser:
-    SCHEDULE_WORDS = ['일정', '언제', '마감', '제출', '평가', '시험', '월말평가', '프로젝트']
+    SCHEDULE_WORDS = ['일정', '스케줄', '할 일', '할일', '언제', '마감', '제출', '평가', '시험', '월말평가', '프로젝트']
     NOTICE_WORDS = ['공지', '안내', '알림']
+    UPCOMING_WORDS = ['가까운', '다가오는', '예정된', '예정인', '앞으로', '곧']
 
     def __init__(self, date_extractor: DateExtractor | None = None):
         self.date_extractor = date_extractor or DateExtractor()
@@ -93,8 +103,23 @@ class ScheduleQueryParser:
                 return ParsedQuery(ScheduleQueryType.SCHEDULE_MONTH, start_date, end_date, False)
             return ParsedQuery(ScheduleQueryType.SCHEDULE_RANGE, start_date, end_date, False)
         if has_schedule_word:
+            if any(word in question for word in self.UPCOMING_WORDS):
+                start_date, end_date, exact = self.date_extractor.future_range()
+                closest_only = '가장' in question or '제일' in question
+                return ParsedQuery(
+                    ScheduleQueryType.SCHEDULE_RANGE,
+                    start_date,
+                    end_date,
+                    exact,
+                    display_label='가장 가까운 일정' if closest_only else '오늘 이후 가까운 일정',
+                    result_limit=1 if closest_only else 3,
+                )
             start_date, end_date, exact = self.date_extractor.broad_range()
             return ParsedQuery(ScheduleQueryType.SCHEDULE_RANGE, start_date, end_date, exact)
         if has_notice_word:
             return ParsedQuery(ScheduleQueryType.GENERAL_NOTICE)
         return ParsedQuery(ScheduleQueryType.GENERAL_CHAT)
+
+
+
+
