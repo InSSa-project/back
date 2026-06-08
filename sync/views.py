@@ -3,9 +3,11 @@ import json
 from django.http import Http404
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_POST
+from rest_framework.exceptions import AuthenticationFailed
+
+from apps.users.authentication import JwtAuthentication
 
 from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
@@ -24,6 +26,9 @@ from sync.services.manual_ocr_service import apply_manual_ocr_text
 
 @require_GET
 def raw_data_list(request):
+    permission_error = _staff_permission_error(request)
+    if permission_error:
+        return permission_error
     queryset = RawSsafyData.objects.all().order_by('-collected_at')
     source_type = request.GET.get('source_type')
     category = request.GET.get('category')
@@ -98,11 +103,12 @@ def notice_detail(request, raw_data_id):
     return JsonResponse(_serialize_notice(raw_data, include_detail=True))
 
 
-@csrf_exempt
 @require_POST
 def run_crawl(request):
+    permission_error = _staff_permission_error(request)
+    if permission_error:
+        return permission_error
     mode = _parse_mode(request)
-    # TODO: ssafy_notice mode should be restricted to administrators before production use.
     job_log = run_notice_import(mode=mode)
     response_status = 'error' if job_log.status == CrawlJobLog.STATUS_FAILED else job_log.status
     return JsonResponse(
@@ -124,11 +130,11 @@ def run_crawl(request):
     )
 
 
-@csrf_exempt
 @require_POST
 def set_manual_ocr_text(request, raw_data_id):
-    if not request.user.is_authenticated or not request.user.is_staff:
-        return JsonResponse({'detail': 'Admin permission is required.'}, status=403)
+    permission_error = _staff_permission_error(request)
+    if permission_error:
+        return permission_error
 
     try:
         payload = _parse_json_body(request)
@@ -160,6 +166,22 @@ def set_manual_ocr_text(request, raw_data_id):
         }
     )
 
+
+def _staff_permission_error(request):
+    user = request.user
+    if not getattr(user, 'is_authenticated', False) and request.META.get('HTTP_AUTHORIZATION'):
+        try:
+            authenticated = JwtAuthentication().authenticate(request)
+        except AuthenticationFailed:
+            authenticated = None
+        if authenticated:
+            user, _auth = authenticated
+            request.user = user
+    if not getattr(user, 'is_authenticated', False):
+        return JsonResponse({'detail': 'Authentication credentials were not provided.'}, status=401)
+    if not getattr(user, 'is_staff', False):
+        return JsonResponse({'detail': 'Admin permission is required.'}, status=403)
+    return None
 
 def _parse_mode(request):
     if not request.body:

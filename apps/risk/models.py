@@ -43,6 +43,9 @@ class EvaluationResult(models.Model):
     evaluation_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     round_number = models.PositiveSmallIntegerField()
     title = models.CharField(max_length=100, blank=True)
+    subject_name = models.CharField(max_length=100, blank=True)
+    score = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    max_score = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True, default=100)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SCHEDULED)
     scheduled_at = models.DateTimeField(null=True, blank=True)
     note = models.TextField(blank=True)
@@ -56,6 +59,7 @@ class EvaluationResult(models.Model):
         ]
         indexes = [
             models.Index(fields=['user', 'evaluation_type']),
+            models.Index(fields=['user', 'subject_name']),
             models.Index(fields=['scheduled_at']),
         ]
 

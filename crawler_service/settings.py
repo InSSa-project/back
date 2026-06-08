@@ -1,6 +1,7 @@
-import os
+﻿import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -27,14 +28,25 @@ def env(*keys, default=''):
     return default
 
 
+def env_bool(key, default=False):
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_list(key, default=''):
+    value = os.environ.get(key, default)
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
 load_local_env()
 
-SECRET_KEY = 'django-insecure-change-me-in-production'
-DEBUG = True
-ALLOWED_HOSTS = []
-if DEBUG:
-    ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
-
+DEBUG = env_bool('DEBUG', default=False)
+SECRET_KEY = env('SECRET_KEY')
+if not SECRET_KEY:
+    raise ImproperlyConfigured('SECRET_KEY environment variable is required.')
+ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', default='localhost,127.0.0.1,testserver' if DEBUG else '')
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -75,7 +87,13 @@ MIDDLEWARE = [
 ]
 
 SESSION_COOKIE_SAMESITE = env('SESSION_COOKIE_SAMESITE', default='Lax')
-SESSION_COOKIE_SECURE = env('SESSION_COOKIE_SECURE', default='false').lower() == 'true'
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', default=not DEBUG)
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', default=not DEBUG)
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', default=not DEBUG)
+SECURE_HSTS_SECONDS = int(env('SECURE_HSTS_SECONDS', default='0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False)
+SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', default=False)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 ROOT_URLCONF = 'crawler_service.urls'
 
@@ -132,11 +150,12 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-]
-FRONTEND_URL = env('FRONTEND_URL', 'FRONTEND_BASE_URL', default='http://localhost:5173')
+CORS_ALLOWED_ORIGINS = env_list(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:5173,http://127.0.0.1:5173' if DEBUG else '',
+)
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+FRONTEND_URL = env('FRONTEND_URL', 'FRONTEND_BASE_URL', default='http://localhost:5173' if DEBUG else '')
 FRONTEND_BASE_URL = FRONTEND_URL
 
 CORS_ALLOW_METHODS = [
@@ -160,18 +179,22 @@ GOOGLE_OAUTH_CLIENT_SECRET = env('GOOGLE_OAUTH_CLIENT_SECRET', 'GOOGLE_CLIENT_SE
 GOOGLE_OAUTH_REDIRECT_URI = env(
     'GOOGLE_OAUTH_REDIRECT_URI',
     'GOOGLE_REDIRECT_URI',
-    default='http://localhost:8000/api/v1/users/oauth/google/callback',
+    default='http://localhost:8000/api/v1/users/oauth/google/callback' if DEBUG else '',
 )
 KAKAO_REST_API_KEY = env('KAKAO_REST_API_KEY', 'KAKAO_CLIENT_ID')
 KAKAO_CLIENT_SECRET = env('KAKAO_CLIENT_SECRET')
 KAKAO_OAUTH_REDIRECT_URI = env(
     'KAKAO_OAUTH_REDIRECT_URI',
     'KAKAO_REDIRECT_URI',
-    default='http://localhost:8000/api/v1/users/oauth/kakao/callback',
+    default='http://localhost:8000/api/v1/users/oauth/kakao/callback' if DEBUG else '',
 )
 
 AI_SERVER_ENABLED = env('AI_SERVER_ENABLED', default='false').lower() == 'true'
 AI_SERVER_BASE_URL = env('AI_SERVER_BASE_URL', default='http://localhost:8001')
+AI_REQUEST_TIMEOUT = int(env('AI_REQUEST_TIMEOUT', default='20'))
+
+MATTERMOST_BASE_URL = env('MATTERMOST_BASE_URL', default='https://meeting.ssafy.com')
+MATTERMOST_TIMEOUT_SECONDS = int(env('MATTERMOST_TIMEOUT_SECONDS', default=5))
 
 LOGGING = {
     'version': 1,
@@ -189,4 +212,5 @@ LOGGING = {
         },
     },
 }
+
 

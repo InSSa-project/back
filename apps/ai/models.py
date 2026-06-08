@@ -1,4 +1,4 @@
-from django.conf import settings
+﻿from django.conf import settings
 from django.db import models
 
 
@@ -59,6 +59,7 @@ class ChatMessage(models.Model):
     role = models.CharField(max_length=20)
     content = models.TextField()
     prompt = models.TextField(blank=True)
+    usage_json = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -67,3 +68,4 @@ class AiChatReference(models.Model):
     ai_document = models.ForeignKey(AiDocument, on_delete=models.CASCADE, related_name='chat_references')
     relevance_score = models.FloatField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+

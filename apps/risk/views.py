@@ -25,7 +25,7 @@ class EvaluationResultListView(APIView):
     service_class = RiskService
 
     def get(self, request):
-        evaluations = EvaluationResult.objects.filter(user=request.user).order_by('evaluation_type', 'round_number')
+        evaluations = EvaluationResult.objects.filter(user=request.user).order_by('-updated_at', '-id')
         return success_response(EvaluationResultSerializer(evaluations, many=True).data)
 
     def post(self, request):
