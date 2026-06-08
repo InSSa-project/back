@@ -55,12 +55,68 @@ class UserProfileApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertEqual(payload['generation'], 12)
+        self.assertEqual(payload['campus'], '서울')
+        self.assertEqual(payload['track'], 'java_major')
+        self.assertEqual(payload['class_number'], 17)
         profile = UserProfile.objects.get(user=self.user)
         self.assertEqual(profile.generation, 12)
         self.assertEqual(profile.campus, '서울')
-        self.assertEqual(profile.track, 'java_major')
+        self.assertEqual(profile.track, UserProfile.TRACK_JAVA)
         self.assertEqual(profile.class_number, 17)
         self.assertEqual(profile.notification_email, 'user-a@example.com')
+
+    def test_patch_profile_values_are_returned_by_get(self):
+        patch_response = self.client.patch(
+            reverse('users-me-profile'),
+            data={
+                'generation': 12,
+                'campus': '서울',
+                'track': 'java_major',
+                'class_number': 18,
+                'notice_notification_enabled': True,
+                'schedule_reminder_enabled': True,
+                'ai_question_notification_enabled': True,
+            },
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        self.assertEqual(patch_response.status_code, 200)
+
+        get_response = self.client.get(reverse('users-me-profile'), **self._auth(self.user))
+
+        self.assertEqual(get_response.status_code, 200)
+        payload = get_response.json()['data']
+        self.assertEqual(payload['generation'], 12)
+        self.assertEqual(payload['campus'], '서울')
+        self.assertEqual(payload['track'], 'java_major')
+        self.assertEqual(payload['class_number'], 18)
+        self.assertTrue(payload['notice_notification_enabled'])
+        self.assertTrue(payload['schedule_reminder_enabled'])
+        self.assertTrue(payload['ai_question_notification_enabled'])
+
+    def test_patch_profile_auto_creates_profile(self):
+        self.assertFalse(UserProfile.objects.filter(user=self.user).exists())
+
+        response = self.client.patch(
+            reverse('users-me-profile'),
+            data={'generation': 13, 'campus': '대전', 'track': 'python', 'class_number': 1},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = UserProfile.objects.get(user=self.user)
+        self.assertEqual(profile.generation, 13)
+        self.assertEqual(profile.campus, '대전')
+        self.assertEqual(profile.track, UserProfile.TRACK_PYTHON)
+        self.assertEqual(profile.class_number, 1)
+
+    def test_profile_requires_authentication(self):
+        response = self.client.get(reverse('users-me-profile'))
+
+        self.assertEqual(response.status_code, 401)
 
     def test_notification_email_can_be_blank_when_notifications_enabled(self):
         response = self.client.patch(
