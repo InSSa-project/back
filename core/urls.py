@@ -9,5 +9,6 @@ urlpatterns = [
     path('api/v1/ocr/', include('apps.ocr.urls')),
     path('api/v1/notifications/', include('apps.notifications.urls')),
     path('api/v1/risk/', include('apps.risk.urls')),
+    path('api/v1/dashboard/', include('dashboard.urls')),
     path('', include('common.urls')),
 ]
