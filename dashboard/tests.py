@@ -67,6 +67,17 @@ class HomeDashboardApiTests(TestCase):
         self.assertEqual(notice_card['count'], 0)
         self.assertEqual(notice_card['value'], '새 공지 없음')
 
+    def test_home_dashboard_focus_and_upcoming_use_rawless_schedule_events(self):
+        event = self._event('Raw 없는 일정', 1, event_type='exam')
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(RawSsafyData.objects.count(), 0)
+        payload = response.json()
+        self.assertEqual(payload['focus']['source_event_id'], event.id)
+        self.assertEqual([item['id'] for item in payload['upcoming_schedules']], [event.id])
+
     def test_closest_future_deadline_is_selected_as_focus(self):
         later_event = self._event('나중 시작 일정', 2, event_type='exam')
         deadline_event = self._event(
