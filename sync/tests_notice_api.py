@@ -1,13 +1,16 @@
 from datetime import timedelta
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
+from apps.ai.models import AiDocument
+from apps.ai.sync_ingestion import SyncRawDataRagIngestionService
 from sync.models import RawSsafyData
 
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class NoticeApiTests(TestCase):
     def test_notice_list_filters_by_source_type(self):
         RawSsafyData.objects.create(source_type='notice', title='공지', raw_text='본문')
@@ -36,10 +39,8 @@ class NoticeApiTests(TestCase):
         response = self.client.get(reverse('notice-list'), {'category': 'mentoring'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['source_type'], 'mentoring_notice')
-        self.assertEqual(response.json()['results'][0]['category'], 'mentoring')
-        self.assertEqual(response.json()['results'][0]['track'], 'common')
+        self.assertEqual(response.json()['count'], 0)
+        self.assertEqual(response.json()['results'], [])
 
     def test_notice_list_treats_academic_rule_as_etc(self):
         RawSsafyData.objects.create(source_type='academic_rule', title='학사 규정', raw_text='본문')
@@ -48,9 +49,8 @@ class NoticeApiTests(TestCase):
         response = self.client.get(reverse('notice-list'), {'category': 'etc'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['source_type'], 'academic_rule')
-        self.assertEqual(response.json()['results'][0]['category'], 'etc')
+        self.assertEqual(response.json()['count'], 0)
+        self.assertEqual(response.json()['results'], [])
 
     def test_notice_list_filters_by_search(self):
         RawSsafyData.objects.create(source_type='notice', title='Python 보충 학습', raw_text='자료')
@@ -95,8 +95,8 @@ class NoticeApiTests(TestCase):
         response = self.client.get(reverse('notice-list'), {'category': 'mentoring', 'track': 'python'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['category'], 'mentoring')
+        self.assertEqual(response.json()['count'], 0)
+        self.assertEqual(response.json()['results'], [])
 
     def test_notice_detail_returns_linked_schedule_events(self):
         raw_data = RawSsafyData.objects.create(
@@ -132,10 +132,7 @@ class NoticeApiTests(TestCase):
 
         response = self.client.get(reverse('notice-list'), {'source_type': 'curriculum'})
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['source_type'], 'curriculum')
-        self.assertEqual(response.json()['results'][0]['category'], 'study')
+        self.assertEqual(response.status_code, 400)
 
     def test_notice_list_filters_learning_material_source_type(self):
         RawSsafyData.objects.create(source_type='learning_material', title='Learning material', raw_text='Java')
@@ -143,10 +140,7 @@ class NoticeApiTests(TestCase):
 
         response = self.client.get(reverse('notice-list'), {'source_type': 'learning_material'})
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['source_type'], 'learning_material')
-        self.assertEqual(response.json()['results'][0]['category'], 'study')
+        self.assertEqual(response.status_code, 400)
 
     def test_notice_list_study_category_includes_source_based_study_types(self):
         RawSsafyData.objects.create(source_type='notice', title='Python study', raw_text='study')
@@ -157,8 +151,54 @@ class NoticeApiTests(TestCase):
         response = self.client.get(reverse('notice-list'), {'category': 'study'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 3)
+        self.assertEqual(response.json()['count'], 1)
         self.assertEqual(
             {item['source_type'] for item in response.json()['results']},
-            {'notice', 'curriculum', 'learning_material'},
+            {'notice'},
         )
+
+    def test_notice_detail_hides_non_user_visible_source_type(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='mentoring_notice',
+            title='Mentor story',
+            raw_text='body',
+            source_url='https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=1',
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_notice_list_source_url_uses_same_row(self):
+        first = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Same notice title',
+            raw_text='body',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1',
+        )
+        second = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Same notice title',
+            raw_text='body',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=2',
+        )
+
+        response = self.client.get(reverse('notice-list'), {'page_size': 10})
+
+        self.assertEqual(response.status_code, 200)
+        notices_by_id = {item['id']: item for item in response.json()['results']}
+        self.assertEqual(notices_by_id[first.id]['source_url'], first.source_url)
+        self.assertEqual(notices_by_id[second.id]['source_url'], second.source_url)
+
+    def test_hidden_notice_source_can_still_be_used_for_ai_document(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='geeknews',
+            title='Geeknews article',
+            raw_text='AI reference body',
+            source_url='https://example.com/geeknews/1',
+        )
+
+        document = SyncRawDataRagIngestionService().upsert_document(raw_data)
+
+        self.assertEqual(document.sync_raw_data_id, raw_data.id)
+        self.assertEqual(AiDocument.objects.filter(sync_raw_data=raw_data).count(), 1)

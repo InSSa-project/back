@@ -1,6 +1,5 @@
 import json
 
-from django.http import Http404
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_GET
@@ -13,12 +12,17 @@ from schedules.models import ScheduleEvent
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.notice_normalizer import (
     CATEGORIES,
-    SOURCE_TYPES,
     TRACKS,
     infer_notice_category,
     infer_notice_track,
     normalize_notice_category,
     notice_matches_search,
+)
+from sync.services.notice_policy import (
+    is_user_visible_notice_source_type,
+    notice_source_url,
+    notice_title,
+    user_visible_notice_queryset,
 )
 from sync.services.import_service import run_notice_import
 from sync.services.manual_ocr_service import apply_manual_ocr_text
@@ -55,14 +59,14 @@ def raw_data_list(request):
 
 
 def notice_list(request):
-    queryset = RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES)
+    queryset = user_visible_notice_queryset(RawSsafyData.objects.all())
     source_type = request.GET.get('source_type')
     category = request.GET.get('category')
     track = request.GET.get('track')
     search = request.GET.get('search', '').strip()
 
     if source_type:
-        if source_type not in SOURCE_TYPES:
+        if not is_user_visible_notice_source_type(source_type):
             return JsonResponse({'detail': 'Unsupported source_type.'}, status=400)
         queryset = queryset.filter(source_type=source_type)
 
@@ -97,9 +101,9 @@ def notice_list(request):
 
 @require_GET
 def notice_detail(request, raw_data_id):
-    raw_data = RawSsafyData.objects.filter(pk=raw_data_id, source_type__in=SOURCE_TYPES).first()
+    raw_data = user_visible_notice_queryset(RawSsafyData.objects.filter(pk=raw_data_id)).first()
     if raw_data is None:
-        raise Http404('Notice not found.')
+        return JsonResponse({'detail': 'Notice not found.'}, status=404)
     return JsonResponse(_serialize_notice(raw_data, include_detail=True))
 
 
@@ -143,7 +147,7 @@ def set_manual_ocr_text(request, raw_data_id):
 
     raw_data = RawSsafyData.objects.filter(pk=raw_data_id).first()
     if raw_data is None:
-        raise Http404('RawSsafyData not found.')
+        return JsonResponse({'detail': 'RawSsafyData not found.'}, status=404)
 
     try:
         result = apply_manual_ocr_text(
@@ -208,11 +212,11 @@ def _parse_json_body(request):
 def _serialize_notice(raw_data, include_detail=False):
     payload = {
         'id': raw_data.id,
-        'title': raw_data.title,
+        'title': notice_title(raw_data),
         'source_type': raw_data.source_type,
         'category': infer_notice_category(raw_data),
         'track': infer_notice_track(raw_data),
-        'source_url': raw_data.source_url,
+        'source_url': notice_source_url(raw_data),
         'metadata_json': raw_data.metadata_json,
         'created_at': raw_data.collected_at.isoformat(),
         'updated_at': raw_data.collected_at.isoformat(),
