@@ -42,6 +42,17 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.json()['count'], 0)
         self.assertEqual(response.json()['results'], [])
 
+    def test_notice_list_excludes_mentoring_and_geeknews_sources(self):
+        RawSsafyData.objects.create(source_type='notice', title='공식 공지', raw_text='본문')
+        RawSsafyData.objects.create(source_type='mentoring_notice', title='멘토링 글', raw_text='본문')
+        RawSsafyData.objects.create(source_type='geeknews', title='Geeknews 글', raw_text='본문')
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['source_type'], 'notice')
+
     def test_notice_list_treats_academic_rule_as_etc(self):
         RawSsafyData.objects.create(source_type='academic_rule', title='학사 규정', raw_text='본문')
         RawSsafyData.objects.create(source_type='notice', title='월말평가 안내', raw_text='시험')
