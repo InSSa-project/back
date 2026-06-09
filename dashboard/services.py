@@ -24,6 +24,8 @@ def build_home_dashboard(user):
 
     today_count = _safe_count(lambda: _today_event_count(visible_events, now))
     new_notice_count = _safe_count(lambda: _new_notice_count(now))
+    notice_action_count = _safe_count(lambda: _unread_notice_count(user, now))
+    risk_count = _safe_count(lambda: _risk_recommendation_count(future_events, now))
 
     return {
         'focus': _serialize_focus(upcoming_events[0], now) if upcoming_events else None,
@@ -35,20 +37,22 @@ def build_home_dashboard(user):
             {
                 'key': 'calendar',
                 'title': '캘린더',
-                'value': '가까운 일정부터 보기',
+                'value': '전체 일정 한눈에 보기',
                 'target_route': '/calendar',
             },
             {
                 'key': 'notices',
                 'title': '공지',
-                'value': '새로 확인할 공지 보기',
+                'value': _notice_action_value(notice_action_count),
                 'target_route': '/notices',
+                'count': notice_action_count,
             },
             {
                 'key': 'risk',
                 'title': '리스크 관리',
-                'value': _risk_summary(upcoming_events),
+                'value': _risk_action_value(risk_count),
                 'target_route': '/risk',
+                'count': risk_count,
             },
         ],
         'upcoming_schedules': [_serialize_upcoming_event(event) for event in upcoming_events[:UPCOMING_LIMIT]],
@@ -67,7 +71,7 @@ def _visible_events(user):
     profile = _user_profile(user)
     if profile is not None:
         events = filter_events_for_user_profile(events, profile)
-    # TODO: generation/campus/class/track filtering depends on completed profile metadata coverage.
+    # TODO: user_profile 기반 generation/campus/class/track 필터 적용
     return events
 
 
@@ -79,12 +83,17 @@ def _today_event_count(events, now):
     today = timezone.localdate(now)
     start_at = timezone.make_aware(datetime.combine(today, time.min), timezone.get_current_timezone())
     end_at = timezone.make_aware(datetime.combine(today, time.max), timezone.get_current_timezone())
-    return sum(1 for event in events if event.start_at <= end_at and event.end_at >= start_at)
+    return sum(1 for event in events if _event_overlaps_today(event, start_at, end_at))
 
 
 def _new_notice_count(now):
     since = now - timedelta(days=7)
     return RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES, collected_at__gte=since).count()
+
+
+def _unread_notice_count(user, now):
+    # TODO: 사용자별 공지 읽음 상태 모델이 추가되면 unread notice count 기준으로 변경
+    return _new_notice_count(now)
 
 
 def _recent_notices():
@@ -111,6 +120,8 @@ def _serialize_focus(event, now):
 def _serialize_upcoming_event(event):
     start_at = timezone.localtime(event.start_at)
     end_at = timezone.localtime(event.end_at)
+    deadline_at = _event_deadline_at(event)
+    local_deadline_at = timezone.localtime(deadline_at) if deadline_at else None
     return {
         'id': event.id,
         'day': str(start_at.day),
@@ -119,6 +130,7 @@ def _serialize_upcoming_event(event):
         'time': _event_time_label(event, start_at, end_at),
         'start_at': start_at.isoformat(),
         'end_at': end_at.isoformat(),
+        'deadline_at': local_deadline_at.isoformat() if local_deadline_at else None,
         'event_type': event.event_type,
     }
 
@@ -130,13 +142,18 @@ def _serialize_notice(raw_data):
         'title': raw_data.title,
         'date': collected_at.strftime('%Y.%m.%d'),
         'source_type': raw_data.source_type,
+        'source_url': _notice_source_url(raw_data),
     }
 
 
 def _event_target_at(event, now):
-    metadata = event.metadata_json or {}
-    deadline_at = _parse_metadata_datetime(metadata.get('deadline_at'))
+    deadline_at = _event_deadline_at(event)
     return deadline_at or event.start_at or now
+
+
+def _event_deadline_at(event):
+    metadata = event.metadata_json or {}
+    return _parse_metadata_datetime(metadata.get('deadline_at'))
 
 
 def _parse_metadata_datetime(value):
@@ -159,7 +176,7 @@ def _event_title(event):
 
 
 def _focus_time_label(event, target_at):
-    deadline_at = _parse_metadata_datetime((event.metadata_json or {}).get('deadline_at'))
+    deadline_at = _event_deadline_at(event)
     suffix = '까지' if deadline_at else ''
     return f'{target_at:%H:%M}{suffix}'
 
@@ -170,16 +187,94 @@ def _event_time_label(event, start_at, end_at):
     return f'{start_at:%H:%M} - {end_at:%H:%M}'
 
 
-def _risk_summary(upcoming_events):
-    now = timezone.now()
-    urgent_count = sum(
-        1
-        for event in upcoming_events
-        if (_event_target_at(event, now) - now) <= timedelta(days=3)
+def _event_overlaps_today(event, today_start, today_end):
+    start_at = getattr(event, 'start_at', None)
+    end_at = getattr(event, 'end_at', None)
+    if start_at is None:
+        return False
+    if end_at is None:
+        return today_start <= start_at <= today_end
+    return start_at <= today_end and end_at >= today_start
+
+
+def _notice_action_value(count):
+    if count:
+        return f'확인 안 한 공지 {count}개'
+    return '새 공지 없음'
+
+
+def _risk_action_value(count):
+    if count:
+        return f'오늘 확인할 추천 {count}개'
+    return '추천 항목 없음'
+
+
+def _risk_recommendation_count(events, now):
+    deadline = now + timedelta(days=3)
+    return sum(1 for event in events if _is_risk_recommendation(event, now, deadline))
+
+
+def _is_risk_recommendation(event, now, deadline):
+    target_at = _event_target_at(event, now)
+    if target_at < now or target_at > deadline:
+        return False
+    return _event_deadline_at(event) is not None or _event_has_risk_keyword(event)
+
+
+def _event_has_risk_keyword(event):
+    metadata = event.metadata_json or {}
+    text = ' '.join(
+        [
+            str(event.event_type or ''),
+            str(event.title or ''),
+            str(metadata.get('display_title') or ''),
+            str(metadata.get('category') or ''),
+        ]
+    ).lower()
+    keywords = (
+        'exam',
+        'test',
+        'evaluation',
+        'assignment',
+        'application',
+        'deadline',
+        'quest',
+        '시험',
+        '평가',
+        '제출',
+        '신청',
+        '마감',
+        '과제',
     )
-    if urgent_count:
-        return f'3일 안에 {urgent_count}개 일정 확인'
-    return '놓치기 쉬운 일정 확인'
+    return any(keyword in text for keyword in keywords)
+
+
+def _notice_source_url(raw_data):
+    candidates = [
+        getattr(raw_data, 'source_url', ''),
+        _metadata_url(raw_data.metadata_json, 'source_url'),
+        _metadata_url(raw_data.metadata_json, 'url'),
+        _metadata_url(raw_data.metadata_json, 'link'),
+        _metadata_url(raw_data.metadata_json, 'href'),
+        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'source_url'),
+        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'url'),
+        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'link'),
+        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'href'),
+        _metadata_url((raw_data.metadata_json or {}).get('metadata_json'), 'source_url'),
+        _metadata_url((raw_data.metadata_json or {}).get('metadata_json'), 'url'),
+        _metadata_url((raw_data.metadata_json or {}).get('metadata_json'), 'link'),
+    ]
+    for candidate in candidates:
+        value = str(candidate or '').strip()
+        if value:
+            return value
+    return None
+
+
+def _metadata_url(metadata, key):
+    if not isinstance(metadata, dict):
+        return ''
+    return metadata.get(key) or ''
 
 
 def _safe_count(counter):
