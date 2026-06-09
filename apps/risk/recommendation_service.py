@@ -1,4 +1,4 @@
-﻿from collections import defaultdict
+from collections import defaultdict
 from decimal import Decimal
 
 from django.utils import timezone
@@ -9,8 +9,10 @@ from .models import EvaluationResult
 class ScheduleRecommendationService:
     SUBJECT_METADATA_KEYS = ('subject_name', 'subject', 'course_name', 'course', 'topic')
     COMPLETED_VALUES = {'done', 'completed', 'complete', 'finished'}
+    ROUTINE_TITLES = ('온라인 위크', 'online week')
 
     IMPORTANCE_SCORES = {
+        'important': 50,
         'monthly_exam': 50,
         'subject_exam': 45,
         'project_deadline': 40,
@@ -63,7 +65,10 @@ class ScheduleRecommendationService:
             }
         return weakness_map
 
-    def calculate_recommendation_score(self, event, weakness_map, summary_map, now=None):
+    def calculate_recommendation_score(self, event, weakness_map, summary_map):
+        if self._is_routine_public_event(event):
+            return {'recommendation_score': 0}
+
         event_kind = self._event_kind(event)
         days = self._days_until(event.start_at, now=now)
         importance_score = self.IMPORTANCE_SCORES[event_kind]
@@ -71,9 +76,7 @@ class ScheduleRecommendationService:
         score = importance_score + urgency_score
         score_breakdown = [f'일정 중요도 +{importance_score}', f'날짜 긴박도 +{urgency_score}']
         reason_codes = [self._due_reason_code(days)]
-        evidence_items = [
-            {'label': '일정', 'value': self._due_evidence(days)},
-        ]
+        evidence_items = [{'label': '일정', 'value': self._due_evidence(days)}]
 
         evaluation_type = self._evaluation_type(event_kind)
         if evaluation_type:
@@ -151,12 +154,11 @@ class ScheduleRecommendationService:
     def build_recommendation_card(self, event, context):
         subject_name = context['subject_name'] or event.title
         context['evidence_items'].append({'label': '추천 점수 계산', 'value': ' · '.join(context['score_breakdown'])})
-        card_title = event.title
         priority = self._priority(context['recommendation_score'])
         return {
             'id': f'rec_{event.id}',
             'schedule_event_id': event.id,
-            'card_title': card_title,
+            'card_title': event.title,
             'card_subtitle': '',
             'badge': self._d_day_badge(context['days']),
             'priority': priority,
@@ -232,6 +234,8 @@ class ScheduleRecommendationService:
             event.title or '', event.event_type or '', event.source_type or '',
             str(metadata.get('category', '')), str(metadata.get('type', '')),
         ]).lower()
+        if metadata.get('is_important') is True:
+            return 'important'
         if '월말평가' in haystack or '월말 평가' in haystack:
             return 'monthly_exam'
         if '과목평가' in haystack or '과목 평가' in haystack:
@@ -245,6 +249,17 @@ class ScheduleRecommendationService:
         if event.owner_id:
             return 'personal'
         return 'official'
+
+    def _is_routine_public_event(self, event):
+        metadata = event.metadata_json or {}
+        haystack = ' '.join([
+            event.title or '', event.event_type or '', event.source_type or '',
+            str(metadata.get('category', '')), str(metadata.get('type', '')),
+            str(metadata.get('display_title', '')),
+        ]).lower()
+        if event.event_type == 'holiday' or event.source_type == 'holiday':
+            return True
+        return any(title in haystack for title in self.ROUTINE_TITLES)
 
     def _evaluation_type(self, event_kind):
         if event_kind == 'subject_exam':
@@ -285,16 +300,6 @@ class ScheduleRecommendationService:
         status = str(metadata.get('status') or '').strip().lower()
         return 200 if status in self.COMPLETED_VALUES else 0
 
-    def _card_title(self, event_kind):
-        return {
-            'monthly_exam': '월말평가 준비 추천',
-            'subject_exam': '과목평가 준비 추천',
-            'project_deadline': '프로젝트 마감 점검 추천',
-            'assignment': '과제 제출 점검 추천',
-            'personal': '개인 일정 확인 추천',
-            'official': '공식 일정 확인 추천',
-        }[event_kind]
-
     def _priority(self, score):
         if score >= 120:
             return 'HIGH'
@@ -311,6 +316,8 @@ class ScheduleRecommendationService:
     def _summary(self, event, context):
         summary = context.get('evaluation_summary')
         due = self._due_evidence(context['days'])
+        if context['event_kind'] == 'important':
+            return f'{event.title} 일정이 중요 일정으로 지정되어 우선 확인이 필요합니다.'
         if summary and summary['remaining_fail_allowance'] <= 0 and context['days'] <= 1:
             return f'{summary["label"]} 수료 커트라인 여유가 없고 시험이 {due}입니다.'
         weakness = context['weakness']
@@ -325,10 +332,9 @@ class ScheduleRecommendationService:
             return [f'{subject_name} 핵심 개념 복습', '이전 오답 정리', '평가 전 최종 점검']
         if event_kind in {'project_deadline', 'assignment'}:
             return [f'{subject_name} 남은 작업 확인', '제출 조건 점검', '마감 전 결과물 검토']
+        if event_kind == 'important':
+            return [f'{subject_name} 중요 일정 확인', '준비 상태 점검']
         return [f'{subject_name} 일정 세부 내용 확인']
 
     def _normalize(self, value):
         return ''.join(str(value or '').lower().split())
-
-
-

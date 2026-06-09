@@ -1,4 +1,4 @@
-﻿from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
@@ -288,6 +288,27 @@ class ScheduleDbChatPipelineTests(TestCase):
 
         self.assertIn('1월 6일 실제 일정', response.answer)
         self.assertNotIn('전날 자정 종료 일정', response.answer)
+
+    def test_week_query_ignores_filler_words_and_returns_public_schedule(self):
+        online_week_start = timezone.make_aware(timezone.datetime(2026, 6, 2, 9, 0))
+        ScheduleEvent.objects.create(
+            title='온라인 위크',
+            start_at=online_week_start,
+            end_at=online_week_start + timedelta(days=1),
+            event_type='study',
+            source_type='notice',
+        )
+
+        parsed = ScheduleQueryParser(DateExtractor(today=date(2026, 6, 5))).parse('이번주 큰 일정 뭐있니')
+        chunks = ScheduleRetrievalService().retrieve(
+            parsed,
+            filters={'user_id': self.user_a.id},
+            query='이번주 큰 일정 뭐있니',
+        )
+
+        self.assertEqual(parsed.query_type, ScheduleQueryType.SCHEDULE_RANGE)
+        self.assertIn('온라인 위크', [chunk.title for chunk in chunks])
+
     def test_upcoming_evaluation_returns_only_nearest_future_evaluations(self):
         today = timezone.localdate()
         day_start = timezone.make_aware(timezone.datetime.combine(today, timezone.datetime.min.time()))
