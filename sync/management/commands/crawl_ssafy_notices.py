@@ -17,7 +17,7 @@ class Command(BaseCommand):
             choices=['sample', 'ssafy_notice'],
             help='Crawler mode. Defaults to SSAFY_CRAWLER_MODE, then sample.',
         )
-        parser.add_argument('--source', help='Comma-separated source list, e.g. notice,academic_rule.')
+        parser.add_argument('--source', '--sources', dest='source', help='Comma-separated source list, e.g. notice,academic_rule.')
         parser.add_argument(
             '--source-type',
             action='append',
