@@ -11,9 +11,6 @@ from django.conf import settings
 import requests
 from bs4 import BeautifulSoup
 
-from sync.models import RawSsafyData
-
-
 SAMPLE_JSON_PATH = settings.BASE_DIR / 'sync' / 'samples' / 'sample_ssafy_notice.json'
 DEFAULT_CRAWLER_MODE = 'sample'
 MODE_SAMPLE = 'sample'
@@ -563,24 +560,7 @@ def _crawler_recent_limit():
 
 
 def _existing_list_item_skip_reason(source_type, detail_url, list_title):
-    if not list_title:
-        return ''
-
-    existing_by_url = RawSsafyData.objects.filter(source_type=source_type, source_url=detail_url).first()
-    if existing_by_url and str(existing_by_url.title or '').strip() == str(list_title or '').strip():
-        return 'source_url_title_match'
-
-    notice_id = _guess_notice_id(detail_url)
-    if notice_id:
-        existing = (
-            RawSsafyData.objects.filter(source_type=source_type, metadata_json__notice_id=notice_id).first()
-            or RawSsafyData.objects.filter(source_type=source_type, metadata_json__original_id=notice_id).first()
-            or RawSsafyData.objects.filter(source_type=source_type, metadata_json__brdItmSeq=notice_id).first()
-            or RawSsafyData.objects.filter(source_type=source_type, source_url__contains=f'brdItmSeq={notice_id}').first()
-        )
-        if existing and str(existing.title or '').strip() == str(list_title or '').strip():
-            return 'notice_id_title_match'
-
+    # Keep Playwright collection DB-free. Duplicate detection runs later in the sync import service.
     return ''
 
 
