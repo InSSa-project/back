@@ -19,12 +19,12 @@ class ScheduleRecommendationService:
         'official': 20,
     }
 
-    def get_recommended_schedule_cards(self, user, events, evaluations, summaries, limit=5):
+    def get_recommended_schedule_cards(self, user, events, evaluations, summaries, limit=5, now=None):
         weakness_map = self.get_subject_weakness_map(evaluations)
         summary_map = {summary['evaluation_type']: summary for summary in summaries}
         cards = []
         for event in events:
-            context = self.calculate_recommendation_score(event, weakness_map, summary_map)
+            context = self.calculate_recommendation_score(event, weakness_map, summary_map, now=now)
             if context['recommendation_score'] <= 0:
                 continue
             cards.append(self.build_recommendation_card(event, context))
@@ -63,9 +63,9 @@ class ScheduleRecommendationService:
             }
         return weakness_map
 
-    def calculate_recommendation_score(self, event, weakness_map, summary_map):
+    def calculate_recommendation_score(self, event, weakness_map, summary_map, now=None):
         event_kind = self._event_kind(event)
-        days = self._days_until(event.start_at)
+        days = self._days_until(event.start_at, now=now)
         importance_score = self.IMPORTANCE_SCORES[event_kind]
         urgency_score = self._urgency_score(days)
         score = importance_score + urgency_score
@@ -273,8 +273,8 @@ class ScheduleRecommendationService:
             return 'DUE_WITHIN_7_DAYS'
         return 'DUE_WITHIN_14_DAYS'
 
-    def _days_until(self, start_at):
-        now = timezone.localtime(timezone.now()).date()
+    def _days_until(self, start_at, now=None):
+        now = timezone.localtime(now or timezone.now()).date()
         starts = timezone.localtime(start_at).date()
         return max((starts - now).days, 0)
 

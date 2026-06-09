@@ -36,9 +36,8 @@ class RiskService:
         evaluations = list(EvaluationResult.objects.filter(user=user).order_by('evaluation_type', 'round_number'))
         summaries = [self._evaluation_summary(evaluations, evaluation_type) for evaluation_type in self.EVALUATION_RULES]
         recommendations = self._schedule_recommendations(user)
-        recommended_schedules = ScheduleRecommendationService().get_recommended_schedule_cards(
+        recommended_schedules = self.get_recommended_schedule_cards(
             user=user,
-            events=list(self._visible_events(user, until_days=14)),
             evaluations=evaluations,
             summaries=summaries,
         )
@@ -66,6 +65,23 @@ class RiskService:
             'upcoming_items': upcoming,
         }
 
+    def get_recommended_schedule_cards(self, user, evaluations=None, summaries=None, now=None, limit=5):
+        if evaluations is None:
+            evaluations = list(self._evaluation_queryset(user).order_by('evaluation_type', 'round_number'))
+        if summaries is None:
+            summaries = [self._evaluation_summary(evaluations, evaluation_type) for evaluation_type in self.EVALUATION_RULES]
+        return ScheduleRecommendationService().get_recommended_schedule_cards(
+            user=user,
+            events=list(self._visible_events(user, until_days=14, now=now)),
+            evaluations=evaluations,
+            summaries=summaries,
+            limit=limit,
+            now=now,
+        )
+
+    def get_recommended_schedule_count(self, user, now=None, limit=5):
+        return len(self.get_recommended_schedule_cards(user=user, now=now, limit=limit))
+
     def upsert_evaluation(self, user, data):
         evaluation, _created = EvaluationResult.objects.get_or_create(
             user=user,
@@ -89,14 +105,23 @@ class RiskService:
             evaluation.save(update_fields=[*update_fields, 'updated_at'])
         self.calculate_dashboard(user)
         return evaluation
-    def _visible_events(self, user, until_days):
-        now = timezone.now()
+    def _evaluation_queryset(self, user):
+        if not getattr(user, 'is_authenticated', False):
+            return EvaluationResult.objects.none()
+        return EvaluationResult.objects.filter(user=user)
+
+    def _visible_events(self, user, until_days, now=None):
+        now = now or timezone.now()
         end_at = now + timedelta(days=until_days)
         legacy_unowned_personal = Q(owner__isnull=True, raw_data__isnull=True, source_type='manual', event_type='personal')
+        owner_filter = Q(owner__isnull=True)
+        if getattr(user, 'is_authenticated', False):
+            owner_filter |= Q(owner=user)
         return (
             ScheduleEvent.objects.filter(start_at__gte=now, start_at__lte=end_at)
-            .filter(Q(owner__isnull=True) | Q(owner=user))
+            .filter(owner_filter)
             .exclude(legacy_unowned_personal)
+            .only('id', 'owner_id', 'title', 'start_at', 'end_at', 'event_type', 'source_type', 'metadata_json')
             .order_by('start_at', 'id')
         )
 

@@ -206,8 +206,51 @@ class HomeDashboardApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         risk_card = _action_card(response.json(), 'risk')
-        self.assertEqual(risk_card['count'], 1)
-        self.assertEqual(risk_card['value'], '오늘 확인할 추천 1개')
+        self.assertEqual(risk_card['count'], 3)
+        self.assertEqual(risk_card['value'], '오늘 확인할 추천 3개')
+
+    def test_risk_card_count_matches_risk_recommended_schedules_limit(self):
+        for index, days in enumerate([1, 2, 3, 11, 11], start=1):
+            self._event(f'온라인 워크 {index}', days, event_type='notice')
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        risk_card = _action_card(response.json(), 'risk')
+        self.assertEqual(risk_card['count'], 5)
+        self.assertEqual(risk_card['value'], '오늘 확인할 추천 5개')
+
+    def test_risk_card_returns_empty_state_without_recommendations(self):
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        risk_card = _action_card(response.json(), 'risk')
+        self.assertEqual(risk_card['count'], 0)
+        self.assertEqual(risk_card['value'], '추천 항목 없음')
+
+    def test_recent_notice_source_url_fallback_only_needs_recent_three(self):
+        for index in range(5):
+            RawSsafyData.objects.create(
+                source_type='notice',
+                title=f'공지 {index}',
+                raw_text='본문',
+                metadata_json={'raw_json': {'link': f'https://edu.ssafy.com/notices/{index}'}},
+                collected_at=self.now - timedelta(days=index),
+            )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        notices = response.json()['recent_notices']
+        self.assertEqual(len(notices), 3)
+        self.assertEqual(
+            [notice['source_url'] for notice in notices],
+            [
+                'https://edu.ssafy.com/notices/0',
+                'https://edu.ssafy.com/notices/1',
+                'https://edu.ssafy.com/notices/2',
+            ],
+        )
 
     def test_today_schedule_count_includes_spanning_event(self):
         ScheduleEvent.objects.create(

@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from apps.risk.services import RiskService
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import normalize_schedule_display_title
@@ -13,19 +14,19 @@ from sync.services.notice_normalizer import SOURCE_TYPES
 
 UPCOMING_LIMIT = 3
 NOTICE_LIMIT = 3
+EVENT_SCAN_LIMIT = 50
 
 
 def build_home_dashboard(user):
     now = timezone.now()
-    visible_events = _visible_events(user)
-    future_events = _future_events(visible_events, now)
+    future_events = _future_events(_upcoming_event_candidates(user, now), now)
     upcoming_events = sorted(future_events, key=lambda event: (_event_target_at(event, now), event.id))
     recent_notices = _recent_notices()
 
-    today_count = _safe_count(lambda: _today_event_count(visible_events, now))
+    today_count = _safe_count(lambda: _today_event_count(user, now))
     new_notice_count = _safe_count(lambda: _new_notice_count(now))
-    notice_action_count = _safe_count(lambda: _unread_notice_count(user, now))
-    risk_count = _safe_count(lambda: _risk_recommendation_count(future_events, now))
+    notice_action_count = _safe_count(lambda: _unread_notice_count(user, now, fallback_count=new_notice_count))
+    risk_count = _safe_count(lambda: RiskService().get_recommended_schedule_count(user=user, now=now))
 
     return {
         'focus': _serialize_focus(upcoming_events[0], now) if upcoming_events else None,
@@ -60,14 +61,34 @@ def build_home_dashboard(user):
     }
 
 
-def _visible_events(user):
-    queryset = ScheduleEvent.objects.select_related('raw_data').all()
+def _visible_event_queryset(user):
+    queryset = ScheduleEvent.objects.select_related('raw_data').only(
+        'id',
+        'owner_id',
+        'raw_data_id',
+        'title',
+        'start_at',
+        'end_at',
+        'is_all_day',
+        'event_type',
+        'source_type',
+        'metadata_json',
+        'raw_data__source_url',
+    )
     if getattr(user, 'is_authenticated', False):
         queryset = queryset.filter(Q(owner__isnull=True) | Q(owner=user))
     else:
         queryset = queryset.filter(owner__isnull=True)
+    return queryset
 
+
+def _upcoming_event_candidates(user, now):
+    queryset = _visible_event_queryset(user).filter(start_at__gte=now).order_by('start_at', 'id')[:EVENT_SCAN_LIMIT]
     events = list(queryset)
+    return _filter_events_for_profile(user, events)
+
+
+def _filter_events_for_profile(user, events):
     profile = _user_profile(user)
     if profile is not None:
         events = filter_events_for_user_profile(events, profile)
@@ -79,11 +100,14 @@ def _future_events(events, now):
     return [event for event in events if _event_target_at(event, now) >= now]
 
 
-def _today_event_count(events, now):
+def _today_event_count(user, now):
     today = timezone.localdate(now)
     start_at = timezone.make_aware(datetime.combine(today, time.min), timezone.get_current_timezone())
     end_at = timezone.make_aware(datetime.combine(today, time.max), timezone.get_current_timezone())
-    return sum(1 for event in events if _event_overlaps_today(event, start_at, end_at))
+    queryset = _visible_event_queryset(user).filter(start_at__lte=end_at, end_at__gte=start_at)
+    if _user_profile(user) is None:
+        return queryset.count()
+    return sum(1 for event in _filter_events_for_profile(user, list(queryset)) if _event_overlaps_today(event, start_at, end_at))
 
 
 def _new_notice_count(now):
@@ -91,14 +115,18 @@ def _new_notice_count(now):
     return RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES, collected_at__gte=since).count()
 
 
-def _unread_notice_count(user, now):
+def _unread_notice_count(user, now, fallback_count=None):
     # TODO: 사용자별 공지 읽음 상태 모델이 추가되면 unread notice count 기준으로 변경
-    return _new_notice_count(now)
+    return _new_notice_count(now) if fallback_count is None else fallback_count
 
 
 def _recent_notices():
     try:
-        return list(RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES).order_by('-collected_at', '-id')[:NOTICE_LIMIT])
+        return list(
+            RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES)
+            .only('id', 'title', 'source_type', 'source_url', 'metadata_json', 'collected_at')
+            .order_by('-collected_at', '-id')[:NOTICE_LIMIT]
+        )
     except Exception:
         return []
 
@@ -207,46 +235,6 @@ def _risk_action_value(count):
     if count:
         return f'오늘 확인할 추천 {count}개'
     return '추천 항목 없음'
-
-
-def _risk_recommendation_count(events, now):
-    deadline = now + timedelta(days=3)
-    return sum(1 for event in events if _is_risk_recommendation(event, now, deadline))
-
-
-def _is_risk_recommendation(event, now, deadline):
-    target_at = _event_target_at(event, now)
-    if target_at < now or target_at > deadline:
-        return False
-    return _event_deadline_at(event) is not None or _event_has_risk_keyword(event)
-
-
-def _event_has_risk_keyword(event):
-    metadata = event.metadata_json or {}
-    text = ' '.join(
-        [
-            str(event.event_type or ''),
-            str(event.title or ''),
-            str(metadata.get('display_title') or ''),
-            str(metadata.get('category') or ''),
-        ]
-    ).lower()
-    keywords = (
-        'exam',
-        'test',
-        'evaluation',
-        'assignment',
-        'application',
-        'deadline',
-        'quest',
-        '시험',
-        '평가',
-        '제출',
-        '신청',
-        '마감',
-        '과제',
-    )
-    return any(keyword in text for keyword in keywords)
 
 
 def _notice_source_url(raw_data):
