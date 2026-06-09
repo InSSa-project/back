@@ -34,11 +34,11 @@ TRACK_ALIASES = {
     'python': 'python',
     '파이썬': 'python',
     'java_non_major': 'java_non_major',
-    'java비전공': 'java_non_major',
+    'java 비전공': 'java_non_major',
     'java_비전공': 'java_non_major',
     'java(비전공)': 'java_non_major',
     'java_major': 'java_major',
-    'java전공': 'java_major',
+    'java 전공': 'java_major',
     'java_전공': 'java_major',
     'java(전공)': 'java_major',
     'embedded': 'embedded',
@@ -52,17 +52,17 @@ TRACK_ALIASES = {
     'data': 'data',
     '데이터': 'data',
     'meister': 'meister',
-    '마이스터고': 'meister',
+    '마이스터': 'meister',
 }
 COMMON_TRACK_VALUES = {'', 'common', 'all', 'global', '공통', '전체'}
 COMMON_TITLE_KEYWORDS = (
     'SSAFY DAY',
-    '설날',
+    '공휴일',
     '온라인 위크',
     '과목평가',
     '월말평가',
-    '관통 프로젝트 집중기간',
-    '상반기 밋업',
+    '개인 프로젝트 발표',
+    '관통프로젝트',
 )
 OTHER_EVENT_TYPES = {
     'study',
@@ -73,7 +73,6 @@ OTHER_EVENT_TYPES = {
     'mentoring',
     'unknown',
     'other',
-    '기타',
     'etc',
 }
 ALLOWED_EVENT_TYPES = OTHER_EVENT_TYPES | {
@@ -227,7 +226,7 @@ def event_detail(request, event_id):
     except json.JSONDecodeError:
         return JsonResponse({'detail': 'Invalid JSON payload.'}, status=400)
 
-    invalid_fields = set(payload) - {'title', 'description', 'start_at', 'end_at', 'is_all_day', 'event_type'}
+    invalid_fields = set(payload) - {'title', 'description', 'start_at', 'end_at', 'is_all_day', 'event_type', 'is_important', 'metadata', 'metadata_json'}
     if invalid_fields:
         return JsonResponse(
             {'detail': f'Unsupported fields: {", ".join(sorted(invalid_fields))}'},
@@ -246,6 +245,19 @@ def event_detail(request, event_id):
     for field in ['title', 'description', 'is_all_day', 'event_type']:
         if field in payload:
             setattr(event, field, payload[field])
+    if 'metadata_json' in payload or 'metadata' in payload or 'is_important' in payload:
+        metadata_json = payload.get('metadata_json', payload.get('metadata', event.metadata_json or {}))
+        if metadata_json is None:
+            metadata_json = {}
+        if not isinstance(metadata_json, dict):
+            return JsonResponse({'detail': 'metadata_json must be an object.'}, status=400)
+        metadata_json = dict(metadata_json)
+        if 'is_important' in payload:
+            metadata_json['is_important'] = bool(payload.get('is_important'))
+        event.metadata_json = metadata_json
+        payload['metadata_json'] = metadata_json
+        payload.pop('metadata', None)
+        payload.pop('is_important', None)
     for field, value in parsed_datetimes.items():
         setattr(event, field, value)
     event.save(update_fields=[*payload.keys(), 'updated_at'])
