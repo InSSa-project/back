@@ -1058,6 +1058,8 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
         'notice_id': notice_id,
         'collected_from': MODE_SSAFY_NOTICE,
         'published_at': published_at,
+        'source_url': detail_url,
+        'detail_url': detail_url,
         'image_urls': image_urls,
         'ocr_status': 'pending' if image_urls else 'skipped',
         'detail_success': True,
@@ -1065,6 +1067,11 @@ def _parse_detail_soup(soup, detail_url, source_type, list_title=''):
         'content_quality': content_quality,
         'image_found': bool(image_urls),
     }
+    cleaned_list_title = _clean_text(list_title)
+    if cleaned_list_title:
+        metadata['list_title'] = cleaned_list_title
+        metadata['original_title'] = cleaned_list_title
+        metadata['notice_title'] = cleaned_list_title
     if is_evaluation_notice:
         metadata.update(
             {
@@ -1190,7 +1197,7 @@ def _extract_quest_links(soup, base_url):
 
 
 def _extract_mentoring_notice_links(soup, base_url):
-    return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'])
+    return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'], include_titles=True)
 
 
 def _extract_curriculum_links(soup, base_url):
