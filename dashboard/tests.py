@@ -252,6 +252,142 @@ class HomeDashboardApiTests(TestCase):
             ],
         )
 
+    def test_recent_notice_title_and_url_stay_matched_by_same_row(self):
+        rows = []
+        for index, title in enumerate(['A 공지', 'B 공지', 'C 공지']):
+            rows.append(
+                RawSsafyData.objects.create(
+                    source_type='notice',
+                    title=title,
+                    raw_text='본문',
+                    source_url=f'https://edu.ssafy.com/notices/{title[0].lower()}',
+                    collected_at=self.now + timedelta(minutes=index),
+                )
+            )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        notices_by_id = {notice['id']: notice for notice in response.json()['recent_notices']}
+        for row in rows:
+            notice = notices_by_id[row.id]
+            self.assertEqual(notice['title'], row.title)
+            self.assertEqual(notice['source_url'], row.source_url)
+
+    def test_recent_notice_keeps_duplicate_titles_as_separate_rows(self):
+        first = RawSsafyData.objects.create(
+            source_type='mentoring_notice',
+            title='멘토 스토리 상세',
+            raw_text='본문',
+            source_url='https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=1',
+            collected_at=self.now,
+        )
+        second = RawSsafyData.objects.create(
+            source_type='mentoring_notice',
+            title='멘토 스토리 상세',
+            raw_text='본문',
+            source_url='https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=2',
+            collected_at=self.now + timedelta(minutes=1),
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        notices_by_id = {notice['id']: notice for notice in response.json()['recent_notices']}
+        self.assertEqual(notices_by_id[first.id]['source_url'], first.source_url)
+        self.assertEqual(notices_by_id[second.id]['source_url'], second.source_url)
+
+    def test_recent_notice_invalid_source_url_is_null(self):
+        for value in ['', '#', 'javascript:void(0)']:
+            with self.subTest(value=value):
+                RawSsafyData.objects.all().delete()
+                RawSsafyData.objects.create(
+                    source_type='notice',
+                    title='잘못된 링크 공지',
+                    raw_text='본문',
+                    source_url=value,
+                    collected_at=self.now,
+                )
+
+                response = self._get()
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(response.json()['recent_notices'][0]['source_url'])
+
+    def test_recent_notice_uses_metadata_title_for_generic_page_title(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='게시물 목록',
+            raw_text='본문',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=10',
+            metadata_json={'notice_title': '실제 공지 제목'},
+            collected_at=self.now,
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        notice = response.json()['recent_notices'][0]
+        self.assertEqual(notice['title'], '실제 공지 제목')
+        self.assertEqual(notice['source_url'], 'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=10')
+
+    def test_recent_notice_prefers_detail_url_over_list_url_in_same_row(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='목록 링크 포함 공지',
+            raw_text='본문',
+            source_url='https://edu.ssafy.com/edu/board/notice/list.do',
+            metadata_json={'detail_url': 'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=20'},
+            collected_at=self.now,
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()['recent_notices'][0]['source_url'],
+            'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=20',
+        )
+
+    def test_recent_notice_uses_raw_text_title_for_generic_mentoring_title(self):
+        RawSsafyData.objects.create(
+            source_type='mentoring_notice',
+            title='멘토 스토리 상세',
+            raw_text='멘토 스토리 | 멘토칼럼 | Geeknews 를 소개합니다. | 에드윈 | 2023.03.07',
+            source_url='https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=58923',
+            collected_at=self.now,
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        notice = response.json()['recent_notices'][0]
+        self.assertEqual(notice['title'], 'Geeknews 를 소개합니다.')
+        self.assertEqual(notice['source_url'], 'https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=58923')
+
+    def test_recent_notices_exclude_academic_rule_list_rows(self):
+        RawSsafyData.objects.create(
+            source_type='academic_rule',
+            title='게시물 목록',
+            raw_text='학사규정 | 등록된 학사규정이 없습니다.',
+            source_url='https://edu.ssafy.com/edu/board/rule/list.do',
+            collected_at=self.now + timedelta(minutes=1),
+        )
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='실제 공지',
+            raw_text='본문',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=30',
+            collected_at=self.now,
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        notices = response.json()['recent_notices']
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['id'], notice.id)
+
     def test_today_schedule_count_includes_spanning_event(self):
         ScheduleEvent.objects.create(
             title='오늘 걸친 일정',

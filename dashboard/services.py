@@ -1,4 +1,6 @@
+import os
 from datetime import datetime, time, timedelta
+from urllib.parse import urljoin, urlparse
 
 from django.db.models import Q
 from django.utils import timezone
@@ -15,6 +17,44 @@ from sync.services.notice_normalizer import SOURCE_TYPES
 UPCOMING_LIMIT = 3
 NOTICE_LIMIT = 3
 EVENT_SCAN_LIMIT = 50
+RECENT_NOTICE_SOURCE_TYPES = {'notice', 'mentoring_notice'}
+GENERIC_NOTICE_TITLES = {
+    '게시물 목록',
+    '게시물 상세',
+    '공지사항 상세',
+    '멘토 스토리 상세',
+    '상세',
+    '목록',
+    'SSAFY',
+}
+NOTICE_TITLE_KEYS = (
+    'title',
+    'subject',
+    'notice_title',
+    'article_title',
+    'board_title',
+    'original_title',
+    'list_title',
+)
+NOTICE_URL_KEYS = (
+    'source_url',
+    'detail_url',
+    'original_url',
+    'url',
+    'link',
+    'href',
+)
+RAW_TEXT_TITLE_STOPWORDS = {
+    '멘토 스토리',
+    '멘토칼럼',
+    '공지사항',
+    '학사규정',
+    'FAQ',
+    '1:1 문의',
+    '조회',
+    '좋아요수',
+    '댓글',
+}
 
 
 def build_home_dashboard(user):
@@ -123,8 +163,8 @@ def _unread_notice_count(user, now, fallback_count=None):
 def _recent_notices():
     try:
         return list(
-            RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES)
-            .only('id', 'title', 'source_type', 'source_url', 'metadata_json', 'collected_at')
+            RawSsafyData.objects.filter(source_type__in=RECENT_NOTICE_SOURCE_TYPES)
+            .only('id', 'title', 'source_type', 'source_url', 'metadata_json', 'raw_text', 'collected_at')
             .order_by('-collected_at', '-id')[:NOTICE_LIMIT]
         )
     except Exception:
@@ -167,7 +207,7 @@ def _serialize_notice(raw_data):
     collected_at = timezone.localtime(raw_data.collected_at)
     return {
         'id': raw_data.id,
-        'title': raw_data.title,
+        'title': _notice_title(raw_data),
         'date': collected_at.strftime('%Y.%m.%d'),
         'source_type': raw_data.source_type,
         'source_url': _notice_source_url(raw_data),
@@ -238,31 +278,115 @@ def _risk_action_value(count):
 
 
 def _notice_source_url(raw_data):
-    candidates = [
-        getattr(raw_data, 'source_url', ''),
-        _metadata_url(raw_data.metadata_json, 'source_url'),
-        _metadata_url(raw_data.metadata_json, 'url'),
-        _metadata_url(raw_data.metadata_json, 'link'),
-        _metadata_url(raw_data.metadata_json, 'href'),
-        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'source_url'),
-        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'url'),
-        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'link'),
-        _metadata_url((raw_data.metadata_json or {}).get('raw_json'), 'href'),
-        _metadata_url((raw_data.metadata_json or {}).get('metadata_json'), 'source_url'),
-        _metadata_url((raw_data.metadata_json or {}).get('metadata_json'), 'url'),
-        _metadata_url((raw_data.metadata_json or {}).get('metadata_json'), 'link'),
-    ]
-    for candidate in candidates:
-        value = str(candidate or '').strip()
-        if value:
-            return value
+    candidates = [getattr(raw_data, 'source_url', '')]
+    metadata = raw_data.metadata_json or {}
+    for source in _notice_metadata_sources(metadata):
+        candidates.extend(_metadata_value(source, key) for key in NOTICE_URL_KEYS)
+
+    normalized_urls = [_normalize_notice_url(candidate) for candidate in candidates]
+    detail_urls = [url for url in normalized_urls if url and not _is_list_page_url(url)]
+    if detail_urls:
+        return detail_urls[0]
     return None
 
 
-def _metadata_url(metadata, key):
+def _notice_title(raw_data):
+    title = str(getattr(raw_data, 'title', '') or '').strip()
+    if not _is_generic_notice_title(title):
+        return title
+
+    metadata = raw_data.metadata_json or {}
+    for source in _notice_metadata_sources(metadata):
+        for key in NOTICE_TITLE_KEYS:
+            candidate = str(_metadata_value(source, key) or '').strip()
+            if candidate and not _is_generic_notice_title(candidate):
+                return candidate
+    raw_text_title = _notice_title_from_raw_text(getattr(raw_data, 'raw_text', ''))
+    if raw_text_title:
+        return raw_text_title
+    return title
+
+
+def _notice_metadata_sources(metadata):
+    if not isinstance(metadata, dict):
+        return []
+    return [
+        metadata,
+        metadata.get('raw_json'),
+        metadata.get('metadata_json'),
+    ]
+
+
+def _metadata_value(metadata, key):
     if not isinstance(metadata, dict):
         return ''
     return metadata.get(key) or ''
+
+
+def _is_generic_notice_title(title):
+    cleaned = ' '.join(str(title or '').split())
+    return cleaned in GENERIC_NOTICE_TITLES or cleaned.endswith('상세')
+
+
+def _notice_title_from_raw_text(raw_text):
+    tokens = [token.strip() for token in str(raw_text or '').replace('\n', '|').split('|')]
+    tokens = [token for token in tokens if token]
+    if len(tokens) >= 3 and tokens[0] in RAW_TEXT_TITLE_STOPWORDS:
+        candidate = tokens[2]
+        if _is_raw_text_title_candidate(candidate):
+            return candidate
+    for candidate in tokens:
+        if _is_raw_text_title_candidate(candidate):
+            return candidate
+    return ''
+
+
+def _is_raw_text_title_candidate(value):
+    value = str(value or '').strip()
+    if not value or value in RAW_TEXT_TITLE_STOPWORDS or _is_generic_notice_title(value):
+        return False
+    if value.isdigit() or len(value) < 4:
+        return False
+    if ' ' not in value and value.endswith(('건', '수')):
+        return False
+    return True
+
+
+def _normalize_notice_url(value):
+    value = str(value or '').strip()
+    if not value or value == '#':
+        return None
+    lowered = value.lower()
+    if lowered.startswith(('javascript:', 'mailto:', 'tel:')):
+        return None
+    if lowered.startswith(('http://', 'https://')):
+        return value
+    if lowered.startswith('//'):
+        return f'https:{value}'
+    if lowered.startswith('/'):
+        base_url = _ssafy_base_url()
+        return urljoin(base_url, value) if base_url else None
+    return None
+
+
+def _is_list_page_url(value):
+    path_name = urlparse(value).path.rstrip('/').split('/')[-1].lower()
+    return path_name in {'list', 'list.do', 'index', 'index.do'}
+
+
+def _ssafy_base_url():
+    for env_name in (
+        'SSAFY_MAIN_URL',
+        'SSAFY_NOTICE_LIST_URL',
+        'SSAFY_MENTORING_LIST_URL',
+        'SSAFY_MENTORING_NOTICE_LIST_URL',
+    ):
+        env_value = os.getenv(env_name, '').strip()
+        if env_value:
+            parsed = urlparse(env_value)
+            if parsed.scheme and parsed.netloc:
+                return f'{parsed.scheme}://{parsed.netloc}'
+    return ''
 
 
 def _safe_count(counter):
