@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'apps.risk',
     'sync',
     'schedules',
+    'dashboard',
     'common',
 
 ]
