@@ -15,6 +15,7 @@ from schedules.services import (
 from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
+from sync.services.notice_policy import HIDDEN_USER_NOTICE_SOURCE_TYPES
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 from sync.services.schedule_identity import (
     choose_representative_title,
@@ -535,8 +536,15 @@ ALLOWED_SOURCE_TYPES = {
     'notice',
     'academic_rule',
     'mentoring_notice',
+    'mentor_story',
+    'geeknews',
+    'external_article',
+    'article',
+    'blog',
     'curriculum',
     'learning_material',
+    'resource',
+    'reference',
     'faq',
     'quest',
     'event',
@@ -546,12 +554,16 @@ PLACEHOLDER_TITLES = {
     '',
     'SSAFY document',
     'SSAFY',
+    '게시물 목록',
     '공지사항 상세',
     '게시물 상세',
+    '멘토 스토리 상세',
     '상세',
     '목록',
 }
 MENU_TEXT_KEYWORDS = {'HOME', 'Copyright', '메뉴', '목록', '로그인'}
+TITLE_FALLBACK_KEYS = ('notice_title', 'original_title', 'list_title', 'title', 'subject', 'article_title', 'board_title')
+URL_FALLBACK_KEYS = ('source_url', 'detail_url', 'original_url', 'url', 'link', 'href')
 EVALUATION_NOTICE_KEYWORDS = ('과목월말평가', '과목 평가', '월말평가', '평가 안내', '1학기 평가')
 
 EVALUATION_NOTICE_KEYWORDS = EVALUATION_NOTICE_KEYWORDS + (
@@ -573,7 +585,8 @@ def _normalize_import_item(item):
         metadata['original_source_type'] = source_type
         source_type = 'notice'
 
-    title = str(prepared.get('title') or '').strip()
+    title = _import_item_title(prepared, metadata)
+    source_url = _import_item_source_url(prepared, metadata)
     raw_text = str(prepared.get('raw_text') or '').strip()
     raw_html = str(prepared.get('raw_html') or '').strip()
     if _is_evaluation_notice(title, raw_text, raw_html, metadata):
@@ -586,12 +599,13 @@ def _normalize_import_item(item):
         )
     else:
         exclude_reason = _non_document_reason(title, raw_text, raw_html)
-        if exclude_reason:
+        if exclude_reason and not _should_preserve_hidden_reference_source(source_type, source_url):
             return None, _excluded_debug(source_type, prepared, title, raw_text, raw_html, metadata, exclude_reason)
         metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
     prepared.update(
         {
             'source_type': source_type,
+            'source_url': source_url,
             'title': title,
             'raw_text': raw_text,
             'raw_html': raw_html,
@@ -599,6 +613,44 @@ def _normalize_import_item(item):
         }
     )
     return prepared, None
+
+
+def _import_item_title(prepared, metadata):
+    title = str(prepared.get('title') or '').strip()
+    if title and title not in PLACEHOLDER_TITLES and not title.endswith('상세'):
+        return title
+    for source in _import_metadata_sources(metadata):
+        for key in TITLE_FALLBACK_KEYS:
+            candidate = str((source or {}).get(key) or '').strip()
+            if candidate and candidate not in PLACEHOLDER_TITLES and not candidate.endswith('상세'):
+                return candidate
+    return title
+
+
+def _import_item_source_url(prepared, metadata):
+    source_url = str(prepared.get('source_url') or '').strip()
+    if source_url:
+        return source_url
+    for source in _import_metadata_sources(metadata):
+        for key in URL_FALLBACK_KEYS:
+            candidate = str((source or {}).get(key) or '').strip()
+            if candidate:
+                return candidate
+    return ''
+
+
+def _should_preserve_hidden_reference_source(source_type, source_url):
+    return source_type in HIDDEN_USER_NOTICE_SOURCE_TYPES and bool(source_url)
+
+
+def _import_metadata_sources(metadata):
+    if not isinstance(metadata, dict):
+        return []
+    return [
+        metadata,
+        metadata.get('raw_json') if isinstance(metadata.get('raw_json'), dict) else {},
+        metadata.get('metadata_json') if isinstance(metadata.get('metadata_json'), dict) else {},
+    ]
 
 
 def _is_non_document_item(title, raw_text, raw_html):
