@@ -16,5 +16,7 @@ class ScheduleEventListView(APIView):
             user=request.user,
             start=request.query_params.get('start'),
             end=request.query_params.get('end'),
+            track=request.query_params.get('track'),
+            event_type=request.query_params.get('event_type'),
         )
         return success_response(ScheduleEventSerializer(events, many=True).data)
