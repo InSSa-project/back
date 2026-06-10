@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -47,6 +47,10 @@ class ScheduleDisplayTitleTests(TestCase):
                 self.assertFalse(is_meaningless_schedule_title(title))
 
 
+@override_settings(
+    SECURE_SSL_REDIRECT=False,
+    CORS_ALLOWED_ORIGINS=['http://localhost:5173', 'http://127.0.0.1:5173'],
+)
 class ScheduleEventApiTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(
