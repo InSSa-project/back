@@ -15,6 +15,8 @@ from sync.services.calendar_quality import (
     format_daily_counts,
     format_empty_weekdays,
     format_suspicious_events,
+    is_generated_event,
+    is_manual_event,
     parse_month_option,
 )
 from sync.services.reparse_service import reparse_raw_data_to_events
@@ -66,8 +68,9 @@ class Command(BaseCommand):
             f'schedule_{year}_{month:02d}_count='
             f'{ScheduleEvent.objects.filter(start_at__lt=end_at, end_at__gt=start_at).count()}'
         )
-        self.stdout.write(f'generated_schedule_count={ScheduleEvent.objects.filter(raw_data__isnull=False).count()}')
-        self.stdout.write(f'manual_schedule_count={ScheduleEvent.objects.filter(raw_data__isnull=True).count()}')
+        all_events = list(ScheduleEvent.objects.all().only('raw_data_id', 'event_type', 'metadata_json'))
+        self.stdout.write(f'generated_schedule_count={sum(1 for event in all_events if is_generated_event(event))}')
+        self.stdout.write(f'manual_schedule_count={sum(1 for event in all_events if is_manual_event(event))}')
         self.stdout.write(f'monthly_schedule_counts={_monthly_schedule_counts()}')
         self.stdout.write(f'raw_total={RawSsafyData.objects.count()}')
         self.stdout.write(f'raw_source_type_counts={_source_type_counts()}')
@@ -234,8 +237,12 @@ def _source_mismatches(events):
     for event in events:
         metadata = event.metadata_json or {}
         if not event.raw_data_id:
-            if metadata.get('raw_data_id') and not RawSsafyData.objects.filter(pk=metadata.get('raw_data_id')).exists():
-                mismatches.append(f'id={event.id}:missing_raw_data_id={metadata.get("raw_data_id")}')
+            metadata_raw_data_id = metadata.get('raw_data_id')
+            if metadata_raw_data_id:
+                if RawSsafyData.objects.filter(pk=metadata_raw_data_id).exists():
+                    mismatches.append(f'id={event.id}:unlinked_raw_data_id={metadata_raw_data_id}')
+                else:
+                    mismatches.append(f'id={event.id}:stale_raw_data_id={metadata_raw_data_id}')
             continue
 
         raw_data = event.raw_data
@@ -395,7 +402,7 @@ def _print_event_source_mapping(stdout, event_id):
 def _event_source_url(event):
     if event.raw_data_id and event.raw_data:
         return event.raw_data.source_url
-    return ''
+    return (event.metadata_json or {}).get('source_url') or ''
 
 
 def _safe(value):
