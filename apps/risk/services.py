@@ -108,6 +108,8 @@ class RiskService:
             if self._is_routine_public_event(event):
                 continue
             classified = self._classify_event(event)
+            if classified['type'] == 'official' and event.event_type == 'notice':
+                continue
             urgency = self._urgency(event.start_at)
             score = classified['score'] + urgency['score']
             if score < 55:
@@ -121,6 +123,8 @@ class RiskService:
             if self._is_routine_public_event(event):
                 continue
             classified = self._classify_event(event)
+            if classified['type'] == 'official' and event.event_type == 'notice':
+                continue
             urgency = self._urgency(event.start_at)
             score = classified['score'] + urgency['score']
             payload = self._event_payload(event, classified, urgency, score)
