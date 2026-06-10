@@ -144,26 +144,51 @@ class ScheduleRetrievalService:
         return sum(1 for token in tokens if token in text)
 
     def _query_tokens(self, query: str) -> list[str]:
-        tokens = re.findall(r'[\w가-힣]+', query.lower())
+        normalized = re.sub(r'\s+', ' ', (query or '').lower()).strip()
+        tokens = re.findall(r'[\w\uac00-\ud7a3]+', normalized)
         ignored = {
-            '일정', '알려줘', '알려', '개인', '내', '오늘', '내일', '어제',
-            '이번', '이번주', '이번달', '다음', '다음주', '다음달',
-            '가까운', '다가오는', '예정된', '예정인', '앞으로', '곧',
-            '가장', '제일', '큰', '주요', '중요', '뭐', '뭐야', '뭐니',
-            '뭐있니', '뭐있어', '있니', '있어', '있는지', 'ssafy',
+            '\uc77c\uc815', '\uc2a4\ucf00\uc904', '\uc54c\ub824\uc918', '\uc54c\ub824', '\uac1c\uc778', '\ub0b4',
+            '\uc624\ub298', '\ub0b4\uc77c', '\uc5b4\uc81c', '\uc774\ubc88', '\uc774\ubc88\uc8fc', '\uc774\ubc88\ub2ec', '\uc774\ubc88\uc6d4',
+            '\ub2e4\uc74c', '\ub2e4\uc74c\uc8fc', '\ub2e4\uc74c\ub2ec', '\uc800\ubc88', '\uc800\ubc88\uc8fc', '\uc800\ubc88\ub2ec',
+            '\uc9c0\ub09c', '\uc9c0\ub09c\uc8fc', '\uc9c0\ub09c\ub2ec', '\uc800\uc800\ubc88\ub2ec', '\uac00\uae4c\uc6b4',
+            '\ub2e4\uac00\uc624\ub294', '\uc608\uc815\ub41c', '\uc608\uc815\uc778', '\uc55e\uc73c\ub85c', '\uace7', '\ub2e4\uc74c\uc73c\ub85c',
+            '\uac00\uc7a5', '\uc81c\uc77c', '\ubb50', '\ubb50\uc57c', '\ubb50\ub2c8', '\ubb50\uc788\uc5b4', '\ubb50\uc788\ub2c8',
+            '\uc788\ub294\uc9c0', '\uc788\uc5b4', '\uc788\ub2c8', '\uc788\ub098\uc694', '\uc788\uc744\uae4c', '\ud655\uc778', '\ud655\uc778\ud574\uc918',
+            '\ucc3e\uc544\uc918', '\ubcf4\uc5ec\uc918', '\ubcf4\uc5ec', '\uc870\ud68c', '\uc870\ud68c\ud574\uc918', '\uc694\uc57d', '\uc694\uc57d\ud574\uc918',
+            '\uc815\ub9ac', '\uc815\ub9ac\ud574\uc918', '\ub9d0\ud574\uc918', '\uc124\uba85\ud574\uc918', '\uc54c\uace0\uc2f6\uc5b4', '\uad81\uae08\ud574', 'ssafy',
         }
-        filtered = [
-            token
-            for token in tokens
-            if len(token) >= 2
-            and token not in ignored
-            and not re.fullmatch(r'\d+(?:년|월|일)?', token)
-        ]
+        suffixes = ('\ud574\uc918', '\ud574', '\uc918', '\uc694')
+        filtered = []
+        for token in tokens:
+            if len(token) < 2:
+                continue
+            if token in ignored:
+                continue
+            stripped = self._strip_query_suffix(token, suffixes)
+            if not stripped or stripped in ignored or len(stripped) < 2:
+                continue
+            if re.fullmatch(r'\d+(?:\ub144|\uc6d4|\uc77c|\ud68c|\ucc28)?', stripped):
+                continue
+            filtered.append(stripped)
         synonyms = {
-            '시험': ['시험', '평가', '과목평가', '월말평가', 'exam'],
-            '평가': ['평가', '과목평가', '월말평가', '시험', 'exam'],
+            '\uc2dc\ud5d8': ['\uc2dc\ud5d8', '\ud3c9\uac00', '\uacfc\ubaa9\ud3c9\uac00', '\uc6d4\ub9d0\ud3c9\uac00', 'exam'],
+            '\ud3c9\uac00': ['\ud3c9\uac00', '\uacfc\ubaa9\ud3c9\uac00', '\uc6d4\ub9d0\ud3c9\uac00', '\uc2dc\ud5d8', 'exam'],
+            '\uacfc\ubaa9\ud3c9\uac00': ['\uacfc\ubaa9\ud3c9\uac00', '\ud3c9\uac00', '\uc2dc\ud5d8', 'exam'],
+            '\uc6d4\ub9d0\ud3c9\uac00': ['\uc6d4\ub9d0\ud3c9\uac00', '\ud3c9\uac00', '\uc2dc\ud5d8', 'exam'],
         }
         expanded = []
         for token in filtered:
             expanded.extend(synonyms.get(token, [token]))
         return list(dict.fromkeys(expanded))
+
+    def _strip_query_suffix(self, token: str, suffixes: tuple[str, ...]) -> str:
+        current = token
+        changed = True
+        while changed:
+            changed = False
+            for suffix in suffixes:
+                if current.endswith(suffix) and len(current) > len(suffix) + 1:
+                    current = current[: -len(suffix)]
+                    changed = True
+                    break
+        return current
