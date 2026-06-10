@@ -1578,7 +1578,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(detail_mock.call_count, 2)
         self.assertTrue(any('reason=recent_limit' in message for message in get_last_collection_debug()))
 
-    def test_collect_authenticated_list_skips_existing_item_before_detail(self):
+    def test_collect_authenticated_list_does_not_query_db_before_detail(self):
         RawSsafyData.objects.create(
             source_type='notice',
             source_url='https://example.com/detail/1',
@@ -1591,7 +1591,10 @@ class SampleNoticeImportTests(TestCase):
 
         with patch(
             'sync.services.ssafy_crawler.fetch_authenticated_detail',
-            return_value=_source_item('notice', 'https://example.com/detail/2', 'New notice', 'detail-2'),
+            side_effect=[
+                _source_item('notice', 'https://example.com/detail/1', 'Existing notice', 'detail-1'),
+                _source_item('notice', 'https://example.com/detail/2', 'New notice', 'detail-2'),
+            ],
         ) as detail_mock:
             items = _collect_authenticated_list(
                 page=page,
@@ -1603,12 +1606,12 @@ class SampleNoticeImportTests(TestCase):
                 ],
             )
 
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]['source_url'], 'https://example.com/detail/2')
-        self.assertEqual(detail_mock.call_count, 1)
+        self.assertEqual(len(items), 2)
+        self.assertEqual([item['source_url'] for item in items], ['https://example.com/detail/1', 'https://example.com/detail/2'])
+        self.assertEqual(detail_mock.call_count, 2)
         debug_messages = get_last_collection_debug()
-        self.assertTrue(any(message.startswith('skipped_before_detail ') for message in debug_messages))
-        self.assertTrue(any('skipped_before_detail=1' in message for message in debug_messages))
+        self.assertFalse(any(message.startswith('skipped_before_detail ') for message in debug_messages))
+        self.assertTrue(any('skipped_before_detail=0' in message for message in debug_messages))
 
     def test_authenticated_documents_continue_after_source_page_failure(self):
         fake_env = {
@@ -2214,6 +2217,14 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(seen['sources'], 'notice')
         self.assertIn('fetched_by_source=notice:1', output.getvalue())
         self.assertIn('no_changes=true', output.getvalue())
+
+    def test_scheduled_crawl_sources_alias_filters_sources(self):
+        from sync.management.commands.scheduled_ssafy_crawl import Command
+
+        parser = Command().create_parser('manage.py', 'scheduled_ssafy_crawl')
+        options = parser.parse_args(['--sources', 'notice'])
+
+        self.assertEqual(options.source, 'notice')
 
     def test_scheduled_crawl_failure_creates_failed_job_log(self):
         output = StringIO()

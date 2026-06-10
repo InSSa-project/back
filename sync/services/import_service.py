@@ -15,6 +15,7 @@ from schedules.services import (
 from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
+from sync.services.notice_policy import HIDDEN_USER_NOTICE_SOURCE_TYPES
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 from sync.services.schedule_identity import (
     choose_representative_title,
@@ -535,8 +536,15 @@ ALLOWED_SOURCE_TYPES = {
     'notice',
     'academic_rule',
     'mentoring_notice',
+    'mentor_story',
+    'geeknews',
+    'external_article',
+    'article',
+    'blog',
     'curriculum',
     'learning_material',
+    'resource',
+    'reference',
     'faq',
     'quest',
     'event',
@@ -591,7 +599,7 @@ def _normalize_import_item(item):
         )
     else:
         exclude_reason = _non_document_reason(title, raw_text, raw_html)
-        if exclude_reason:
+        if exclude_reason and not _should_preserve_hidden_reference_source(source_type, source_url):
             return None, _excluded_debug(source_type, prepared, title, raw_text, raw_html, metadata, exclude_reason)
         metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
     prepared.update(
@@ -629,6 +637,10 @@ def _import_item_source_url(prepared, metadata):
             if candidate:
                 return candidate
     return ''
+
+
+def _should_preserve_hidden_reference_source(source_type, source_url):
+    return source_type in HIDDEN_USER_NOTICE_SOURCE_TYPES and bool(source_url)
 
 
 def _import_metadata_sources(metadata):

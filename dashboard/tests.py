@@ -67,6 +67,17 @@ class HomeDashboardApiTests(TestCase):
         self.assertEqual(notice_card['count'], 0)
         self.assertEqual(notice_card['value'], '새 공지 없음')
 
+    def test_home_dashboard_focus_and_upcoming_use_rawless_schedule_events(self):
+        event = self._event('Raw 없는 일정', 1, event_type='exam')
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(RawSsafyData.objects.count(), 0)
+        payload = response.json()
+        self.assertEqual(payload['focus']['source_event_id'], event.id)
+        self.assertEqual([item['id'] for item in payload['upcoming_schedules']], [event.id])
+
     def test_closest_future_deadline_is_selected_as_focus(self):
         later_event = self._event('나중 시작 일정', 2, event_type='exam')
         deadline_event = self._event(
@@ -276,17 +287,17 @@ class HomeDashboardApiTests(TestCase):
 
     def test_recent_notice_keeps_duplicate_titles_as_separate_rows(self):
         first = RawSsafyData.objects.create(
-            source_type='mentoring_notice',
+            source_type='notice',
             title='멘토 스토리 상세',
             raw_text='본문',
-            source_url='https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=1',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=1',
             collected_at=self.now,
         )
         second = RawSsafyData.objects.create(
-            source_type='mentoring_notice',
+            source_type='notice',
             title='멘토 스토리 상세',
             raw_text='본문',
-            source_url='https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=2',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=2',
             collected_at=self.now + timedelta(minutes=1),
         )
 
@@ -349,7 +360,7 @@ class HomeDashboardApiTests(TestCase):
             'https://edu.ssafy.com/edu/board/notice/detail.do?brdItmSeq=20',
         )
 
-    def test_recent_notice_uses_raw_text_title_for_generic_mentoring_title(self):
+    def test_recent_notices_exclude_mentoring_story_rows(self):
         RawSsafyData.objects.create(
             source_type='mentoring_notice',
             title='멘토 스토리 상세',
@@ -361,9 +372,7 @@ class HomeDashboardApiTests(TestCase):
         response = self._get()
 
         self.assertEqual(response.status_code, 200)
-        notice = response.json()['recent_notices'][0]
-        self.assertEqual(notice['title'], 'Geeknews 를 소개합니다.')
-        self.assertEqual(notice['source_url'], 'https://edu.ssafy.com/edu/board/mentoState/detail.do?brdItmSeq=58923')
+        self.assertEqual(response.json()['recent_notices'], [])
 
     def test_recent_notices_exclude_academic_rule_list_rows(self):
         RawSsafyData.objects.create(

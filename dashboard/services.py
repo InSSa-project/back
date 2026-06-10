@@ -11,13 +11,12 @@ from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import normalize_schedule_display_title
 from sync.models import RawSsafyData
-from sync.services.notice_normalizer import SOURCE_TYPES
+from sync.services.notice_policy import notice_source_url, notice_title, user_visible_notice_queryset
 
 
 UPCOMING_LIMIT = 3
 NOTICE_LIMIT = 3
 EVENT_SCAN_LIMIT = 50
-RECENT_NOTICE_SOURCE_TYPES = {'notice', 'mentoring_notice'}
 GENERIC_NOTICE_TITLES = {
     '게시물 목록',
     '게시물 상세',
@@ -152,7 +151,7 @@ def _today_event_count(user, now):
 
 def _new_notice_count(now):
     since = now - timedelta(days=7)
-    return RawSsafyData.objects.filter(source_type__in=SOURCE_TYPES, collected_at__gte=since).count()
+    return user_visible_notice_queryset(RawSsafyData.objects.all()).filter(collected_at__gte=since).count()
 
 
 def _unread_notice_count(user, now, fallback_count=None):
@@ -163,7 +162,7 @@ def _unread_notice_count(user, now, fallback_count=None):
 def _recent_notices():
     try:
         return list(
-            RawSsafyData.objects.filter(source_type__in=RECENT_NOTICE_SOURCE_TYPES)
+            user_visible_notice_queryset(RawSsafyData.objects.all())
             .only('id', 'title', 'source_type', 'source_url', 'metadata_json', 'raw_text', 'collected_at')
             .order_by('-collected_at', '-id')[:NOTICE_LIMIT]
         )
@@ -207,10 +206,10 @@ def _serialize_notice(raw_data):
     collected_at = timezone.localtime(raw_data.collected_at)
     return {
         'id': raw_data.id,
-        'title': _notice_title(raw_data),
+        'title': notice_title(raw_data),
         'date': collected_at.strftime('%Y.%m.%d'),
         'source_type': raw_data.source_type,
-        'source_url': _notice_source_url(raw_data),
+        'source_url': notice_source_url(raw_data),
     }
 
 
