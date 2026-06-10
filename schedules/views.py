@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 
 import json
 
@@ -70,6 +70,9 @@ OTHER_EVENT_TYPES = {
     'lecture',
     'deadline',
     'notice',
+    'generated',
+    'evaluation',
+    'learning',
     'mentoring',
     'unknown',
     'other',
@@ -102,15 +105,12 @@ def event_list(request):
         events = events.filter(Q(owner__isnull=True) | Q(owner=user))
     else:
         events = events.filter(owner__isnull=True)
-    if start_at:
-        events = events.filter(end_at__gte=start_at)
-    if end_at:
-        events = events.filter(start_at__lte=end_at)
     event_type = request.GET.get('event_type')
     if event_type:
         events = _filter_queryset_by_event_type(events, event_type)
     events = filter_events_for_user_profile(list(events), _user_profile(request.user))
     events = _filter_events_by_audience_params(events, request.GET)
+    events = [event for event in events if _event_occurs_in_range(event, start_at, end_at)]
     events = [event for event in events if not _is_hidden_meaningless_event(event)]
 
     events = sorted(events, key=_event_list_sort_key)
@@ -180,7 +180,9 @@ def _create_event(request, user):
     if payload.get('track') is not None:
         metadata_json['track'] = payload['track']
     metadata_json['is_global'] = False
-    metadata_json['is_important'] = bool(payload.get('is_important', metadata_json.get('is_important', False)))
+    metadata_json['is_important'] = _parse_bool(
+        payload.get('is_important', metadata_json.get('is_important', False))
+    )
     if payload.get('deadline_at'):
         deadline_at = _parse_patch_datetime(payload['deadline_at'])
         if deadline_at is None:
@@ -243,6 +245,14 @@ def event_detail(request, event_id):
             return JsonResponse({'detail': f'Invalid datetime format: {field}'}, status=400)
         parsed_datetimes[field] = parsed_value
 
+    if 'event_type' in payload and payload['event_type'] not in ALLOWED_EVENT_TYPES:
+        return JsonResponse({'detail': f'Unsupported event_type: {payload["event_type"]}'}, status=400)
+
+    effective_start_at = parsed_datetimes.get('start_at', event.start_at)
+    effective_end_at = parsed_datetimes.get('end_at', event.end_at)
+    if effective_end_at < effective_start_at:
+        return JsonResponse({'detail': 'End time must be after start time.'}, status=400)
+
     for field in ['title', 'description', 'is_all_day', 'event_type']:
         if field in payload:
             setattr(event, field, payload[field])
@@ -254,7 +264,7 @@ def event_detail(request, event_id):
             return JsonResponse({'detail': 'metadata_json must be an object.'}, status=400)
         metadata_json = dict(metadata_json)
         if 'is_important' in payload:
-            metadata_json['is_important'] = bool(payload.get('is_important'))
+            metadata_json['is_important'] = _parse_bool(payload.get('is_important'))
         event.metadata_json = metadata_json
         payload['metadata_json'] = metadata_json
         payload.pop('metadata', None)
@@ -313,20 +323,23 @@ def _parse_boundary(value, is_end):
     if not value:
         return None
 
+    parsed_date = parse_date(value)
+    if parsed_date and 'T' not in value and ' ' not in value:
+        boundary_time = time.max if is_end else time.min
+        boundary = datetime.combine(parsed_date, boundary_time)
+        return timezone.make_aware(boundary, timezone.get_current_timezone())
+
     parsed_datetime = parse_datetime(value)
     if parsed_datetime:
         if timezone.is_naive(parsed_datetime):
             return timezone.make_aware(parsed_datetime, timezone.get_current_timezone())
         return parsed_datetime
 
-    parsed_date = parse_date(value)
     if not parsed_date:
         return None
 
     boundary_time = time.max if is_end else time.min
     boundary = datetime.combine(parsed_date, boundary_time)
-    if is_end:
-        boundary = boundary + timedelta(microseconds=1)
     return timezone.make_aware(boundary, timezone.get_current_timezone())
 
 
@@ -349,6 +362,48 @@ def _parse_patch_datetime(value):
     return parsed_datetime
 
 
+def _parse_metadata_datetime(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parsed_datetime = _parse_patch_datetime(value)
+    if parsed_datetime:
+        return parsed_datetime
+    parsed_date = parse_date(value)
+    if not parsed_date:
+        return None
+    return timezone.make_aware(datetime.combine(parsed_date, time.min), timezone.get_current_timezone())
+
+
+def _parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+    return bool(value)
+
+
+def _event_occurs_in_range(event, range_start, range_end):
+    if range_start is None and range_end is None:
+        return True
+
+    event_start = event.start_at
+    event_end = event.end_at
+    if event_start and event_end:
+        starts_before_range_end = range_end is None or event_start <= range_end
+        ends_after_range_start = range_start is None or event_end >= range_start
+        if starts_before_range_end and ends_after_range_start:
+            return True
+
+    deadline_at = _event_deadline_at(event.metadata_json or {})
+    if deadline_at is None:
+        return False
+    if range_start is not None and deadline_at < range_start:
+        return False
+    if range_end is not None and deadline_at > range_end:
+        return False
+    return True
+
+
 def _serialize_event(event):
     start_at = timezone.localtime(event.start_at)
     end_at = timezone.localtime(event.end_at)
@@ -356,6 +411,8 @@ def _serialize_event(event):
     raw_data = _event_raw_data(event, metadata)
     raw_data_id = raw_data.id if raw_data else (metadata.get('raw_data_id') or None)
     source_title = raw_data.title if raw_data else metadata.get('source_title')
+    source_url = raw_data.source_url if raw_data else metadata.get('source_url')
+    deadline_at = _event_deadline_at(metadata)
     is_common = _is_common_event(event, metadata)
     track_key = COMMON_TRACK_KEY if is_common else _event_track(metadata, metadata.get('audience') or {})
     return {
@@ -363,6 +420,7 @@ def _serialize_event(event):
         'title': event.title,
         'display_title': _event_display_title(event, metadata),
         'description': event.description,
+        'deadline_at': timezone.localtime(deadline_at).isoformat() if deadline_at else None,
         'start_at': start_at.isoformat(),
         'end_at': end_at.isoformat(),
         'is_all_day': event.is_all_day,
@@ -373,11 +431,13 @@ def _serialize_event(event):
         'metadata': metadata,
         'metadata_json': metadata,
         'audience': metadata.get('audience', {}),
-        'source_url': raw_data.source_url if raw_data else None,
+        'source_url': source_url,
         'source_title': source_title,
         'track': track_key,
         'track_key': track_key,
         'is_common': is_common,
+        'is_global': _is_global_event(event, metadata),
+        'is_generated': _is_generated_event(event, metadata, raw_data_id),
         'owner_id': event.owner_id,
         'created_by_id': event.owner_id,
     }
@@ -408,6 +468,27 @@ def _event_list_sort_key(event):
 
 def _is_important_event(event):
     return bool((event.metadata_json or {}).get('is_important', False))
+
+
+def _event_deadline_at(metadata):
+    return _parse_metadata_datetime(
+        metadata.get('deadline_at')
+        or metadata.get('deadline')
+        or metadata.get('due_at')
+        or metadata.get('due_date')
+    )
+
+
+def _is_global_event(event, metadata):
+    if metadata.get('is_global') is not None:
+        return bool(metadata.get('is_global'))
+    return event.owner_id is None
+
+
+def _is_generated_event(event, metadata, raw_data_id=None):
+    if metadata.get('is_generated') is not None:
+        return bool(metadata.get('is_generated'))
+    return bool(raw_data_id or event.raw_data_id or event.event_type == 'generated' or event.source_type in {'notice', 'ssafy', 'learning', 'evaluation'})
 
 
 def _user_profile(user):
@@ -481,8 +562,6 @@ def _is_common_event(event, metadata):
     if metadata.get('is_common') is True:
         return True
     if _is_common_track(track):
-        return True
-    if metadata.get('is_global') is True or getattr(event, 'is_global', False) is True:
         return True
     title = str(getattr(event, 'title', '') or metadata.get('title') or metadata.get('source_title') or '')
     return any(keyword in title for keyword in COMMON_TITLE_KEYWORDS)
