@@ -65,7 +65,7 @@ class ScheduleRecommendationService:
             }
         return weakness_map
 
-    def calculate_recommendation_score(self, event, weakness_map, summary_map):
+    def calculate_recommendation_score(self, event, weakness_map, summary_map, now=None):
         if self._is_routine_public_event(event):
             return {'recommendation_score': 0}
 

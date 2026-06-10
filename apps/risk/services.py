@@ -116,21 +116,12 @@ class RiskService:
         owner_filter = Q(owner__isnull=True)
         if getattr(user, 'is_authenticated', False):
             owner_filter |= Q(owner=user)
-        return (
-            ScheduleEvent.objects.filter(start_at__gte=now, start_at__lte=end_at)
-            .filter(owner_filter)
-            .exclude(legacy_unowned_personal)
-            .only('id', 'owner_id', 'title', 'start_at', 'end_at', 'event_type', 'source_type', 'metadata_json')
-
-    def _visible_events(self, user, until_days):
-        now = timezone.now()
-        end_at = now + timedelta(days=until_days)
-        legacy_unowned_personal = Q(owner__isnull=True, raw_data__isnull=True, source_type='manual', event_type='personal')
         events = (
             ScheduleEvent.objects.filter(end_at__gte=now, start_at__lte=end_at)
-            .filter(Q(owner__isnull=True) | Q(owner=user))
+            .filter(owner_filter)
             .exclude(legacy_unowned_personal)
             .exclude(event_type='holiday')
+            .only('id', 'owner_id', 'title', 'start_at', 'end_at', 'event_type', 'source_type', 'metadata_json')
             .order_by('start_at', 'id')
         )
         return [event for event in events if not self._is_hidden_meaningless_event(event)]
