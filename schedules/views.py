@@ -74,6 +74,7 @@ OTHER_EVENT_TYPES = {
     'unknown',
     'other',
     'etc',
+    '기타',
 }
 ALLOWED_EVENT_TYPES = OTHER_EVENT_TYPES | {
     'exam',
