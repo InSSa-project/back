@@ -1049,6 +1049,35 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/actual')
         self.assertEqual(payload['source_title'], 'Actual source notice')
 
+    def test_source_fields_fall_back_to_metadata_when_raw_data_row_is_missing(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Stale metadata generated event',
+            description='description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='study',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': 999999,
+                'source_url': 'https://edu.ssafy.com/notices/stale',
+                'source_title': 'Stale source notice',
+            },
+        )
+
+        response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-06-10', 'end': '2026-06-10'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()[0]
+        self.assertTrue(payload['is_generated'])
+        self.assertEqual(payload['raw_data_id'], 999999)
+        self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/stale')
+        self.assertEqual(payload['source_title'], 'Stale source notice')
+
     def test_imported_events_store_audience_metadata_from_raw_data(self):
         run_sample_notice_import()
 
