@@ -13,6 +13,7 @@ from django.utils import timezone
 from ai_server.core.config import get_settings
 from apps.ai.models import AiDocument
 from apps.users.jwt.service import JwtService
+from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
@@ -353,6 +354,62 @@ class ScheduleEventApiTests(TestCase):
         self.assertTrue(payload[0]['is_generated'])
         self.assertTrue(payload[0]['is_global'])
         self.assertFalse(payload[0]['is_important'])
+
+    def test_authenticated_profile_mismatch_does_not_hide_public_generated_events(self):
+        UserProfile.objects.create(
+            user=self.user,
+            track='Python',
+            generation=12,
+            campus='서울',
+            class_number=17,
+        )
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/generated-profile',
+            title='Generated source title',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Public generated event for another audience',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_url': raw_data.source_url,
+                'source_title': raw_data.title,
+                'audience': {
+                    'track': 'Java',
+                    'track_key': 'java_major',
+                    'generation': 15,
+                    'campus': '대전',
+                    'class_number': 1,
+                },
+                'track_key': 'java_major',
+                'is_common': False,
+            },
+        )
+        ScheduleEvent.objects.create(
+            owner=self.other_user,
+            title='Other user private event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-04-26', 'end': '2026-06-06'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        titles = [item['title'] for item in response.json()]
+        self.assertIn('Public generated event for another audience', titles)
+        self.assertNotIn('Other user private event', titles)
 
     def test_event_list_includes_event_when_only_deadline_is_in_range(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))

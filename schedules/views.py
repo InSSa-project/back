@@ -13,7 +13,6 @@ from rest_framework.exceptions import AuthenticationFailed
 
 from .models import ScheduleEvent
 from apps.users.authentication import JwtAuthentication
-from .services import filter_events_for_user_profile
 from sync.models import RawSsafyData
 from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
@@ -108,7 +107,7 @@ def event_list(request):
     event_type = request.GET.get('event_type')
     if event_type:
         events = _filter_queryset_by_event_type(events, event_type)
-    events = filter_events_for_user_profile(list(events), _user_profile(request.user))
+    events = list(events)
     events = _filter_events_by_audience_params(events, request.GET)
     events = [event for event in events if _event_occurs_in_range(event, start_at, end_at)]
     events = [event for event in events if not _is_hidden_meaningless_event(event)]
@@ -489,12 +488,6 @@ def _is_generated_event(event, metadata, raw_data_id=None):
     if metadata.get('is_generated') is not None:
         return bool(metadata.get('is_generated'))
     return bool(raw_data_id or event.raw_data_id or event.event_type == 'generated' or event.source_type in {'notice', 'ssafy', 'learning', 'evaluation'})
-
-
-def _user_profile(user):
-    if not getattr(user, 'is_authenticated', False):
-        return None
-    return getattr(user, 'profile', None) or getattr(user, 'userprofile', None) or user
 
 
 def _filter_events_by_audience_params(events, params):
