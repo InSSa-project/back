@@ -579,31 +579,46 @@ class PersonalContextChatPipelineTests(TestCase):
         self.assertIn('status_details', sent_context)
         self.assertIn('evaluation_summary', sent_context)
 
-    def test_recent_important_schedule_uses_private_dashboard_context(self):
-        now = timezone.now()
+    def test_recent_important_schedule_uses_schedule_db_important_filter(self):
+        start_date, _end_date, _exact = self.pipeline.schedule_query_parser.date_extractor.future_range(30)
+        starts_at = timezone.make_aware(timezone.datetime.fromisoformat(start_date)) + timedelta(days=1)
         own = ScheduleEvent.objects.create(
             owner=self.user_a,
-            title='A 중요 개인 일정',
-            start_at=now + timedelta(days=1),
-            end_at=now + timedelta(days=1, hours=1),
+            title='\uc911\uc694 \uac1c\uc778 \uc77c\uc815',
+            start_at=starts_at,
+            end_at=starts_at + timedelta(hours=1),
             event_type='personal',
             source_type='manual',
+            metadata_json={'is_important': True},
         )
         ScheduleEvent.objects.create(
             owner=self.user_b,
-            title='B 비밀 중요 일정',
-            start_at=now + timedelta(days=1),
-            end_at=now + timedelta(days=1, hours=1),
+            title='\uc228\uae40 \uc911\uc694 \uc77c\uc815',
+            start_at=starts_at,
+            end_at=starts_at + timedelta(hours=1),
             event_type='personal',
             source_type='manual',
+            metadata_json={'is_important': True},
+        )
+        ScheduleEvent.objects.create(
+            owner=self.user_a,
+            title='\uc77c\ubc18 \uac1c\uc778 \uc77c\uc815',
+            start_at=starts_at,
+            end_at=starts_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+            metadata_json={'is_important': False},
         )
 
-        response = self._ask(self.user_a, '최근 중요일정 보여줘')
-        sent_context = self.llm.messages[-1][1]['content']
+        response = self._ask(self.user_a, '\ucd5c\uadfc \uc911\uc694\uc77c\uc815 \ubcf4\uc5ec\uc918')
 
-        self.assertEqual(response.query_type, DomainIntent.IMPORTANT_SCHEDULE)
-        self.assertIn(own.title, sent_context)
-        self.assertNotIn('B 비밀 중요 일정', sent_context)
+        self.assertEqual(response.query_type, 'SCHEDULE_RANGE')
+        self.assertEqual(response.answer_policy, 'SERVER_VERIFIED_SCHEDULE_DB_DIRECT')
+        self.assertIn('important', response.usage['constraint_include_filters'])
+        self.assertIn(own.title, response.answer)
+        self.assertNotIn('\uc228\uae40 \uc911\uc694 \uc77c\uc815', response.answer)
+        self.assertNotIn('\uc77c\ubc18 \uac1c\uc778 \uc77c\uc815', response.answer)
+        self.assertEqual(self.llm.messages, [])
 
     def test_recommendation_question_uses_recommended_schedule_context(self):
         now = timezone.now()
