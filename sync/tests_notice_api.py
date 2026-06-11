@@ -63,6 +63,24 @@ class NoticeApiTests(TestCase):
         self.assertIn('Important body text', summary)
         self.assertNotIn('<p>', summary)
 
+    def test_notice_summary_endpoint_returns_rule_based_summary(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Summary notice',
+            raw_text='Summary notice body with enough details for a frontend summary response.',
+            source_url='https://example.com/notices/summary',
+        )
+
+        response = self.client.get(reverse('notice-summary', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn('summary', payload)
+        self.assertEqual(payload['source_title'], 'Summary notice')
+        self.assertEqual(payload['source_url'], 'https://example.com/notices/summary')
+        self.assertFalse(payload['is_ai_generated'])
+        self.assertEqual(payload['summary_type'], 'rule_based')
+
     def test_notice_summary_uses_ai_document_when_no_body_text(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='AI document notice')
         AiDocument.objects.create(

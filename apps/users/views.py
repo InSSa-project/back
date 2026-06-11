@@ -4,16 +4,25 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from django.contrib.auth import login
 from django.conf import settings
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from common.utils.api_response import error_response, success_response
 
+from apps.users.jwt.service import JwtService
 from .oauth.exceptions import OAuthError
 from .oauth.registry import OAuthProviderRegistry
-from .models import UserProfile
-from .serializers import MattermostLoginSerializer, OAuthLoginSerializer, ProfileImageUploadSerializer, UserProfileSerializer, UserSerializer
+from .models import User, UserProfile
+from .serializers import (
+    MattermostLoginSerializer,
+    OAuthLoginSerializer,
+    ProfileImageUploadSerializer,
+    SignupSerializer,
+    UserProfileSerializer,
+    UserSerializer,
+)
 from .services import (
     MattermostAuthError,
     MattermostConfigError,
@@ -22,6 +31,56 @@ from .services import (
     OAuthLoginService,
     UserService,
 )
+
+
+class SignupView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = SignupSerializer
+    jwt_service_class = JwtService
+
+    @transaction.atomic
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = User.objects.create_user(
+            username=self._unique_username(data['email'].split('@')[0]),
+            email=data['email'],
+            password=data['password'],
+            name=data['name'],
+            track=data['track'],
+            campus=data.get('campus') or data.get('region') or '',
+            class_number=str(data.get('class_number') or ''),
+            generation=str(data.get('generation') or ''),
+        )
+        profile = UserProfile.objects.create(
+            user=user,
+            notification_email=user.email,
+            track=data['track'],
+            campus=data.get('campus') or data.get('region') or None,
+            class_number=data.get('class_number'),
+            generation=data.get('generation'),
+        )
+        tokens = self.jwt_service_class().issue_pair(user)
+        return success_response(
+            {
+                'access_token': tokens['access_token'],
+                'refresh_token': tokens['refresh_token'],
+                'user': UserSerializer(user).data,
+                'profile': UserProfileSerializer(profile, context={'request': request}).data,
+            },
+            status_code=status.HTTP_201_CREATED,
+        )
+
+    def _unique_username(self, base_username):
+        normalized = ''.join(char for char in str(base_username) if char.isalnum() or char in ['_', '-']) or 'user'
+        candidate = normalized[:120]
+        suffix = 1
+        while User.objects.filter(username=candidate).exists():
+            suffix += 1
+            candidate = f'{normalized[:110]}_{suffix}'
+        return candidate
 
 
 class MeView(APIView):

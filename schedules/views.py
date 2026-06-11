@@ -419,6 +419,8 @@ def _serialize_event(event):
         'title': event.title,
         'display_title': _event_display_title(event, metadata),
         'description': event.description,
+        'display_memo': _event_display_memo(event, metadata, raw_data),
+        'user_friendly_description': _event_display_memo(event, metadata, raw_data),
         'deadline_at': timezone.localtime(deadline_at).isoformat() if deadline_at else None,
         'start_at': start_at.isoformat(),
         'end_at': end_at.isoformat(),
@@ -459,6 +461,21 @@ def _event_display_title(event, metadata):
     if metadata_display_title:
         return metadata_display_title
     return normalize_schedule_display_title(event.title) or event.title
+
+
+def _event_display_memo(event, metadata, raw_data=None):
+    memo = str(metadata.get('display_memo') or metadata.get('user_friendly_description') or '').strip()
+    if memo:
+        return memo
+    if event.description:
+        return event.description
+    if raw_data is not None or event.raw_data_id or metadata.get('raw_data_id'):
+        return 'SSAFY notice schedule'
+    if event.owner_id:
+        return ''
+    if _event_deadline_at(metadata):
+        return 'Deadline schedule'
+    return ''
 
 
 def _event_list_sort_key(event):
