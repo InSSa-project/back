@@ -243,11 +243,11 @@ class RiskApiTests(TestCase):
         upcoming_ids = [item['id'] for item in data['upcoming_items']]
         priorities = {item['id']: item['priority'] for item in data['upcoming_items']}
 
-        self.assertEqual(upcoming_ids[:4], [important.id, exam.id, personal.id, public.id])
+        self.assertEqual(upcoming_ids[:3], [important.id, exam.id, personal.id])
         self.assertEqual(priorities[important.id], 1)
         self.assertEqual(priorities[exam.id], 2)
         self.assertEqual(priorities[personal.id], 3)
-        self.assertEqual(priorities[public.id], 4)
+        self.assertNotIn(public.id, upcoming_ids)
         self.assertNotIn(online_week.id, upcoming_ids)
 
     def test_important_schedule_gets_evaluation_level_recommendation_weight(self):
