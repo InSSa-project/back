@@ -612,6 +612,30 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('WARNING: reparse target RawSsafyData count is low', value)
         self.assertIn('reparse_dry_run=raw_checked:1|candidate:1|created:1', value)
 
+    def test_debug_schedule_events_counts_metadata_raw_data_id_as_generated(self):
+        raw_data = _raw_data('https://example.com/raw/debug-metadata-source', 'Metadata source 2026.05.20')
+        event = ScheduleEvent.objects.create(
+            title='Metadata linked generated event',
+            start_at=timezone.datetime(2026, 5, 20, 9, 0, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 20, 10, 0, tzinfo=timezone.get_current_timezone()),
+            event_type='study',
+            source_type='notice',
+            source_id=str(raw_data.id),
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_url': raw_data.source_url,
+                'source_title': raw_data.title,
+            },
+        )
+        output = StringIO()
+
+        call_command('debug_schedule_events', '--month', '2026-05', '--no-reparse', stdout=output)
+
+        value = output.getvalue()
+        self.assertIn('generated_schedule_count=1', value)
+        self.assertIn('manual_schedule_count=0', value)
+        self.assertIn(f'source_mismatches=id={event.id}:unlinked_raw_data_id={raw_data.id}', value)
+
     def test_debug_schedule_events_date_outputs_event_source_metadata(self):
         raw_data = _raw_data('https://example.com/raw/debug-date', '월말 평가 source 2026.05.05')
         ScheduleEvent.objects.create(

@@ -5,6 +5,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.calendar.models import HiddenCalendarEvent
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
 
@@ -80,3 +81,83 @@ class CalendarApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(RawSsafyData.objects.count(), 0)
         self.assertEqual([item['title'] for item in response.json()['data']], ['Only schedule row'])
+
+    def test_delete_calendar_event_removes_owned_personal_event(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Personal schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        response = self.client.delete(reverse('calendar-event-detail', args=[event.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['message'], 'Schedule event deleted.')
+        self.assertFalse(ScheduleEvent.objects.filter(pk=event.id).exists())
+
+    def test_delete_calendar_event_rejects_other_users_event(self):
+        other_user = get_user_model().objects.create_user(
+            username='calendar-other-user',
+            email='calendar-other-user@example.com',
+            password='password',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=other_user,
+            title='Other user schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        response = self.client.delete(reverse('calendar-event-detail', args=[event.id]))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(ScheduleEvent.objects.filter(pk=event.id).exists())
+
+    def test_delete_calendar_event_hides_public_event_for_user(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Public SSAFY schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+
+        response = self.client.delete(reverse('calendar-event-detail', args=[event.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(ScheduleEvent.objects.filter(pk=event.id).exists())
+        self.assertTrue(HiddenCalendarEvent.objects.filter(user=self.user, schedule_event=event).exists())
+
+        list_response = self.client.get(reverse('calendar-events'))
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()['data'], [])
+
+    def test_hidden_public_event_stays_visible_for_other_users(self):
+        other_user = get_user_model().objects.create_user(
+            username='calendar-visible-user',
+            email='calendar-visible-user@example.com',
+            password='password',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Shared SSAFY schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+        HiddenCalendarEvent.objects.create(user=self.user, schedule_event=event)
+
+        self.client.force_login(other_user)
+        response = self.client.get(reverse('calendar-events'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.json()['data']], [event.id])

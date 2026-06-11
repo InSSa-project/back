@@ -8,6 +8,8 @@ from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
+from .models import HiddenCalendarEvent
+
 
 COMMON_TRACK_VALUES = {'', 'common', 'all', 'global', '전체', '공통'}
 
@@ -17,6 +19,8 @@ class CalendarService:
         queryset = ScheduleEvent.objects.select_related('raw_data').all()
         if getattr(user, 'is_authenticated', False):
             queryset = queryset.filter(Q(owner__isnull=True) | Q(owner=user))
+            hidden_event_ids = HiddenCalendarEvent.objects.filter(user=user).values('schedule_event_id')
+            queryset = queryset.exclude(id__in=hidden_event_ids)
         else:
             queryset = queryset.filter(owner__isnull=True)
 
