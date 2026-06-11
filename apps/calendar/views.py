@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from common.utils.api_response import error_response, success_response
 from schedules.models import ScheduleEvent
 
+from .models import HiddenCalendarEvent
 from .serializers import ScheduleEventSerializer
 from .services import CalendarService
 
@@ -37,7 +38,10 @@ class ScheduleEventDetailView(APIView):
         if permission_error:
             return permission_error
 
-        event.delete()
+        if event.owner_id == request.user.id:
+            event.delete()
+        else:
+            HiddenCalendarEvent.objects.get_or_create(user=request.user, schedule_event=event)
         return success_response(message='Schedule event deleted.')
 
     def _delete_permission_error(self, event, user):
@@ -49,10 +53,4 @@ class ScheduleEventDetailView(APIView):
                 code=403,
                 status_code=status.HTTP_403_FORBIDDEN,
             )
-        if getattr(user, 'is_staff', False):
-            return None
-        return error_response(
-            'Public schedule events require admin permission.',
-            code=403,
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
+        return None
