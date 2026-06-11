@@ -10,7 +10,7 @@ from apps.risk.services import RiskService
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import normalize_schedule_display_title
-from sync.models import RawSsafyData
+from sync.models import RawSsafyData, UserNoticeReadStatus
 from sync.services.notice_policy import (
     notice_publication_date,
     notice_publication_values,
@@ -178,8 +178,21 @@ def _new_notice_count(now):
 
 
 def _unread_notice_count(user, now, fallback_count=None):
-    # TODO: 사용자별 공지 읽음 상태 모델이 추가되면 unread notice count 기준으로 변경
-    return _new_notice_count(now) if fallback_count is None else fallback_count
+    if not getattr(user, 'is_authenticated', False):
+        return _new_notice_count(now) if fallback_count is None else fallback_count
+
+    since = timezone.localdate(now) - timedelta(days=7)
+    today = timezone.localdate(now)
+    rows = user_visible_notice_queryset(RawSsafyData.objects.all()).only('id', 'source_type', 'metadata_json', 'collected_at')
+    recent_notice_ids = [row.id for row in rows if _notice_date_in_range(row, since, today)]
+    if not recent_notice_ids:
+        return 0
+
+    read_notice_ids = set(
+        UserNoticeReadStatus.objects.filter(user=user, raw_data_id__in=recent_notice_ids)
+        .values_list('raw_data_id', flat=True)
+    )
+    return len([notice_id for notice_id in recent_notice_ids if notice_id not in read_notice_ids])
 
 
 def _recent_notices():
