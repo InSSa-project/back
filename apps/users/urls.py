@@ -10,9 +10,11 @@ from .views import (
     OAuthCallbackView,
     OAuthDebugView,
     OAuthLoginView,
+    SignupView,
 )
 
 urlpatterns = [
+    path('signup', SignupView.as_view(), name='users-signup'),
     path('auth/mattermost/login/', MattermostLoginView.as_view(), name='users-mattermost-login'),
     path('oauth/login', OAuthLoginView.as_view(), name='users-oauth-login'),
     path('oauth/<str:provider>/authorize', OAuthAuthorizeView.as_view(), name='users-oauth-authorize'),

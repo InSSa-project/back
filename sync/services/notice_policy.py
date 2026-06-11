@@ -1,5 +1,9 @@
 import os
 from urllib.parse import urljoin, urlparse
+from datetime import date, datetime
+
+from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 
 
 # User-facing notice APIs should expose only official SSAFY notices.
@@ -61,6 +65,24 @@ NOTICE_URL_KEYS = (
     'link',
     'href',
 )
+NOTICE_PUBLICATION_DATE_PATHS = (
+    ('list_notice_date',),
+    ('notice_list_date',),
+    ('original_notice_date',),
+    ('board_date',),
+    ('raw_json', 'notice', 'date'),
+    ('raw_json', 'notice', 'reg_date'),
+    ('raw_json', 'notice', 'createdDate'),
+    ('raw_json', 'date'),
+    ('raw_json', 'reg_date'),
+    ('raw_json', 'posted_at'),
+    ('raw_json', 'published_at'),
+    ('raw_json', 'source_date'),
+    ('notice_date',),
+    ('published_at',),
+    ('posted_at',),
+    ('source_date',),
+)
 RAW_TEXT_TITLE_STOPWORDS = {
     '멘토 스토리',
     '멘토칼럼',
@@ -119,6 +141,35 @@ def notice_source_url(raw_data):
     if detail_urls:
         return detail_urls[0]
     return None
+
+
+def notice_publication_values(raw_data):
+    metadata = getattr(raw_data, 'metadata_json', None) or {}
+    for path in NOTICE_PUBLICATION_DATE_PATHS:
+        published_at, notice_date = _parse_notice_publication_value(_nested_metadata_value(metadata, path))
+        if published_at or notice_date:
+            return published_at, notice_date
+    return None, None
+
+
+def notice_publication_date(raw_data):
+    published_at, notice_date = notice_publication_values(raw_data)
+    if notice_date:
+        return notice_date
+    if published_at:
+        return timezone.localdate(published_at)
+    return None
+
+
+def notice_sort_key(raw_data):
+    published_at, notice_date = notice_publication_values(raw_data)
+    collected_timestamp = _datetime_timestamp(getattr(raw_data, 'collected_at', None))
+    if published_at:
+        local_published = timezone.localtime(published_at)
+        return (0, -local_published.date().toordinal(), -local_published.timestamp(), -collected_timestamp, -raw_data.id)
+    if notice_date:
+        return (0, -notice_date.toordinal(), 0, -collected_timestamp, -raw_data.id)
+    return (1, 0, 0, -collected_timestamp, -raw_data.id)
 
 
 def _notice_metadata_sources(metadata):
@@ -186,6 +237,63 @@ def _normalize_notice_url(value):
 def _is_list_page_url(value):
     path_name = urlparse(value).path.rstrip('/').split('/')[-1].lower()
     return path_name in {'list', 'list.do', 'index', 'index.do'}
+
+
+def _parse_notice_publication_value(value):
+    if not value:
+        return None, None
+    if isinstance(value, datetime):
+        parsed = _ensure_aware_datetime(value)
+        return parsed, timezone.localdate(parsed)
+    if isinstance(value, date):
+        return None, value
+
+    text = str(value).strip()
+    if not text:
+        return None, None
+
+    parsed_datetime = parse_datetime(text)
+    if parsed_datetime:
+        parsed_datetime = _ensure_aware_datetime(parsed_datetime)
+        return parsed_datetime, timezone.localdate(parsed_datetime)
+
+    parsed_date = parse_date(text[:10]) or _parse_loose_notice_date(text)
+    if parsed_date:
+        return None, parsed_date
+    return None, None
+
+
+def _parse_loose_notice_date(text):
+    import re
+
+    match = re.search(r'(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})', text)
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def _ensure_aware_datetime(value):
+    if timezone.is_naive(value):
+        return timezone.make_aware(value, timezone.get_current_timezone())
+    return value
+
+
+def _datetime_timestamp(value):
+    if not value:
+        return 0
+    return _ensure_aware_datetime(value).timestamp()
+
+
+def _nested_metadata_value(metadata, path):
+    value = metadata
+    for key in path:
+        if not isinstance(value, dict):
+            return ''
+        value = value.get(key)
+    return value
 
 
 def _ssafy_base_url():

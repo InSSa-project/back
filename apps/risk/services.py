@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from schedules.models import ScheduleEvent
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
+from sync.services.tracks import normalize_track_key
 
 from .models import EvaluationResult, RiskStatus
 from .recommendation_service import ScheduleRecommendationService
@@ -29,14 +30,23 @@ class RiskService:
             'target': 4,
         },
     }
+    EVALUATION_POLICY_LABELS = {
+        'general': 'General track policy',
+        'meister': 'Meister track policy',
+    }
     ROUTINE_TITLES = ('온라인 위크', 'online week')
 
     def get_status(self, user):
         return self.calculate_dashboard(user)['status_model']
 
     def calculate_dashboard(self, user):
+        policy_type = self._evaluation_policy_type(user)
+        policy_label = self.EVALUATION_POLICY_LABELS[policy_type]
         evaluations = list(EvaluationResult.objects.filter(user=user).order_by('evaluation_type', 'round_number'))
-        summaries = [self._evaluation_summary(evaluations, evaluation_type) for evaluation_type in self.EVALUATION_RULES]
+        summaries = [
+            self._evaluation_summary(evaluations, evaluation_type, policy_type=policy_type, policy_label=policy_label)
+            for evaluation_type in self.EVALUATION_RULES
+        ]
         recommendations = self._schedule_recommendations(user)
         recommended_schedules = self.get_recommended_schedule_cards(
             user=user,
@@ -60,6 +70,8 @@ class RiskService:
             'status_model': status,
             'status': self._status_payload(status),
             'status_details': status_details,
+            'evaluation_policy_type': policy_type,
+            'evaluation_policy_label': policy_label,
             'evaluation_summary': summaries,
             'evaluations': [self._evaluation_payload(evaluation) for evaluation in evaluations],
             'recommendations': recommendations,
@@ -71,7 +83,12 @@ class RiskService:
         if evaluations is None:
             evaluations = list(self._evaluation_queryset(user).order_by('evaluation_type', 'round_number'))
         if summaries is None:
-            summaries = [self._evaluation_summary(evaluations, evaluation_type) for evaluation_type in self.EVALUATION_RULES]
+            policy_type = self._evaluation_policy_type(user)
+            policy_label = self.EVALUATION_POLICY_LABELS[policy_type]
+            summaries = [
+                self._evaluation_summary(evaluations, evaluation_type, policy_type=policy_type, policy_label=policy_label)
+                for evaluation_type in self.EVALUATION_RULES
+            ]
         return ScheduleRecommendationService().get_recommended_schedule_cards(
             user=user,
             events=list(self._visible_events(user, until_days=14, now=now)),
@@ -156,7 +173,7 @@ class RiskService:
             items.append(payload)
         return sorted(items, key=lambda item: (item['priority'], item.get('days', 0), item['start_at'], -item['score'], item['id']))[:10]
 
-    def _evaluation_summary(self, evaluations, evaluation_type):
+    def _evaluation_summary(self, evaluations, evaluation_type, policy_type='general', policy_label=None):
         rule = self.EVALUATION_RULES[evaluation_type]
         related = [evaluation for evaluation in evaluations if evaluation.evaluation_type == evaluation_type]
         pass_count = sum(1 for evaluation in related if evaluation.status == EvaluationResult.STATUS_PASS)
@@ -185,6 +202,8 @@ class RiskService:
             risk_level = RiskStatus.LEVEL_DANGER
         return {
             'evaluation_type': evaluation_type,
+            'evaluation_policy_type': policy_type,
+            'evaluation_policy_label': policy_label or self.EVALUATION_POLICY_LABELS[policy_type],
             'label': rule['label'],
             'total_count': rule['total'],
             'target_pass_count': rule['target'],
@@ -204,6 +223,11 @@ class RiskService:
                 fixed_count, fail_count + absent_count, allowed_fail_count,
             ),
         }
+
+    def _evaluation_policy_type(self, user):
+        profile = getattr(user, 'profile', None) or getattr(user, 'userprofile', None)
+        track = getattr(profile, 'track', None) or getattr(user, 'track', None) or ''
+        return 'meister' if normalize_track_key(track) == 'meister' else 'general'
 
     def _evaluation_risk_level(
         self,

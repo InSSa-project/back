@@ -162,6 +162,40 @@ def notice_detail(request, raw_data_id):
     return JsonResponse(_serialize_notice(raw_data, include_detail=True))
 
 
+@require_GET
+def notice_summary(request, raw_data_id):
+    raw_data = (
+        user_visible_notice_queryset(RawSsafyData.objects.filter(pk=raw_data_id))
+        .prefetch_related('ai_documents', 'schedule_events')
+        .first()
+    )
+    if raw_data is None:
+        return JsonResponse({'detail': 'Notice not found.'}, status=404)
+
+    content = _build_notice_content(raw_data)
+    summary = _build_notice_summary(raw_data, content)
+    if not summary:
+        return JsonResponse(
+            {
+                'detail': 'Summary is not available for this notice.',
+                'source_title': notice_title(raw_data),
+                'source_url': notice_source_url(raw_data),
+            },
+            status=422,
+        )
+
+    return JsonResponse(
+        {
+            'summary': summary,
+            'source_title': notice_title(raw_data),
+            'source_url': notice_source_url(raw_data),
+            'generated_at': timezone.now().isoformat(),
+            'is_ai_generated': False,
+            'summary_type': 'rule_based',
+        }
+    )
+
+
 @require_POST
 def run_crawl(request):
     permission_error = _staff_permission_error(request)

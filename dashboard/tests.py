@@ -208,6 +208,42 @@ class HomeDashboardApiTests(TestCase):
         self.assertEqual(notice_card['count'], 1)
         self.assertEqual(notice_card['value'], '확인 안 한 공지 1개')
 
+    def test_notice_count_prefers_notice_date_over_collected_at(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='실제 최근 공지',
+            raw_text='본문',
+            collected_at=self.now - timedelta(days=30),
+            metadata_json={'notice_date': '2026-06-07'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='수집만 최근인 오래된 공지',
+            raw_text='본문',
+            collected_at=self.now,
+            metadata_json={'notice_date': '2026-01-10'},
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['new_notice_count'], 1)
+        self.assertEqual(payload['unread_new_notice_count'], 1)
+        self.assertEqual(payload['unread_notice_count_basis'], 'recent_7_days')
+
+    def test_upcoming_schedules_are_limited_to_this_week(self):
+        this_week = self._event('이번 주 일정', 2)
+        self._event('다음 주 일정', 7)
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item['id'] for item in payload['upcoming_schedules']], [this_week.id])
+        self.assertEqual([item['id'] for item in payload['week_schedules']], [this_week.id])
+        self.assertEqual(payload['period_label'], 'this_week')
+
     def test_risk_recommendation_count_is_returned(self):
         self._event('알고리즘 평가', 1, event_type='exam')
         self._event('일반 안내', 1, event_type='notice')

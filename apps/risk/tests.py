@@ -6,6 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.risk.models import EvaluationResult
+from apps.users.models import UserProfile
 from apps.users.jwt.service import JwtService
 from schedules.models import ScheduleEvent
 
@@ -56,6 +57,23 @@ class RiskApiTests(TestCase):
         self.assertEqual(fail_response.json()['data']['status'], 'fail')
         self.assertEqual(pass_response.status_code, 201)
         self.assertEqual(pass_response.json()['data']['status'], 'pass')
+
+    def test_risk_status_includes_track_evaluation_policy(self):
+        UserProfile.objects.create(user=self.user, track=UserProfile.TRACK_PYTHON)
+
+        data = self._status_payload(self.user)
+
+        self.assertEqual(data['evaluation_policy_type'], 'general')
+        self.assertEqual(data['evaluation_summary'][0]['evaluation_policy_type'], 'general')
+        self.assertIn('evaluation_policy_label', data)
+
+    def test_meister_profile_uses_meister_policy_type(self):
+        UserProfile.objects.create(user=self.user, track='meister')
+
+        data = self._status_payload(self.user)
+
+        self.assertEqual(data['evaluation_policy_type'], 'meister')
+        self.assertEqual(data['evaluation_summary'][0]['evaluation_policy_type'], 'meister')
 
     def test_score_overrides_user_selected_pass_status(self):
         response = self.client.post(

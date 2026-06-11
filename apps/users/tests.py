@@ -31,6 +31,49 @@ class UserProfileApiTests(TestCase):
         Image.new('RGB', (1, 1), color='white').save(output, format='PNG')
         return output.getvalue()
 
+    def test_signup_requires_name_and_track(self):
+        missing_name = self.client.post(
+            reverse('users-signup'),
+            data={'email': 'new@example.com', 'password': 'password', 'track': 'python'},
+            content_type='application/json',
+        )
+        missing_track = self.client.post(
+            reverse('users-signup'),
+            data={'email': 'new2@example.com', 'password': 'password', 'name': '김싸피'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(missing_name.status_code, 400)
+        self.assertEqual(missing_track.status_code, 400)
+        self.assertIn('name', missing_name.json())
+        self.assertIn('track', missing_track.json())
+
+    def test_signup_saves_user_and_profile_fields(self):
+        response = self.client.post(
+            reverse('users-signup'),
+            data={
+                'email': 'signup@example.com',
+                'password': 'password',
+                'name': '김싸피',
+                'track': 'python',
+                'campus': '서울',
+                'class_number': 7,
+                'generation': 13,
+            },
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()['data']
+        self.assertIn('access_token', payload)
+        self.assertEqual(payload['user']['name'], '김싸피')
+        self.assertEqual(payload['profile']['track'], 'python')
+        profile = UserProfile.objects.get(user__email='signup@example.com')
+        self.assertEqual(profile.user.name, '김싸피')
+        self.assertEqual(profile.track, UserProfile.TRACK_PYTHON)
+        self.assertEqual(profile.campus, '서울')
+        self.assertEqual(profile.class_number, 7)
+
     def test_get_profile_auto_creates_profile_for_login_user(self):
         response = self.client.get(reverse('users-me-profile'), **self._auth(self.user))
 
