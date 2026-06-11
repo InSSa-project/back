@@ -13,6 +13,7 @@ from django.utils import timezone
 from ai_server.core.config import get_settings
 from apps.ai.models import AiDocument
 from apps.users.jwt.service import JwtService
+from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
@@ -322,6 +323,180 @@ class ScheduleEventApiTests(TestCase):
         personal_response = self.client.get(reverse('schedule-event-list'), {'event_type': 'personal'})
         self.assertEqual([item['title'] for item in personal_response.json()], ['Manual visible event'])
 
+    def test_event_list_includes_generated_event_from_raw_data(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/generated',
+            title='Generated source title',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated SSAFY event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='generated',
+            source_type='notice',
+            metadata_json={
+                'track_key': 'python',
+                'is_common': False,
+                'is_global': True,
+                'is_important': False,
+            },
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'start': '2026-06-10', 'end': '2026-06-10'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item['title'] for item in payload], ['Generated SSAFY event'])
+        self.assertTrue(payload[0]['is_generated'])
+        self.assertTrue(payload[0]['is_global'])
+        self.assertFalse(payload[0]['is_important'])
+
+    def test_authenticated_profile_mismatch_does_not_hide_public_generated_events(self):
+        UserProfile.objects.create(
+            user=self.user,
+            track='Python',
+            generation=12,
+            campus='서울',
+            class_number=17,
+        )
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/generated-profile',
+            title='Generated source title',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Public generated event for another audience',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': raw_data.id,
+                'source_url': raw_data.source_url,
+                'source_title': raw_data.title,
+                'audience': {
+                    'track': 'Java',
+                    'track_key': 'java_major',
+                    'generation': 15,
+                    'campus': '대전',
+                    'class_number': 1,
+                },
+                'track_key': 'java_major',
+                'is_common': False,
+            },
+        )
+        ScheduleEvent.objects.create(
+            owner=self.other_user,
+            title='Other user private event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-04-26', 'end': '2026-06-06'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        titles = [item['title'] for item in response.json()]
+        self.assertIn('Public generated event for another audience', titles)
+        self.assertNotIn('Other user private event', titles)
+
+    def test_event_list_includes_event_when_only_deadline_is_in_range(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Deadline only metadata event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='deadline',
+            source_type='notice',
+            metadata_json={'deadline_at': '2026-06-10T23:59:00+09:00'},
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'start': '2026-06-10', 'end': '2026-06-10'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item['title'] for item in payload], ['Deadline only metadata event'])
+        self.assertEqual(payload[0]['deadline_at'], '2026-06-10T23:59:00+09:00')
+
+    def test_event_list_includes_event_overlapping_range(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 9, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Multi day generated event',
+            start_at=start_at,
+            end_at=timezone.make_aware(timezone.datetime(2026, 6, 11, 18, 0)),
+            event_type='generated',
+            source_type='notice',
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'start': '2026-06-10', 'end': '2026-06-10'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['title'] for item in response.json()], ['Multi day generated event'])
+
+    def test_event_list_generated_response_contains_calendar_fields(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/906',
+            title='Original notice title',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated field event',
+            description='description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='evaluation',
+            source_type='notice',
+            metadata_json={
+                'display_title': 'Display field event',
+                'deadline_at': '2026-06-10T18:00:00+09:00',
+                'track_key': 'python',
+                'is_common': False,
+                'is_global': True,
+                'is_important': True,
+            },
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'start': '2026-06-10', 'end': '2026-06-10'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()[0]
+        for field in [
+            'display_title',
+            'track_key',
+            'is_common',
+            'is_global',
+            'is_generated',
+            'is_important',
+            'raw_data_id',
+            'source_url',
+            'source_title',
+            'deadline_at',
+        ]:
+            self.assertIn(field, payload)
+        self.assertEqual(payload['display_title'], 'Display field event')
+        self.assertEqual(payload['track_key'], 'python')
+        self.assertFalse(payload['is_common'])
+        self.assertTrue(payload['is_global'])
+        self.assertTrue(payload['is_generated'])
+        self.assertTrue(payload['is_important'])
+        self.assertEqual(payload['raw_data_id'], raw_data.id)
+        self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/906')
+        self.assertEqual(payload['source_title'], 'Original notice title')
+
     def test_post_event_allows_personal_event_on_korean_holiday(self):
         response = self.client.post(
             reverse('schedule-event-list'),
@@ -396,6 +571,52 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(event.event_type, 'deadline')
         self.assertEqual(payload['title'], 'Updated title')
         self.assertIn('+09:00', payload['start_at'])
+
+    def test_patch_event_updates_is_important_true(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Owned personal event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+            metadata_json={'is_important': False},
+        )
+
+        response = self.client.patch(
+            reverse('schedule-event-detail', args=[event.id]),
+            data=json.dumps({'is_important': True}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event.refresh_from_db()
+        self.assertTrue(event.metadata_json['is_important'])
+        self.assertTrue(response.json()['is_important'])
+
+    def test_patch_event_updates_is_important_false(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Owned personal event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+            metadata_json={'is_important': True},
+        )
+
+        response = self.client.patch(
+            reverse('schedule-event-detail', args=[event.id]),
+            data=json.dumps({'is_important': False}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        event.refresh_from_db()
+        self.assertFalse(event.metadata_json['is_important'])
+        self.assertFalse(response.json()['is_important'])
 
     def test_event_list_filters_by_event_type(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
@@ -749,6 +970,29 @@ class ScheduleEventApiTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.title, 'Public SSAFY event')
 
+    def test_regular_user_cannot_patch_generated_event_importance(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='Generated source', raw_text='body')
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated public event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='generated',
+            source_type='notice',
+            metadata_json={'is_important': False},
+        )
+
+        response = self.client.patch(
+            reverse('schedule-event-detail', args=[event.id]),
+            data=json.dumps({'is_important': True}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        event.refresh_from_db()
+        self.assertFalse(event.metadata_json['is_important'])
+
     def test_anonymous_user_cannot_create_modify_or_delete_personal_event(self):
         self.client.logout()
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
@@ -861,6 +1105,35 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(payload['raw_data_id'], raw_data.id)
         self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/actual')
         self.assertEqual(payload['source_title'], 'Actual source notice')
+
+    def test_source_fields_fall_back_to_metadata_when_raw_data_row_is_missing(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Stale metadata generated event',
+            description='description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='study',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': 999999,
+                'source_url': 'https://edu.ssafy.com/notices/stale',
+                'source_title': 'Stale source notice',
+            },
+        )
+
+        response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-06-10', 'end': '2026-06-10'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()[0]
+        self.assertTrue(payload['is_generated'])
+        self.assertEqual(payload['raw_data_id'], 999999)
+        self.assertEqual(payload['source_url'], 'https://edu.ssafy.com/notices/stale')
+        self.assertEqual(payload['source_title'], 'Stale source notice')
 
     def test_imported_events_store_audience_metadata_from_raw_data(self):
         run_sample_notice_import()
