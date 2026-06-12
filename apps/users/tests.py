@@ -16,7 +16,7 @@ from apps.users.models import UserProfile
 TEST_MEDIA_ROOT = tempfile.mkdtemp()
 
 
-@override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT)
+@override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT, SECURE_SSL_REDIRECT=False)
 class UserProfileApiTests(TestCase):
     def setUp(self):
         User = get_user_model()
@@ -284,8 +284,123 @@ class UserProfileApiTests(TestCase):
         self.assertEqual(response.json()['data']['email'], 'user-a@example.com')
         self.assertNotEqual(response.json()['data']['email'], 'user-b@example.com')
 
+    def test_profile_setup_requires_authentication(self):
+        response = self.client.post(
+            reverse('users-profile-setup'),
+            data={'name': '김싸피', 'track': 'python'},
+            content_type='application/json',
+        )
 
-@override_settings(MATTERMOST_BASE_URL='https://meeting.ssafy.com', MATTERMOST_TIMEOUT_SECONDS=5, DEBUG=False)
+        self.assertEqual(response.status_code, 401)
+
+    def test_profile_setup_saves_user_and_creates_profile(self):
+        self.user.name = ''
+        self.user.save(update_fields=['name'])
+        self.assertFalse(UserProfile.objects.filter(user=self.user).exists())
+
+        response = self.client.post(
+            reverse('users-profile-setup'),
+            data={
+                'name': '김싸피',
+                'track': 'python',
+                'campus': '서울',
+                'class_number': 1,
+                'generation': 13,
+            },
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertFalse(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], [])
+        self.assertEqual(payload['user']['name'], '김싸피')
+        self.assertEqual(payload['profile']['track'], 'python')
+        self.assertEqual(payload['profile']['campus'], '서울')
+        profile = UserProfile.objects.get(user=self.user)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.name, '김싸피')
+        self.assertEqual(profile.track, UserProfile.TRACK_PYTHON)
+        self.assertEqual(profile.class_number, 1)
+        self.assertEqual(profile.generation, 13)
+
+    def test_profile_setup_requires_name(self):
+        response = self.client.post(
+            reverse('users-profile-setup'),
+            data={'track': 'python'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('name', response.json())
+
+    def test_profile_setup_requires_track(self):
+        response = self.client.post(
+            reverse('users-profile-setup'),
+            data={'name': '김싸피'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('track', response.json())
+
+    def test_profile_setup_updates_existing_profile(self):
+        UserProfile.objects.create(
+            user=self.user,
+            track=UserProfile.TRACK_JAVA,
+            campus='대전',
+            class_number=7,
+            generation=12,
+        )
+
+        response = self.client.post(
+            reverse('users-profile-setup'),
+            data={
+                'name': '이싸피',
+                'track': 'python',
+                'campus': '서울',
+                'class_number': 2,
+                'generation': 13,
+            },
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = UserProfile.objects.get(user=self.user)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.name, '이싸피')
+        self.assertEqual(profile.track, UserProfile.TRACK_PYTHON)
+        self.assertEqual(profile.campus, '서울')
+        self.assertEqual(profile.class_number, 2)
+        self.assertEqual(profile.generation, 13)
+
+    def test_profile_get_reports_setup_complete_after_profile_setup(self):
+        setup_response = self.client.post(
+            reverse('users-profile-setup'),
+            data={'name': '김싸피', 'track': 'python'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        self.assertEqual(setup_response.status_code, 200)
+
+        response = self.client.get(reverse('users-me-profile'), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertFalse(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], [])
+
+
+@override_settings(
+    MATTERMOST_BASE_URL='https://meeting.ssafy.com',
+    MATTERMOST_TIMEOUT_SECONDS=5,
+    DEBUG=False,
+    SECURE_SSL_REDIRECT=False,
+)
 class MattermostLoginApiTests(TestCase):
     def _mattermost_response(self, status_code=200, payload=None):
         response = Mock()
@@ -312,6 +427,9 @@ class MattermostLoginApiTests(TestCase):
         payload = response.json()['data']
         self.assertIn('access_token', payload)
         self.assertIn('refresh_token', payload)
+        self.assertTrue(payload['is_new_user'])
+        self.assertTrue(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], ['track'])
         self.assertEqual(payload['user']['mattermost_user_id'], 'mm-user-1')
         self.assertEqual(payload['user']['mattermost_username'], 'ssafy-user')
         self.assertNotIn('secret-password', str(response.json()))
@@ -341,6 +459,137 @@ class MattermostLoginApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['data']['user']['mattermost_user_id'], 'mm-user-2')
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_requires_setup_when_existing_user_has_no_name(self, mock_post):
+        User = get_user_model()
+        user = User.objects.create_user(username='existing-mm', email='existing-mm@example.com', password='password', name='')
+        UserProfile.objects.create(
+            user=user,
+            mattermost_user_id='mm-existing-name',
+            mattermost_username='existing-mm',
+            track=UserProfile.TRACK_PYTHON,
+        )
+        mock_post.return_value = self._mattermost_response(
+            payload={
+                'id': 'mm-existing-name',
+                'username': 'existing-mm',
+                'nickname': '',
+                'email': 'existing-mm@example.com',
+            }
+        )
+
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'existing-mm', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertFalse(payload['is_new_user'])
+        self.assertTrue(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], ['name'])
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_requires_setup_when_profile_has_no_track(self, mock_post):
+        User = get_user_model()
+        user = User.objects.create_user(username='existing-track', email='existing-track@example.com', password='password', name='김싸피')
+        UserProfile.objects.create(
+            user=user,
+            mattermost_user_id='mm-existing-track',
+            mattermost_username='existing-track',
+        )
+        mock_post.return_value = self._mattermost_response(
+            payload={
+                'id': 'mm-existing-track',
+                'username': 'existing-track',
+                'nickname': '김싸피',
+                'email': 'existing-track@example.com',
+            }
+        )
+
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'existing-track', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertFalse(payload['is_new_user'])
+        self.assertTrue(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], ['track'])
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_does_not_require_setup_when_name_and_track_exist(self, mock_post):
+        User = get_user_model()
+        user = User.objects.create_user(username='complete-mm', email='complete-mm@example.com', password='password', name='김싸피')
+        UserProfile.objects.create(
+            user=user,
+            mattermost_user_id='mm-complete',
+            mattermost_username='complete-mm',
+            track=UserProfile.TRACK_PYTHON,
+        )
+        mock_post.return_value = self._mattermost_response(
+            payload={
+                'id': 'mm-complete',
+                'username': 'complete-mm',
+                'nickname': '김싸피',
+                'email': 'complete-mm@example.com',
+            }
+        )
+
+        response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'complete-mm', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertFalse(payload['is_new_user'])
+        self.assertFalse(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], [])
+
+    @patch('apps.users.services.requests.post')
+    def test_mattermost_login_reports_setup_complete_after_profile_setup(self, mock_post):
+        mock_post.return_value = self._mattermost_response(
+            payload={
+                'id': 'mm-setup',
+                'username': 'setup-user',
+                'nickname': '',
+                'email': 'setup@example.com',
+            }
+        )
+        login_response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'setup-user', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+        self.assertEqual(login_response.status_code, 200)
+        self.assertTrue(login_response.json()['data']['requires_profile_setup'])
+        access_token = login_response.json()['data']['access_token']
+
+        setup_response = self.client.post(
+            reverse('users-profile-setup'),
+            data={'name': '김싸피', 'track': 'python'},
+            content_type='application/json',
+            HTTP_AUTHORIZATION=f'Bearer {access_token}',
+        )
+        self.assertEqual(setup_response.status_code, 200)
+
+        second_login_response = self.client.post(
+            '/api/v1/users/auth/mattermost/login/',
+            data={'login_id': 'setup-user', 'password': 'secret-password'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(second_login_response.status_code, 200)
+        payload = second_login_response.json()['data']
+        self.assertFalse(payload['is_new_user'])
+        self.assertFalse(payload['requires_profile_setup'])
+        self.assertEqual(payload['missing_profile_fields'], [])
 
     @patch('apps.users.services.requests.post')
     def test_mattermost_login_auth_failure_returns_401(self, mock_post):

@@ -60,6 +60,28 @@ class MattermostLoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
 
 
+class ProfileSetupSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=100, allow_blank=False)
+    track = serializers.CharField(allow_blank=False)
+    campus = serializers.ChoiceField(
+        choices=UserProfile.CAMPUS_CHOICES,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+    region = serializers.ChoiceField(
+        choices=UserProfile.CAMPUS_CHOICES,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+    class_number = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    generation = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+    def validate_track(self, value):
+        return UserProfileSerializer().validate_track(value)
+
+
 class UserProfileSerializer(serializers.ModelSerializer):
     TRACK_INPUT_ALIASES = {
         'java_major': UserProfile.TRACK_JAVA,

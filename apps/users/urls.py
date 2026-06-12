@@ -10,6 +10,7 @@ from .views import (
     OAuthCallbackView,
     OAuthDebugView,
     OAuthLoginView,
+    ProfileSetupView,
     SignupView,
 )
 
@@ -22,6 +23,7 @@ urlpatterns = [
     path('me', MeView.as_view(), name='users-me'),
     path('me/profile/', MyProfileView.as_view(), name='users-me-profile'),
     path('me/profile-image/', MyProfileImageView.as_view(), name='users-me-profile-image'),
+    path('profile/setup/', ProfileSetupView.as_view(), name='users-profile-setup'),
 ]
 
 if settings.DEBUG:
