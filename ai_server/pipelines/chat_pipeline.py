@@ -46,6 +46,9 @@ class ChatPipeline:
         self.llm = llm_client or LlmRouter().get_provider(self.settings.llm_provider)
 
     def run(self, request: ChatRequest) -> ChatResponse:
+        if self._is_low_information_message(request.message):
+            return self._low_information_response()
+
         parsed_query = self.schedule_query_parser.parse(request.message)
         classified = self.classifier.classify(request.message)
         verified_decision = self.server_verified_router.decide(request.message, parsed_query, classified)
@@ -158,6 +161,22 @@ class ChatPipeline:
         yield f'data: {json.dumps({"type": "delta", "content": response.answer}, ensure_ascii=False)}\n\n'
         yield 'data: {"type": "done"}\n\n'
 
+    def _is_low_information_message(self, message: str) -> bool:
+        normalized = (message or '').strip()
+        if not normalized:
+            return True
+        return not re.search(r'[A-Za-z0-9\uac00-\ud7a3]', normalized)
+
+    def _low_information_response(self) -> ChatResponse:
+        return ChatResponse(
+            answer='\uc870\uae08\ub9cc \ub354 \uad6c\uccb4\uc801\uc73c\ub85c \ubb3c\uc5b4\ubd10 \uc8fc\uc138\uc694. \uc608: \uc624\ub298 \uc77c\uc815, \uacfc\ub77d \uc0c1\ud0dc, \uacf5\uc9c0 \uc694\uc57d\ucc98\ub7fc \uc9c8\ubb38\ud558\uba74 \ubc14\ub85c \ud655\uc778\ud574\ub4dc\ub9b4\uac8c\uc694.',
+            intent='general_chat',
+            query_type='UNKNOWN',
+            answer_policy='LOW_INFORMATION_INPUT',
+            references=[],
+            usage={'mode': 'low_information_input', 'rag_used': False, 'llm_tokens': 0},
+        )
+
     def _is_current_date_question(self, question: str) -> bool:
         normalized = re.sub(r'\s+', '', question)
         return any(pattern in normalized for pattern in ['오늘날짜', '현재날짜', '오늘며칠', '오늘이몇일', '오늘이무슨날'])
@@ -266,7 +285,8 @@ class ChatPipeline:
         index = max(1, min(index, len(results)))
         item = results[index - 1]
         end_at = item.get('end_at') or '\uc885\ub8cc \uc2dc\uac04 \uc815\ubcf4\uac00 \uc5c6\uc5b4\uc694'
-        answer = f"{item.get('title', '\uc77c\uc815')}\uc740 {end_at}\uc5d0 \ub05d\ub098\uc694."
+        title = item.get('title') or '\uc77c\uc815'
+        answer = f"{title}\uc740 {end_at}\uc5d0 \ub05d\ub098\uc694."
         return ChatResponse(
             answer=answer,
             intent='schedule_followup',
@@ -294,7 +314,10 @@ class ChatPipeline:
     def _format_memory_schedule_line(self, index: int, item: dict) -> str:
         time_text = self._format_time_range(item.get('start_at', ''), item.get('end_at', ''))
         suffix = f' {time_text}' if time_text else ''
-        return f"{index}. {item.get('title', '\uc77c\uc815')} ({item.get('visibility', '')}-{item.get('event_label', '')}){suffix}"
+        title = item.get('title') or '\uc77c\uc815'
+        visibility = item.get('visibility', '')
+        event_label = item.get('event_label', '')
+        return f"{index}. {title} ({visibility}-{event_label}){suffix}"
 
     def _schedule_memory_usage(self, state: dict, results: list[dict], selected_index: int, followup_type: str) -> dict:
         return {
