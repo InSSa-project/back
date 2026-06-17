@@ -115,16 +115,19 @@ class ServerVerifiedIntentRouter:
     def _is_personal_score_question(self, text: str) -> bool:
         if self._contains_any(text, self._words('\\uae30\\uc900', '\\uc870\\uac74', '\\uaddc\\uc815', '\\ud1b5\\uacfc \\uae30\\uc900', '\\uc218\\ub8cc \\uae30\\uc900')):
             return False
-        personal = self._contains_any(text, self._words('\\ub0b4 ', '\\ub0b4\\uac00', '\\ub098\\ub294', '\\ub098\\uc758', '\\ud604\\uc7ac', '\\uc9c0\\uae08', '\\uc785\\ub825\\ud55c', '\\ubc1b\\uc740'))
-        score = self._contains_any(text, self._words('\\uc131\\uc801', '\\uc810\\uc218', '\\ud3c9\\uade0', '\\ud569\\uaca9 \\ud69f\\uc218', '\\ubd88\\ud569\\uaca9 \\ud69f\\uc218', '\\uacfc\\ub77d \\ud69f\\uc218', '\\uba87 \\ubc88 \\uacfc\\ub77d', '\\uba87\\ubc88 \\uacfc\\ub77d'))
+        compact = text.replace(' ', '')
+        personal = self._contains_any(text, self._words('\\ub0b4 ', '\\ub0b4\\uac00', '\\ub098 ', '\\ub098\\ub294', '\\ub098\\uc758', '\\ub09c', '\\ud604\\uc7ac', '\\uc9c0\\uae08', '\\uc785\\ub825\\ud55c', '\\ubc1b\\uc740'))
+        score = self._contains_any(text, self._words('\\uc131\\uc801', '\\uc810\\uc218', '\\ud3c9\\uade0', '\\ud569\\uaca9 \\ud69f\\uc218', '\\ubd88\\ud569\\uaca9 \\ud69f\\uc218', '\\uacfc\\ub77d \\ud69f\\uc218', '\\uba87 \\ubc88 \\uacfc\\ub77d', '\\uba87\\ubc88 \\uacfc\\ub77d', '\\uacfc\\ub77d \\uba87 \\ubc88', '\\uacfc\\ub77d \\uba87\\ubc88'))
+        score = score or self._contains_any(compact, self._words('\\uacfc\\ub77d\\uba87\\ubc88', '\\uba87\\ubc88\\uacfc\\ub77d', '\\uba87\\ubc88\\ud588'))
         return personal and score
 
     def _is_personal_risk_question(self, text: str) -> bool:
-        personal = self._contains_any(text, self._words('\\ub0b4 ', '\\ub0b4\\uac00', '\\ub098\\ub294', '\\ub098\\uc758', '\\ud604\\uc7ac', '\\uc9c0\\uae08', '\\uc131\\uc801 \\uae30\\uc900'))
-        risk = self._contains_any(text, self._words('\\uc704\\ud5d8', '\\uc704\\ud5d8\\ud574', '\\uad1c\\ucc2e', '\\uc218\\ub8cc \\uac00\\ub2a5', '\\uc218\\ub8cc \\uc0c1\\ud0dc', '\\ud1f4\\uc18c', '\\uacfc\\ub77d \\uc5ec\\uc720', '\\ub0b4 \\uc0c1\\ud0dc'))
+        compact = text.replace(' ', '')
+        personal = self._contains_any(text, self._words('\\ub0b4 ', '\\ub0b4\\uac00', '\\ub098 ', '\\ub098\\ub294', '\\ub098\\uc758', '\\ub09c', '\\ud604\\uc7ac', '\\uc9c0\\uae08', '\\uc131\\uc801 \\uae30\\uc900'))
+        risk = self._contains_any(text, self._words('\\uc704\\ud5d8', '\\uc704\\ud5d8\\ud574', '\\uad1c\\ucc2e', '\\uc218\\ub8cc \\uac00\\ub2a5', '\\uc218\\ub8cc \\uc0c1\\ud0dc', '\\ud1f4\\uc18c', '\\uacfc\\ub77d \\uc5ec\\uc720', '\\uacfc\\ub77d \\uc0c1\\ud0dc', '\\ub0b4 \\uc0c1\\ud0dc'))
+        risk = risk or self._contains_any(compact, self._words('\\uacfc\\ub77d\\uc0c1\\ud0dc', '\\ud1f4\\uc18c\\uc5b8\\uc81c', '\\uc218\\ub8cc\\uac00\\ub2a5'))
         score_context = self._contains_any(text, self._words('\\uc131\\uc801', '\\uc810\\uc218', '\\uacfc\\ub77d', '\\ud3c9\\uac00', '\\uc218\\ub8cc'))
         return personal and risk and (score_context or self._word('\\ub0b4 \\uc0c1\\ud0dc') in text)
-
     def _is_recommendation_question(self, text: str) -> bool:
         compact = text.replace(' ', '')
         direct = self._words('\\ubb50\\ubd80\\ud130', '\\ubb34\\uc5c7\\ubd80\\ud130', '\\ubbf8\\uc900\\ube44', '\\ubb50\\uc900\\ube44', '\\uba3c\\uc800\\ubb50', '\\uc2e0\\uacbd\\uc368\\uc57c', '\\uc2e0\\uacbd\\uc368\\uc57c\\ud560', '\\ube61\\uc13c\\uac70', '\\uc870\\uc2ec\\ud574\\uc57c')
@@ -207,3 +210,4 @@ class ServerVerifiedIntentRouter:
         if '\\u' in value or '\\U' in value or '\\x' in value:
             return codecs.decode(value, 'unicode_escape')
         return value
+
