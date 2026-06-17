@@ -28,6 +28,46 @@ class RiskApiTests(TestCase):
         response = self.client.get(reverse('risk-status'))
         self.assertIn(response.status_code, [401, 403])
 
+    def test_unauthenticated_user_cannot_access_evaluation_api(self):
+        list_response = self.client.get(reverse('risk-evaluation-list'))
+        create_response = self.client.post(
+            reverse('risk-evaluation-list'),
+            data={
+                'evaluation_type': 'subject',
+                'round_number': 1,
+                'score': 80,
+            },
+            content_type='application/json',
+        )
+
+        self.assertIn(list_response.status_code, [401, 403])
+        self.assertIn(create_response.status_code, [401, 403])
+
+    def test_user_cannot_see_other_users_scores_in_evaluation_list(self):
+        own = EvaluationResult.objects.create(
+            user=self.user,
+            evaluation_type=EvaluationResult.TYPE_SUBJECT,
+            round_number=1,
+            subject_name='algorithm',
+            score=90,
+            status=EvaluationResult.STATUS_PASS,
+        )
+        other = EvaluationResult.objects.create(
+            user=self.other_user,
+            evaluation_type=EvaluationResult.TYPE_SUBJECT,
+            round_number=2,
+            subject_name='secret-score',
+            score=10,
+            status=EvaluationResult.STATUS_FAIL,
+        )
+
+        response = self.client.get(reverse('risk-evaluation-list'), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item['id'] for item in response.json()['data']]
+        self.assertIn(own.id, ids)
+        self.assertNotIn(other.id, ids)
+
     def test_score_only_sets_status_from_sixty_point_rule(self):
         fail_response = self.client.post(
             reverse('risk-evaluation-list'),
