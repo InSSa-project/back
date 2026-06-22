@@ -11,14 +11,16 @@ class Settings(BaseSettings):
         default='https://gms.ssafy.io/gmsapi',
         alias='GEMINI_API_BASE_URL',
     )
+    gms_base_url: str = Field(default='https://gms.ssafy.io/gmsapi', alias='GMS_BASE_URL')
+    gms_model: str = Field(default='gpt-5.2', alias='GMS_MODEL')
     llm_provider: str = Field(default='openai', alias='LLM_PROVIDER')
     llm_request_timeout: float = Field(default=20, alias='LLM_REQUEST_TIMEOUT')
     llm_request_retries: int = Field(default=0, alias='LLM_REQUEST_RETRIES')
-    llm_http_base_url: str = Field(default='', alias='LLM_HTTP_BASE_URL')
+    llm_http_base_url: str = Field(default='https://gms.ssafy.io/gmsapi', alias='LLM_HTTP_BASE_URL')
     llm_http_endpoint: str = Field(default='/v1/chat/completions', alias='LLM_HTTP_ENDPOINT')
     llm_http_api_key: str = Field(default='', alias='LLM_HTTP_API_KEY')
     llm_http_model: str = Field(default='', alias='LLM_HTTP_MODEL')
-    default_chat_model: str = Field(default='gpt-4.1-mini', alias='DEFAULT_CHAT_MODEL')
+    default_chat_model: str = Field(default='gpt-5.2', alias='DEFAULT_CHAT_MODEL')
     default_gemini_model: str = Field(default='gemini-2.5-flash', alias='DEFAULT_GEMINI_MODEL')
     embedding_model: str = Field(default='text-embedding-3-small', alias='EMBEDDING_MODEL')
     embedding_provider: str = Field(default='auto', alias='EMBEDDING_PROVIDER')
