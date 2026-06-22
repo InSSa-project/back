@@ -1,6 +1,6 @@
 import re
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from sync.management.commands.crawl_ssafy_notices import (
@@ -80,6 +80,8 @@ class Command(BaseCommand):
                 failed_count=1,
                 finished_at=timezone.now(),
             )
+            _print_scheduled_job(self, job_log, started_at)
+            raise CommandError('scheduled_ssafy_crawl failed') from exc
 
         return _print_scheduled_job(self, job_log, started_at)
 

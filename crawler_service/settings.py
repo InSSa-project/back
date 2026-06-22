@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
@@ -116,9 +117,21 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'crawler_service.wsgi.application'
 
+DATABASE_URL = env('DATABASE_URL', default='').strip()
 DB_ENGINE = env('DB_ENGINE', default='sqlite').strip().lower()
 
-if DB_ENGINE in {'postgres', 'postgresql'}:
+# Render / Supabase 배포 환경
+if DATABASE_URL:
+    DATABASES = {
+        'default': dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            ssl_require=env_bool('DATABASE_SSL_REQUIRE', default=False),
+        )
+    }
+
+# 로컬 또는 DB_* 개별 환경변수를 사용하는 PostgreSQL 환경
+elif DB_ENGINE in {'postgres', 'postgresql'}:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
@@ -130,6 +143,8 @@ if DB_ENGINE in {'postgres', 'postgresql'}:
             'CONN_MAX_AGE': int(env('DB_CONN_MAX_AGE', default='60')),
         }
     }
+
+# 별도 DB 설정이 없는 로컬 개발 환경
 else:
     DATABASES = {
         'default': {
