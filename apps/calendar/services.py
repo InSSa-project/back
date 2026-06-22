@@ -82,6 +82,6 @@ def _matches_track(event, expected):
 
 
 def _is_common_event(metadata, event_track):
-    if metadata.get('is_common') is True or metadata.get('is_global') is True:
+    if metadata.get('is_common') is True:
         return True
     return event_track == COMMON_TRACK_KEY or event_track in COMMON_TRACK_VALUES

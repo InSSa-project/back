@@ -174,9 +174,15 @@ def filter_events_for_user_profile(events, profile):
 def _matches_profile_audience(audience, profile):
     for key in AUDIENCE_METADATA_KEYS:
         event_value = audience.get(key)
-        if key == 'track' and normalize_track_key(event_value) == COMMON_TRACK_KEY:
-            continue
         profile_value = getattr(profile, key, None)
+        if key == 'track':
+            event_track = normalize_track_key(event_value)
+            profile_track = normalize_track_key(profile_value)
+            if event_track == COMMON_TRACK_KEY or not event_track:
+                continue
+            if profile_track and event_track != profile_track:
+                return False
+            continue
         if event_value and profile_value and str(event_value) != str(profile_value):
             return False
     return True

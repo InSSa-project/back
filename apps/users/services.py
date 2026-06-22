@@ -44,6 +44,68 @@ class UserService:
             return None
 
 
+class UserOnboardingService:
+    def get_profile(self, user):
+        try:
+            return user.profile
+        except UserProfile.DoesNotExist:
+            return None
+
+    def missing_profile_fields(self, user, profile=None):
+        if profile is None:
+            profile = self.get_profile(user)
+
+        missing_fields = []
+        if not str(user.name or '').strip():
+            missing_fields.append('name')
+        if profile is None or not str(profile.track or '').strip():
+            missing_fields.append('track')
+        return missing_fields
+
+    def get_setup_state(self, user, profile=None):
+        missing_fields = self.missing_profile_fields(user, profile=profile)
+        return {
+            'requires_profile_setup': bool(missing_fields),
+            'missing_profile_fields': missing_fields,
+        }
+
+    @transaction.atomic
+    def setup_profile(self, user, data):
+        profile, _created = UserProfile.objects.get_or_create(
+            user=user,
+            defaults={'notification_email': user.email or None},
+        )
+
+        campus = data.get('campus') if 'campus' in data else data.get('region')
+        user.name = data['name']
+        user.track = data['track']
+        if campus is not None:
+            user.campus = campus or ''
+        if 'class_number' in data:
+            user.class_number = str(data.get('class_number') or '')
+        if 'generation' in data:
+            user.generation = str(data.get('generation') or '')
+        user.save(update_fields=['name', 'track', 'campus', 'class_number', 'generation', 'updated_at'])
+
+        profile.track = data['track']
+        if campus is not None:
+            profile.campus = campus or None
+        if 'class_number' in data:
+            profile.class_number = data.get('class_number')
+        if 'generation' in data:
+            profile.generation = data.get('generation')
+        profile.save(
+            update_fields=[
+                'track',
+                'campus',
+                'class_number',
+                'generation',
+                'updated_at',
+            ]
+        )
+        return profile
+
+
 class OAuthLoginService:
     def __init__(self, provider_registry=None, jwt_service=None):
         self.provider_registry = provider_registry or OAuthProviderRegistry()
@@ -260,11 +322,12 @@ class MattermostLoginService:
     @transaction.atomic
     def login(self, login_id, password):
         mattermost_user = self.authenticate_mattermost_user(login_id, password)
-        user, profile = self._get_or_create_user(mattermost_user, login_id)
+        user, profile, is_created = self._get_or_create_user(mattermost_user, login_id)
         tokens = self.jwt_service.issue_pair(user)
         return {
             'user': user,
             'profile': profile,
+            'is_created': is_created,
             **tokens,
         }
 
@@ -309,15 +372,17 @@ class MattermostLoginService:
             profile = UserProfile.objects.select_related('user').filter(mattermost_username=mattermost_username).first()
         if profile:
             self._sync_profile(profile, mattermost_user_id, mattermost_username, mattermost_nickname)
-            return profile.user, profile
+            return profile.user, profile, False
 
         user = self._find_user(mattermost_email, mattermost_username)
+        is_created = False
         if user is None:
             user = self._create_user(mattermost_email, mattermost_username, mattermost_nickname, mattermost_user_id)
+            is_created = True
 
         profile, _created = UserProfile.objects.get_or_create(user=user)
         self._sync_profile(profile, mattermost_user_id, mattermost_username, mattermost_nickname)
-        return user, profile
+        return user, profile, is_created
 
     def _find_user(self, email, username):
         if email:
