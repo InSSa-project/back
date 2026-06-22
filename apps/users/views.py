@@ -4,24 +4,127 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from django.contrib.auth import login
 from django.conf import settings
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from common.utils.api_response import error_response, success_response
 
+from apps.users.jwt.service import JwtService
 from .oauth.exceptions import OAuthError
 from .oauth.registry import OAuthProviderRegistry
-from .models import UserProfile
-from .serializers import MattermostLoginSerializer, OAuthLoginSerializer, ProfileImageUploadSerializer, UserProfileSerializer, UserSerializer
+from .models import User, UserProfile
+from .serializers import (
+    MattermostLoginSerializer,
+    OAuthLoginSerializer,
+    ProfileSetupSerializer,
+    ProfileImageUploadSerializer,
+    SignupSerializer,
+    UserProfileSerializer,
+    UserSerializer,
+)
 from .services import (
     MattermostAuthError,
     MattermostConfigError,
     MattermostLoginService,
     MattermostUnavailableError,
     OAuthLoginService,
+    UserOnboardingService,
     UserService,
 )
+
+
+def _profile_payload(profile, request=None):
+    if profile is None:
+        return {
+            'track': None,
+            'campus': None,
+            'class_number': None,
+            'generation': None,
+        }
+
+    data = UserProfileSerializer(profile, context={'request': request}).data
+    return {
+        'track': data.get('track'),
+        'campus': data.get('campus'),
+        'class_number': data.get('class_number'),
+        'generation': data.get('generation'),
+    }
+
+
+def _auth_response_payload(user, tokens, request, profile=None, is_new_user=False, include_mattermost_fields=False):
+    onboarding = UserOnboardingService()
+    if profile is None:
+        profile = onboarding.get_profile(user)
+    setup_state = onboarding.get_setup_state(user, profile=profile)
+    user_data = UserSerializer(user).data
+
+    if include_mattermost_fields and profile is not None:
+        user_data.update(
+            {
+                'mattermost_user_id': profile.mattermost_user_id,
+                'mattermost_username': profile.mattermost_username,
+                'mattermost_nickname': profile.mattermost_nickname,
+            }
+        )
+
+    return {
+        'access_token': tokens['access_token'],
+        'refresh_token': tokens['refresh_token'],
+        'access': tokens['access_token'],
+        'refresh': tokens['refresh_token'],
+        'user': user_data,
+        'profile': _profile_payload(profile, request=request),
+        'is_created': is_new_user,
+        'is_new_user': is_new_user,
+        **setup_state,
+    }
+
+
+class SignupView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = SignupSerializer
+    jwt_service_class = JwtService
+
+    @transaction.atomic
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = User.objects.create_user(
+            username=self._unique_username(data['email'].split('@')[0]),
+            email=data['email'],
+            password=data['password'],
+            name=data['name'],
+            track=data['track'],
+            campus=data.get('campus') or data.get('region') or '',
+            class_number=str(data.get('class_number') or ''),
+            generation=str(data.get('generation') or ''),
+        )
+        profile = UserProfile.objects.create(
+            user=user,
+            notification_email=user.email,
+            track=data['track'],
+            campus=data.get('campus') or data.get('region') or None,
+            class_number=data.get('class_number'),
+            generation=data.get('generation'),
+        )
+        tokens = self.jwt_service_class().issue_pair(user)
+        return success_response(
+            _auth_response_payload(user, tokens, request, profile=profile, is_new_user=True),
+            status_code=status.HTTP_201_CREATED,
+        )
+
+    def _unique_username(self, base_username):
+        normalized = ''.join(char for char in str(base_username) if char.isalnum() or char in ['_', '-']) or 'user'
+        candidate = normalized[:120]
+        suffix = 1
+        while User.objects.filter(username=candidate).exists():
+            suffix += 1
+            candidate = f'{normalized[:110]}_{suffix}'
+        return candidate
 
 
 class MeView(APIView):
@@ -38,7 +141,9 @@ class MyProfileView(APIView):
 
     def get(self, request):
         profile = self._get_or_create_profile(request.user)
-        return success_response(UserProfileSerializer(profile, context={'request': request}).data)
+        payload = UserProfileSerializer(profile, context={'request': request}).data
+        payload.update(UserOnboardingService().get_setup_state(request.user, profile=profile))
+        return success_response(payload)
 
     def patch(self, request):
         profile = self._get_or_create_profile(request.user)
@@ -53,6 +158,26 @@ class MyProfileView(APIView):
             defaults={'notification_email': user.email or None},
         )
         return profile
+
+
+class ProfileSetupView(APIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProfileSetupSerializer
+    onboarding_service_class = UserOnboardingService
+
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile = self.onboarding_service_class().setup_profile(request.user, serializer.validated_data)
+        request.user.refresh_from_db()
+        setup_state = self.onboarding_service_class().get_setup_state(request.user, profile=profile)
+        return success_response(
+            {
+                'user': UserSerializer(request.user).data,
+                'profile': _profile_payload(profile, request=request),
+                **setup_state,
+            }
+        )
 
 
 class MyProfileImageView(APIView):
@@ -100,12 +225,14 @@ class OAuthLoginView(APIView):
         except OAuthError as exc:
             return error_response(str(exc), code=status.HTTP_400_BAD_REQUEST)
 
-        return success_response({
-            'access_token': result['access_token'],
-            'refresh_token': result['refresh_token'],
-            'is_created': result['is_created'],
-            'user': UserSerializer(result['user']).data,
-        })
+        return success_response(
+            _auth_response_payload(
+                result['user'],
+                result,
+                request,
+                is_new_user=result['is_created'],
+            )
+        )
 
 
 class MattermostLoginView(APIView):
@@ -134,18 +261,14 @@ class MattermostLoginView(APIView):
 
         profile = result['profile']
         return success_response(
-            {
-                'access_token': result['access_token'],
-                'refresh_token': result['refresh_token'],
-                'user': {
-                    'id': result['user'].id,
-                    'email': result['user'].email,
-                    'name': result['user'].name,
-                    'mattermost_user_id': profile.mattermost_user_id,
-                    'mattermost_username': profile.mattermost_username,
-                    'mattermost_nickname': profile.mattermost_nickname,
-                },
-            }
+            _auth_response_payload(
+                result['user'],
+                result,
+                request,
+                profile=profile,
+                is_new_user=result['is_created'],
+                include_mattermost_fields=True,
+            )
         )
 
 
@@ -192,12 +315,17 @@ class OAuthCallbackView(APIView):
             return f'{frontend_base_url}{callback_path}#{fragment}'
 
         # TODO: Replace URL fragment token handoff with httpOnly cookies before production.
+        profile = UserOnboardingService().get_profile(result['user'])
+        setup_state = UserOnboardingService().get_setup_state(result['user'], profile=profile)
         fragment = urlencode(
             {
                 'access_token': result['access_token'],
                 'refresh_token': result['refresh_token'],
                 'redirect': result.get('frontend_next') or '/calendar',
                 'is_created': 'true' if result.get('is_created') else 'false',
+                'is_new_user': 'true' if result.get('is_created') else 'false',
+                'requires_profile_setup': 'true' if setup_state['requires_profile_setup'] else 'false',
+                'missing_profile_fields': ','.join(setup_state['missing_profile_fields']),
             }
         )
         return f'{frontend_base_url}{callback_path}#{fragment}'

@@ -1727,6 +1727,27 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual([item['source_type'] for item in items], ['notice', 'mentoring_notice'])
         self.assertEqual(collect.call_args_list[1].kwargs['list_url'], 'https://example.com/list/mentoring')
 
+    def test_authenticated_documents_closes_playwright_resources_when_collection_fails(self):
+        fake_env = {
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_ID': 'tester',
+            'SSAFY_PASSWORD': 'secret',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/list/notice',
+        }
+        state = {}
+
+        with patch.dict('os.environ', fake_env, clear=True):
+            with patch.dict('sys.modules', _fake_playwright_modules(state=state)):
+                with patch(
+                    'sync.services.ssafy_crawler._collect_authenticated_list',
+                    side_effect=RuntimeError('source exploded'),
+                ):
+                    with self.assertRaises(SsafyCrawlerError):
+                        load_ssafy_authenticated_documents()
+
+        self.assertEqual(state.get('context_close_count'), 1)
+        self.assertEqual(state.get('browser_close_count'), 1)
+
     def test_collect_authenticated_list_raises_session_expired_for_login_page(self):
         page = _StaticPage(
             '<html><head><title>로그인</title></head><body><input name="userId"><input name="userPwd"></body></html>',
@@ -2123,6 +2144,8 @@ class SampleNoticeImportTests(TestCase):
     def test_check_crawl_env_succeeds_when_required_values_exist(self):
         output = StringIO()
         env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DATABASE_URL': 'postgres://inssa:pass@example.com:5432/inssa',
             'SSAFY_ID': 'render-admin',
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
@@ -2135,14 +2158,99 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=5', rendered)
+        self.assertIn('checked_count=7', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/mentoring', rendered)
 
+    def test_check_crawl_env_succeeds_with_db_variable_settings(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DB_ENGINE': 'postgres',
+            'DB_NAME': 'inssa',
+            'DB_USER': 'inssa-user',
+            'DB_PASSWORD': 'db-secret-password',
+            'DB_HOST': 'db.example.com',
+            'DB_PORT': '5432',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('SSAFY crawl environment check OK.', rendered)
+        self.assertIn('checked_count=7', rendered)
+        self.assertNotIn('db-secret-password', rendered)
+        self.assertNotIn('db.example.com', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+
+    def test_check_crawl_env_does_not_require_database_ssl_require(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DATABASE_URL': 'postgres://inssa:pass@example.com:5432/inssa',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        self.assertIn('SSAFY crawl environment check OK.', output.getvalue())
+        self.assertNotIn('DATABASE_SSL_REQUIRE', output.getvalue())
+
+    def test_check_crawl_env_fails_without_database_settings(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- DATABASE_URL or DB_ENGINE=postgres with DB_*', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+
+    def test_check_crawl_env_accepts_mentoring_list_url_alias(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DATABASE_URL': 'postgres://inssa:pass@example.com:5432/inssa',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        self.assertIn('SSAFY crawl environment check OK.', output.getvalue())
+
     def test_check_crawl_env_prints_missing_keys_without_values(self):
         output = StringIO()
         env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DATABASE_URL': 'postgres://inssa:pass@example.com:5432/inssa',
             'SSAFY_ID': 'render-admin',
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
@@ -2155,7 +2263,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
-        self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL', rendered)
+        self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL or SSAFY_MENTORING_LIST_URL', rendered)
         self.assertNotIn('- SSAFY_QUEST_LIST_URL', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
@@ -2257,7 +2365,8 @@ class SampleNoticeImportTests(TestCase):
             'sync.management.commands.scheduled_ssafy_crawl.run_notice_import',
             side_effect=RuntimeError('crawler exploded'),
         ):
-            call_command('scheduled_ssafy_crawl', mode='sample', stdout=output)
+            with self.assertRaises(CommandError):
+                call_command('scheduled_ssafy_crawl', mode='sample', stdout=output)
 
         job_log = CrawlJobLog.objects.get()
         self.assertEqual(job_log.status, CrawlJobLog.STATUS_FAILED)
@@ -4712,7 +4821,9 @@ def _google_vision_modules(ocr_text):
     }
 
 
-def _fake_playwright_modules():
+def _fake_playwright_modules(state=None):
+    state = state if state is not None else {}
+
     class _FakeLocator:
         def count(self):
             return 0
@@ -4744,6 +4855,7 @@ def _fake_playwright_modules():
             return _FakePage()
 
         def close(self):
+            state['context_close_count'] = state.get('context_close_count', 0) + 1
             return None
 
     class _FakeBrowser:
@@ -4751,6 +4863,7 @@ def _fake_playwright_modules():
             return _FakeContext()
 
         def close(self):
+            state['browser_close_count'] = state.get('browser_close_count', 0) + 1
             return None
 
     class _FakeChromium:

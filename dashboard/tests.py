@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from schedules.models import ScheduleEvent
-from sync.models import RawSsafyData
+from sync.models import RawSsafyData, UserNoticeReadStatus
 
 
 @override_settings(SECURE_SSL_REDIRECT=False)
@@ -207,6 +208,73 @@ class HomeDashboardApiTests(TestCase):
         notice_card = _action_card(payload, 'notices')
         self.assertEqual(notice_card['count'], 1)
         self.assertEqual(notice_card['value'], '확인 안 한 공지 1개')
+
+    def test_notice_count_prefers_notice_date_over_collected_at(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='실제 최근 공지',
+            raw_text='본문',
+            collected_at=self.now - timedelta(days=30),
+            metadata_json={'notice_date': '2026-06-07'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='수집만 최근인 오래된 공지',
+            raw_text='본문',
+            collected_at=self.now,
+            metadata_json={'notice_date': '2026-01-10'},
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['new_notice_count'], 1)
+        self.assertEqual(payload['unread_new_notice_count'], 1)
+        self.assertEqual(payload['unread_notice_count_basis'], 'recent_7_days')
+
+    def test_unread_new_notice_count_uses_user_read_status(self):
+        User = get_user_model()
+        user_a = User.objects.create_user(username='notice-a', email='notice-a@example.com', password='password')
+        user_b = User.objects.create_user(username='notice-b', email='notice-b@example.com', password='password')
+        notices = [
+            RawSsafyData.objects.create(
+                source_type='notice',
+                title=f'최근 공지 {index}',
+                raw_text='본문',
+                metadata_json={'notice_date': f'2026-06-0{index + 5}'},
+            )
+            for index in range(3)
+        ]
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='오래된 공지',
+            raw_text='본문',
+            metadata_json={'notice_date': '2026-05-20'},
+        )
+        UserNoticeReadStatus.objects.create(user=user_a, raw_data=notices[0])
+
+        self.client.force_login(user_a)
+        response_a = self._get()
+        self.client.force_login(user_b)
+        response_b = self._get()
+
+        self.assertEqual(response_a.status_code, 200)
+        self.assertEqual(response_b.status_code, 200)
+        self.assertEqual(response_a.json()['unread_new_notice_count'], 2)
+        self.assertEqual(response_b.json()['unread_new_notice_count'], 3)
+
+    def test_upcoming_schedules_are_limited_to_this_week(self):
+        this_week = self._event('이번 주 일정', 2)
+        self._event('다음 주 일정', 7)
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual([item['id'] for item in payload['upcoming_schedules']], [this_week.id])
+        self.assertEqual([item['id'] for item in payload['week_schedules']], [this_week.id])
+        self.assertEqual(payload['period_label'], 'this_week')
 
     def test_risk_recommendation_count_is_returned(self):
         self._event('알고리즘 평가', 1, event_type='exam')

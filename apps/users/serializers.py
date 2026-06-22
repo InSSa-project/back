@@ -25,6 +25,25 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
+class SignupSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, trim_whitespace=False, min_length=1)
+    name = serializers.CharField(max_length=100, allow_blank=False)
+    track = serializers.CharField(allow_blank=False)
+    campus = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    region = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    class_number = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    generation = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+    def validate_email(self, email):
+        if User.objects.filter(email=email).exists():
+            raise serializers.ValidationError('Email already exists.')
+        return email
+
+    def validate_track(self, value):
+        return UserProfileSerializer().validate_track(value)
+
+
 class OAuthLoginSerializer(serializers.Serializer):
     provider = serializers.CharField(max_length=30)
     access_token = serializers.CharField(write_only=True, trim_whitespace=False)
@@ -41,6 +60,28 @@ class MattermostLoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
 
 
+class ProfileSetupSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=100, allow_blank=False)
+    track = serializers.CharField(allow_blank=False)
+    campus = serializers.ChoiceField(
+        choices=UserProfile.CAMPUS_CHOICES,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+    region = serializers.ChoiceField(
+        choices=UserProfile.CAMPUS_CHOICES,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+    class_number = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    generation = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+    def validate_track(self, value):
+        return UserProfileSerializer().validate_track(value)
+
+
 class UserProfileSerializer(serializers.ModelSerializer):
     TRACK_INPUT_ALIASES = {
         'java_major': UserProfile.TRACK_JAVA,
@@ -50,6 +91,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         'mobile': UserProfile.TRACK_MOBILE,
         'data': UserProfile.TRACK_DATA,
         'ai': UserProfile.TRACK_AI,
+        'meister': 'meister',
         'etc': UserProfile.TRACK_ETC,
     }
     TRACK_OUTPUT_ALIASES = {
@@ -59,6 +101,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         UserProfile.TRACK_MOBILE: 'mobile',
         UserProfile.TRACK_DATA: 'data',
         UserProfile.TRACK_AI: 'ai',
+        'meister': 'meister',
         UserProfile.TRACK_ETC: 'etc',
     }
 
