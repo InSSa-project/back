@@ -55,9 +55,10 @@ _DETAIL_DEBUG_COUNTS = {}
 SOURCE_LIST_URL_ENV_NAMES = {
     'notice': 'SSAFY_NOTICE_LIST_URL',
     'academic_rule': 'SSAFY_RULE_LIST_URL',
+    'mentoring': 'SSAFY_MENTORING_DATA_LIST_URL',
     'faq': 'SSAFY_FAQ_LIST_URL',
     'quest': 'SSAFY_QUEST_LIST_URL',
-    'mentoring_notice': 'SSAFY_MENTORING_LIST_URL',
+    'mentoring_notice': 'SSAFY_MENTORING_NOTICE_LIST_URL',
     'curriculum': 'SSAFY_CURRICULUM_LIST_URL',
     'learning_material': 'SSAFY_LEARNING_MATERIAL_LIST_URL',
     'event': 'SSAFY_EVENT_LIST_URL',
@@ -166,10 +167,11 @@ def load_ssafy_authenticated_documents(
     academic_rule_url = rule_list_url or os.getenv('SSAFY_RULE_LIST_URL')
     faq_url = faq_list_url or os.getenv('SSAFY_FAQ_LIST_URL')
     quest_url = quest_list_url or os.getenv('SSAFY_QUEST_LIST_URL')
+    mentoring_url = os.getenv('SSAFY_MENTORING_DATA_LIST_URL') or os.getenv('SSAFY_MENTORING_DATA_URL')
     mentoring_notice_url = (
         mentoring_notice_list_url
-        or os.getenv('SSAFY_MENTORING_LIST_URL')
         or os.getenv('SSAFY_MENTORING_NOTICE_LIST_URL')
+        or (os.getenv('SSAFY_MENTORING_LIST_URL') if not mentoring_url else '')
     )
     curriculum_url = curriculum_list_url or os.getenv('SSAFY_CURRICULUM_LIST_URL')
     learning_material_url = learning_material_list_url or os.getenv('SSAFY_LEARNING_MATERIAL_LIST_URL')
@@ -224,6 +226,7 @@ def load_ssafy_authenticated_documents(
                 for source_type, list_url, link_extractor in _source_collection_specs(
                     notice_url=notice_url,
                     academic_rule_url=academic_rule_url,
+                    mentoring_url=mentoring_url,
                     faq_url=faq_url,
                     quest_url=quest_url,
                     mentoring_notice_url=mentoring_notice_url,
@@ -1186,6 +1189,10 @@ def _extract_mentoring_notice_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'], include_titles=True)
 
 
+def _extract_mentoring_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'], include_titles=True)
+
+
 def _extract_curriculum_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['curriculum', 'course', '\ucee4\ub9ac\ud058\ub7fc', '\uac15\uc758\uacc4\ud68d', '\uad50\uc218'])
 
@@ -1201,6 +1208,7 @@ def _extract_event_links(soup, base_url):
 def _source_collection_specs(
     notice_url,
     academic_rule_url,
+    mentoring_url,
     faq_url,
     quest_url,
     mentoring_notice_url,
@@ -1211,6 +1219,7 @@ def _source_collection_specs(
     specs = [
         ('notice', notice_url, _extract_notice_link_items),
         ('academic_rule', academic_rule_url, _extract_academic_rule_links),
+        ('mentoring', mentoring_url, _extract_mentoring_links),
         ('quest', quest_url, _extract_quest_links),
         ('curriculum', curriculum_url, _extract_curriculum_links),
         ('faq', faq_url, _extract_faq_links),
@@ -1490,7 +1499,17 @@ def extract_academic_rule_reply_image_urls_from_html(raw_html, source_url):
     soup = BeautifulSoup(raw_html, 'html.parser')
     image_urls = []
     seen = set()
-    for image in soup.select('tr.reply img'):
+    detail_image_selectors = (
+        'tr.reply img, '
+        '.reply img, '
+        '.accordion-collapse img, '
+        '.accordion-content img, '
+        '.collapse img, '
+        '.panel-collapse img, '
+        '.panel-body img, '
+        '[aria-labelledby] img'
+    )
+    for image in soup.select(detail_image_selectors):
         for attribute in LAZY_IMAGE_ATTRIBUTES:
             _append_image_url(image_urls, seen, image.get(attribute, ''), source_url)
         _append_srcset_image_urls(image_urls, seen, image.get('srcset', ''), source_url)
@@ -1501,7 +1520,11 @@ def extract_academic_rule_reply_image_urls_from_html(raw_html, source_url):
 def _academic_rule_reply_row_count(raw_html):
     if not raw_html:
         return 0
-    return len(BeautifulSoup(raw_html, 'html.parser').select('tr.reply'))
+    return len(
+        BeautifulSoup(raw_html, 'html.parser').select(
+            'tr.reply, .reply, .accordion-collapse, .accordion-content, .panel-collapse, .panel-body'
+        )
+    )
 
 
 def _append_srcset_image_urls(image_urls, seen, srcset, source_url):
