@@ -535,6 +535,7 @@ def _ingest_raw_data_to_rag(raw_data_ids):
 ALLOWED_SOURCE_TYPES = {
     'notice',
     'academic_rule',
+    'mentoring',
     'mentoring_notice',
     'mentor_story',
     'geeknews',
@@ -711,12 +712,12 @@ def _latest_notice_title(raw_items=None):
 
 
 def _source_type_counts():
-    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq', 'event']
+    wanted = ['notice', 'academic_rule', 'mentoring', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq', 'event']
     return '|'.join(f'{source_type}:{RawSsafyData.objects.filter(source_type=source_type).count()}' for source_type in wanted)
 
 
 def _raw_all_notice_like_count():
-    wanted = ['notice', 'academic_rule', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq', 'event']
+    wanted = ['notice', 'academic_rule', 'mentoring', 'mentoring_notice', 'curriculum', 'learning_material', 'quest', 'faq', 'event']
     return RawSsafyData.objects.filter(source_type__in=wanted).count()
 
 
@@ -768,6 +769,8 @@ def _normalize_notice_category(source_type, title, raw_text, metadata):
     if current:
         return current
     target = f'{title} {raw_text}'
+    if source_type in {'mentoring', 'mentoring_notice'}:
+        return 'mentoring'
     if source_type != 'notice':
         return 'etc'
     if any(keyword in target for keyword in ('평가', '시험', '테스트', '월말평가', '과목평가')):
