@@ -68,5 +68,8 @@ jobs:
       - name: Check crawl environment
         run: python manage.py check_crawl_env
 
+      - name: Run migrations
+        run: python manage.py migrate --noinput
+
       - name: Run scheduled crawl
         run: python manage.py scheduled_ssafy_crawl
