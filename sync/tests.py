@@ -2163,6 +2163,72 @@ class SampleNoticeImportTests(TestCase):
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/mentoring', rendered)
 
+    def test_check_crawl_env_succeeds_with_db_variable_settings(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DB_ENGINE': 'postgres',
+            'DB_NAME': 'inssa',
+            'DB_USER': 'inssa-user',
+            'DB_PASSWORD': 'db-secret-password',
+            'DB_HOST': 'db.example.com',
+            'DB_PORT': '5432',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('SSAFY crawl environment check OK.', rendered)
+        self.assertIn('checked_count=7', rendered)
+        self.assertNotIn('db-secret-password', rendered)
+        self.assertNotIn('db.example.com', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+
+    def test_check_crawl_env_does_not_require_database_ssl_require(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'DATABASE_URL': 'postgres://inssa:pass@example.com:5432/inssa',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        self.assertIn('SSAFY crawl environment check OK.', output.getvalue())
+        self.assertNotIn('DATABASE_SSL_REQUIRE', output.getvalue())
+
+    def test_check_crawl_env_fails_without_database_settings(self):
+        output = StringIO()
+        env = {
+            'SECRET_KEY': 'render-secret-key',
+            'SSAFY_ID': 'render-admin',
+            'SSAFY_PASSWORD': 'super-secret-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+
+        rendered = output.getvalue()
+        self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- DATABASE_URL or DB_ENGINE=postgres with DB_*', rendered)
+        self.assertNotIn('render-admin', rendered)
+        self.assertNotIn('super-secret-password', rendered)
+
     def test_check_crawl_env_accepts_mentoring_list_url_alias(self):
         output = StringIO()
         env = {

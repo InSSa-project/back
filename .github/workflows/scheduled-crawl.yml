@@ -22,6 +22,13 @@ jobs:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DATABASE_SSL_REQUIRE: ${{ secrets.DATABASE_SSL_REQUIRE }}
+      DB_ENGINE: ${{ secrets.DB_ENGINE }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_CONN_MAX_AGE: ${{ secrets.DB_CONN_MAX_AGE }}
       SSAFY_ID: ${{ secrets.SSAFY_ID }}
       SSAFY_PASSWORD: ${{ secrets.SSAFY_PASSWORD }}
       SSAFY_LOGIN_URL: ${{ secrets.SSAFY_LOGIN_URL }}
