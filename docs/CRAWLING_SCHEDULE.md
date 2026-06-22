@@ -72,7 +72,7 @@ Render Dashboard에서 다음 순서로 만든다.
 3. `Cron Job` 선택
 4. 기존 inSSa 백엔드 repository 연결
 5. Region은 백엔드 서비스와 같은 region 선택 권장
-6. Runtime은 Python 환경 사용
+6. Runtime은 기존 백엔드 배포 방식과 맞춘다. 현재 레포에는 Dockerfile이 없으므로 Python Runtime 기준으로 설정한다.
 7. Root Directory가 필요한 구조라면 백엔드 폴더 기준으로 지정
 8. Schedule과 Command를 설정
 
@@ -81,10 +81,16 @@ Render Dashboard에서 다음 순서로 만든다.
 Schedule 예시:
 
 ```text
-0 * * * *
+17 * * * *
 ```
 
 Command:
+
+```bash
+python manage.py scheduled_ssafy_crawl
+```
+
+`scheduled_ssafy_crawl`은 인자를 주지 않으면 자동으로 `notice,mentoring_notice`, `recent_limit=30`, `max_pages=2`를 사용한다. 명시적으로 적고 싶다면 아래처럼 실행해도 같다.
 
 ```bash
 python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
@@ -93,7 +99,7 @@ python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --r
 현재 repository root가 상위 폴더이고 Render Root Directory를 `back`으로 잡지 않았다면 command는 아래처럼 조정한다.
 
 ```bash
-cd back && python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
+cd back && python manage.py scheduled_ssafy_crawl
 ```
 
 ### Weekly Job
@@ -132,6 +138,8 @@ SSAFY_NOTICE_LIST_URL=
 SSAFY_MENTORING_NOTICE_LIST_URL=
 ```
 
+멘토링 목록 URL은 기존 코드 호환을 위해 `SSAFY_MENTORING_NOTICE_LIST_URL` 또는 `SSAFY_MENTORING_LIST_URL` 중 하나만 있어도 된다. Render에서는 둘 중 하나로 통일하되, 이미 운영 환경에 등록된 이름을 우선 사용한다.
+
 Hourly 권장:
 
 ```env
@@ -140,6 +148,7 @@ SSAFY_NOTICE_MAX_PAGES=2
 SSAFY_CRAWLER_RECENT_LIMIT=30
 SSAFY_DETAIL_TIMEOUT=10
 SSAFY_SOURCE_TIMEOUT=60
+DATABASE_SSL_REQUIRE=False
 ```
 
 Weekly 선택:
@@ -168,7 +177,7 @@ python manage.py check_crawl_env
 
 ## Playwright 주의사항
 
-`requirements.txt`에는 `playwright>=1.44.0`가 포함되어 있다. 따라서 Python 패키지는 dependency install 단계에서 설치된다.
+`requirements.txt`에는 고정 버전의 `playwright`가 포함되어 있다. 따라서 Python 패키지는 dependency install 단계에서 설치된다.
 
 다만 Render 실행 환경에 Chromium 브라우저 바이너리가 없으면 크롤러가 실행 중 실패할 수 있다. Render 로그에서 다음과 비슷한 메시지를 확인한다.
 
@@ -187,10 +196,10 @@ python -m playwright install chromium
 Render에서 브라우저 실행 실패가 발생하면 build command에 아래 명령을 추가한다.
 
 ```bash
-pip install -r requirements.txt && python -m playwright install chromium
+pip install -r requirements.txt && python -m playwright install --with-deps chromium
 ```
 
-현재 프로젝트에는 별도 Dockerfile이나 Render 전용 build script가 없다. 이번 운영 준비에서는 Docker, Celery, Redis 같은 배포 구조를 추가하지 않는다.
+현재 프로젝트에는 별도 Dockerfile이나 Render 전용 build script가 없다. 이번 운영 준비에서는 기존 Python Runtime 배포를 유지하고, Docker, Celery, Redis 같은 배포 구조는 추가하지 않는다. Render에서 Linux 의존성 설치가 계속 실패할 때만 Docker 전환을 별도 작업으로 검토한다.
 
 ## 실패 로그 확인
 
