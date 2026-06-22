@@ -1,0 +1,65 @@
+name: Scheduled SSAFY Crawl
+
+on:
+  schedule:
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-ssafy-crawl
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  crawl:
+    name: Run scheduled_ssafy_crawl
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_SSL_REQUIRE: ${{ secrets.DATABASE_SSL_REQUIRE }}
+      SSAFY_ID: ${{ secrets.SSAFY_ID }}
+      SSAFY_PASSWORD: ${{ secrets.SSAFY_PASSWORD }}
+      SSAFY_LOGIN_URL: ${{ secrets.SSAFY_LOGIN_URL }}
+      SSAFY_NOTICE_LIST_URL: ${{ secrets.SSAFY_NOTICE_LIST_URL }}
+      SSAFY_MENTORING_NOTICE_LIST_URL: ${{ secrets.SSAFY_MENTORING_NOTICE_LIST_URL }}
+      SSAFY_CRAWLER_MODE: ssafy_notice
+      SSAFY_CRAWLER_SOURCES: notice,mentoring_notice
+      SSAFY_NOTICE_MAX_PAGES: '2'
+      SSAFY_CRAWLER_RECENT_LIMIT: '30'
+      SSAFY_DETAIL_TIMEOUT: ${{ secrets.SSAFY_DETAIL_TIMEOUT }}
+      SSAFY_SOURCE_TIMEOUT: ${{ secrets.SSAFY_SOURCE_TIMEOUT }}
+      OCR_PROVIDER: ${{ secrets.OCR_PROVIDER }}
+      CLOVA_OCR_INVOKE_URL: ${{ secrets.CLOVA_OCR_INVOKE_URL }}
+      CLOVA_OCR_SECRET_KEY: ${{ secrets.CLOVA_OCR_SECRET_KEY }}
+      GOOGLE_VISION_ENABLED: ${{ secrets.GOOGLE_VISION_ENABLED }}
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Check crawl environment
+        run: python manage.py check_crawl_env
+
+      - name: Run scheduled crawl
+        run: python manage.py scheduled_ssafy_crawl
