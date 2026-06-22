@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 
 import dj_database_url
@@ -117,7 +117,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'crawler_service.wsgi.application'
 
-DATABASE_URL = env('DATABASE_URL')
+DATABASE_URL = env('DATABASE_URL', default='').strip()
+DB_ENGINE = env('DB_ENGINE', default='sqlite').strip().lower()
+
+# Render / Supabase 배포 환경
 if DATABASE_URL:
     DATABASES = {
         'default': dj_database_url.parse(
@@ -126,6 +129,22 @@ if DATABASE_URL:
             ssl_require=env_bool('DATABASE_SSL_REQUIRE', default=False),
         )
     }
+
+# 로컬 또는 DB_* 개별 환경변수를 사용하는 PostgreSQL 환경
+elif DB_ENGINE in {'postgres', 'postgresql'}:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': env('DB_NAME'),
+            'USER': env('DB_USER'),
+            'PASSWORD': env('DB_PASSWORD'),
+            'HOST': env('DB_HOST', default='localhost'),
+            'PORT': env('DB_PORT', default='5432'),
+            'CONN_MAX_AGE': int(env('DB_CONN_MAX_AGE', default='60')),
+        }
+    }
+
+# 별도 DB 설정이 없는 로컬 개발 환경
 else:
     DATABASES = {
         'default': {
