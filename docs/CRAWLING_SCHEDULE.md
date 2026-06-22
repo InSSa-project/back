@@ -1,254 +1,271 @@
 # SSAFY Crawling Schedule
 
-이 문서는 SSAFY 자동 크롤링을 MVP 운영 기준에 맞춰 Render Cron Job으로 실행하는 방법을 정리한다.
+이 문서는 inSSa 백엔드의 자동 크롤링을 운영 비용 0원 기준으로 실행하는 방법을 정리한다.
 
-## 운영 원칙
+## 운영 방식
 
-1시간 주기 자동 크롤링은 공지성 데이터만 가볍게 확인한다.
+MVP 기본 방식은 GitHub Actions scheduled workflow다.
 
-```bash
-python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
-```
+- 비용 목표: 0원
+- 실행 위치: GitHub-hosted `ubuntu-latest` runner
+- 실행 주기: 2시간마다 17분
+- 실행 명령: `python manage.py scheduled_ssafy_crawl`
+- 기본 대상: `notice,mentoring_notice`
+- 저장 위치: Supabase PostgreSQL, 기본은 `DB_*` 개별 환경변수 사용
 
-자주 바뀌지 않는 데이터는 주 1회 또는 수동 동기화로 분리한다.
+Render Cron Job은 생성하지 않는다. Render Cron Job은 월 최소 비용이 발생할 수 있으므로, MVP 무료 운영에서는 사용하지 않고 향후 유료 안정화 옵션으로만 검토한다.
 
-```bash
-python manage.py scheduled_ssafy_crawl --source-type academic_rule,curriculum,learning_material,faq,event --recent-limit 30 --max-pages 2
-```
+## GitHub Actions Workflow
 
-전체 동기화는 수동으로만 실행한다.
-
-```bash
-python manage.py scheduled_ssafy_crawl --all
-```
-
-매시간 `--all` 실행은 금지한다. 전체 source를 매시간 훑으면 상세 페이지 접근, OCR, 일정 파싱 비용이 커져 실행 시간이 길어진다.
-
-## 1시간 주기 자동 크롤링
-
-대상 source:
-
-- `notice`
-- `mentoring_notice`
-
-권장 명령어:
-
-```bash
-python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
-```
-
-이 명령은 최신 공지성 데이터만 확인한다. 같은 문서로 판단되면 상세 페이지 접근, OCR, ScheduleEvent 생성을 최소화한다.
-
-## 주 1회 크롤링
-
-대상 source:
-
-- `academic_rule`
-- `curriculum`
-- `learning_material`
-- `faq`
-- `event`
-
-권장 명령어:
-
-```bash
-python manage.py scheduled_ssafy_crawl --source-type academic_rule,curriculum,learning_material,faq,event --recent-limit 30 --max-pages 2
-```
-
-위 source들은 매시간 확인할 만큼 자주 바뀌는 데이터가 아니다. Render Cron Job으로 운영한다면 주 1회 정도만 등록한다.
-
-## 보류 대상
-
-`quest`는 공통 자동 크롤링 대상에서 제외한다.
-
-`quest`가 시험점수, 평가, 개인별 데이터와 연결될 수 있다면 MVP 공통 크롤링에서 다루지 않는다. 개인 데이터 수집이 필요해지면 별도 동의, 인증, 보안, 저장 정책을 먼저 설계한 뒤 별도 기능으로 다룬다.
-
-## Render Cron Job 예시
-
-Render Dashboard에서 다음 순서로 만든다.
-
-1. Render Dashboard 접속
-2. `New +` 클릭
-3. `Cron Job` 선택
-4. 기존 inSSa 백엔드 repository 연결
-5. Region은 백엔드 서비스와 같은 region 선택 권장
-6. Runtime은 Python 환경 사용
-7. Root Directory가 필요한 구조라면 백엔드 폴더 기준으로 지정
-8. Schedule과 Command를 설정
-
-### Hourly Job
-
-Schedule 예시:
+workflow 파일:
 
 ```text
-0 * * * *
+.github/workflows/scheduled-crawl.yml
 ```
 
-Command:
+자동 실행 schedule:
+
+```yaml
+schedule:
+  - cron: '17 */2 * * *'
+```
+
+GitHub Actions cron은 UTC 기준이다. `17 */2 * * *`는 UTC 기준 00:17, 02:17, 04:17처럼 2시간마다 17분에 실행된다. 정각을 피하는 이유는 GitHub Actions scheduled workflow가 매시 정각 부하 시간대에 지연되거나 누락될 수 있기 때문이다.
+
+수동 실행도 가능하도록 `workflow_dispatch`를 사용한다.
+
+## 실행 단계
+
+workflow는 다음 순서로 동작한다.
+
+1. 저장소 checkout
+2. Python 3.14 설정
+3. pip cache 적용
+4. `requirements.txt` 설치
+5. Playwright Chromium 설치
+6. 크롤링 환경변수 검사
+7. 실제 운영 크롤링 실행
+
+Playwright 설치 명령:
 
 ```bash
-python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
+python -m playwright install --with-deps chromium
 ```
 
-현재 repository root가 상위 폴더이고 Render Root Directory를 `back`으로 잡지 않았다면 command는 아래처럼 조정한다.
+운영 실행 명령:
 
 ```bash
-cd back && python manage.py scheduled_ssafy_crawl --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
+python manage.py scheduled_ssafy_crawl
 ```
 
-### Weekly Job
+이 명령은 인자를 주지 않으면 자동으로 `notice,mentoring_notice`, `recent_limit=30`, `max_pages=2`를 사용한다. 전체 과거 데이터 크롤링이나 전체 OCR 재처리는 자동 workflow에서 실행하지 않는다.
 
-Schedule 예시:
+## GitHub Secrets
+
+GitHub repository의 `Settings` -> `Secrets and variables` -> `Actions` -> `Repository secrets`에 등록한다.
+
+공통 필수:
 
 ```text
-0 18 * * 0
+SECRET_KEY
+SSAFY_ID
+SSAFY_PASSWORD
+SSAFY_LOGIN_URL
+SSAFY_NOTICE_LIST_URL
+SSAFY_MENTORING_NOTICE_LIST_URL
 ```
 
-위 예시는 매주 일요일 18시에 실행한다. Render의 cron timezone 정책을 확인하고 운영 시간에 맞게 조정한다.
+운영 DB 필수, 현재 프로젝트 기본 방식:
 
-Command:
+```text
+DB_ENGINE
+DB_NAME
+DB_USER
+DB_PASSWORD
+DB_HOST
+DB_PORT
+```
+
+`DB_ENGINE`은 `postgres` 또는 `postgresql`로 등록한다. `DB_CONN_MAX_AGE`는 선택값이며, 등록하지 않으면 Django 설정의 기본값을 사용한다.
+
+대체 가능한 DB 방식:
+
+```text
+DATABASE_URL
+```
+
+`DATABASE_URL`을 등록하면 `DB_*` 방식보다 우선 사용된다. 이 경우 `DB_ENGINE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`는 없어도 된다.
+
+선택:
+
+```text
+DATABASE_SSL_REQUIRE
+DB_CONN_MAX_AGE
+```
+
+`DATABASE_SSL_REQUIRE`는 `DATABASE_URL` 방식에서 SSL 강제를 켤 때 사용한다. 개별 `DB_*` 방식에서는 필수 Secret이 아니다.
+
+크롤링 제어용 선택:
+
+```text
+SSAFY_DETAIL_TIMEOUT
+SSAFY_SOURCE_TIMEOUT
+```
+
+OCR을 실제로 사용할 때만 추가:
+
+```text
+OCR_PROVIDER
+CLOVA_OCR_INVOKE_URL
+CLOVA_OCR_SECRET_KEY
+GOOGLE_VISION_ENABLED
+GOOGLE_APPLICATION_CREDENTIALS
+```
+
+기본 자동 크롤링에서는 OCR 환경변수가 비어 있으면 mock/skipped 흐름으로 처리된다. 실제 OCR 비용이 발생하는 provider를 켤 때는 별도 비용 정책을 먼저 확인한다.
+
+## Secrets 보안
+
+workflow는 Secret 값을 `echo`로 출력하지 않는다. `python manage.py check_crawl_env`는 누락된 key 이름만 출력하고 `SSAFY_ID`, `SSAFY_PASSWORD`, `DATABASE_URL`, `DB_PASSWORD` 값을 출력하지 않는다.
+
+주의:
+
+- Secret 값을 workflow YAML에 직접 적지 않는다.
+- `.env`를 커밋하지 않는다.
+- 로그나 artifact에 SSAFY 계정, 비밀번호, DB URL, DB 비밀번호, OCR 키를 남기지 않는다.
+- 디버그 로그가 필요해도 `SSAFY_CRAWLER_DEBUG_HTML`을 자동 workflow에서 켜지 않는다.
+
+## 사용량과 비용
+
+2시간 주기로 시작하는 이유는 무료 Actions 사용량을 보수적으로 쓰기 위해서다. 2시간마다 실행하면 하루 12회, 30일 기준 약 360회 실행된다.
+
+예상 사용량:
+
+```text
+월 실행 횟수: 약 360회
+1회 5분이면: 약 1,800분/월
+1회 3분이면: 약 1,080분/월
+```
+
+GitHub Free의 private repository 기준 무료 Actions minutes가 월 2,000분인 경우, 1회 평균 실행 시간이 5분을 넘으면 무료 한도에 가까워진다. public repository의 standard GitHub-hosted runner 사용은 무료지만, private repository는 계정/조직 플랜의 월 무료 minutes를 확인해야 한다.
+
+사용량 확인 위치:
+
+```text
+Repository 또는 Organization Settings
+-> Billing and licensing
+-> Usage
+-> GitHub Actions
+```
+
+0원 유지를 위한 설정:
+
+- 결제 수단이 없는 계정은 무료 quota 초과 시 추가 사용이 차단된다.
+- 결제 수단이 있는 계정/조직은 Budgets and alerts에서 GitHub Actions budget을 0달러 또는 무료 한도 내로 설정한다.
+- Actions artifacts를 업로드하지 않는다.
+- cache는 pip dependency cache만 사용하고, cache 저장량이 커지면 `Actions` -> `Caches`에서 정리한다.
+
+사용량을 더 줄이는 방법:
+
+하루 6회:
+
+```yaml
+schedule:
+  - cron: '17 */4 * * *'
+```
+
+하루 4회:
+
+```yaml
+schedule:
+  - cron: '17 */6 * * *'
+```
+
+## 수동 실행
+
+GitHub 화면에서 직접 실행한다.
+
+1. repository 접속
+2. `Actions` 탭
+3. `Scheduled SSAFY Crawl` 선택
+4. `Run workflow` 클릭
+5. 실행 branch 선택
+6. `Run workflow` 확인
+
+수동 실행도 같은 Secret과 같은 Supabase PostgreSQL을 사용한다. 운영 DB에 실제 저장하므로 테스트 목적이면 로컬에서 `--dry-run --mode sample`을 먼저 실행한다.
+
+## 실패 로그 확인
+
+GitHub Actions 실행 상세 화면에서 실패한 step을 확인한다.
+
+주요 실패 지점:
+
+- `Check crawl environment`: 필수 Secret 누락
+- `Install Playwright Chromium`: runner 의존성 또는 Playwright 설치 실패
+- `Run scheduled crawl`: SSAFY 로그인 실패, 목록 URL 실패, DB 저장 실패, 일정 파싱 실패
+
+성공 로그에서 확인할 값:
+
+```text
+scheduled_ssafy_crawl started_at=...
+scheduled_ssafy_crawl selected_sources=notice,mentoring_notice recent_limit=30 max_pages=2
+status=
+fetched_by_source=
+created_count=
+updated_count=
+skipped_count=
+failed_count=
+schedule_event_created_count=
+no_changes=
+job_log_id=
+```
+
+`no_changes=true`이면 신규/변경 공지가 없어 상세 처리, OCR, 일정 생성이 최소화된 상태다.
+
+## 로컬 검증
+
+로컬에서는 운영 계정과 운영 DB로 실제 크롤링을 임의 실행하지 않는다.
+
+안전한 검증:
 
 ```bash
-python manage.py scheduled_ssafy_crawl --source-type academic_rule,curriculum,learning_material,faq,event --recent-limit 30 --max-pages 2
+python manage.py check
+python manage.py scheduled_ssafy_crawl --dry-run --mode sample
 ```
 
-Root Directory를 `back`으로 잡지 않았다면:
-
-```bash
-cd back && python manage.py scheduled_ssafy_crawl --source-type academic_rule,curriculum,learning_material,faq,event --recent-limit 30 --max-pages 2
-```
-
-## 환경변수
-
-Hourly 필수:
-
-```env
-SECRET_KEY=
-DATABASE_URL=
-SSAFY_ID=
-SSAFY_PASSWORD=
-SSAFY_LOGIN_URL=
-SSAFY_NOTICE_LIST_URL=
-SSAFY_MENTORING_NOTICE_LIST_URL=
-```
-
-Hourly 권장:
-
-```env
-SSAFY_CRAWLER_MODE=ssafy_notice
-SSAFY_NOTICE_MAX_PAGES=2
-SSAFY_CRAWLER_RECENT_LIMIT=30
-SSAFY_DETAIL_TIMEOUT=10
-SSAFY_SOURCE_TIMEOUT=60
-```
-
-Weekly 선택:
-
-```env
-SSAFY_RULE_LIST_URL=
-SSAFY_CURRICULUM_LIST_URL=
-SSAFY_FAQ_LIST_URL=
-SSAFY_LEARNING_MATERIAL_LIST_URL=
-SSAFY_EVENT_LIST_URL=
-```
-
-보류 또는 별도 검토:
-
-```env
-SSAFY_QUEST_LIST_URL=
-```
-
-배포 전 hourly 필수 환경변수 점검:
+환경변수 검사:
 
 ```bash
 python manage.py check_crawl_env
 ```
 
-이 command는 누락된 key 이름만 출력하고 `SSAFY_ID`, `SSAFY_PASSWORD` 값은 출력하지 않는다. `SSAFY_QUEST_LIST_URL`은 hourly 필수가 아니므로 없어도 실패하지 않는다.
+GitHub Actions에서는 운영 DB로 SQLite를 사용할 수 없다. runner의 SQLite 파일은 실행이 끝나면 사라지므로 프론트엔드와 공유되는 운영 데이터가 되지 않는다.
 
-## Playwright 주의사항
+`check_crawl_env`의 DB 검사는 아래 둘 중 하나면 통과한다.
 
-`requirements.txt`에는 `playwright>=1.44.0`가 포함되어 있다. 따라서 Python 패키지는 dependency install 단계에서 설치된다.
+- `DATABASE_URL` 존재
+- `DB_ENGINE=postgres` 또는 `DB_ENGINE=postgresql`이고 `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` 존재
 
-다만 Render 실행 환경에 Chromium 브라우저 바이너리가 없으면 크롤러가 실행 중 실패할 수 있다. Render 로그에서 다음과 비슷한 메시지를 확인한다.
+`DATABASE_SSL_REQUIRE`가 없어도 환경 검사는 통과한다.
 
-- `Executable doesn't exist`
-- `Please run playwright install`
-- `browserType.launch`
-- `Playwright is required`
+## Render Cron Job
 
-Render Shell 또는 build/deploy command에서 확인:
+Render Cron Job은 향후 유료 안정화 옵션이다.
 
-```bash
-python -m playwright --version
-python -m playwright install chromium
-```
+고려할 때:
 
-Render에서 브라우저 실행 실패가 발생하면 build command에 아래 명령을 추가한다.
+- GitHub Actions 무료 minutes가 부족해질 때
+- workflow 지연/누락이 운영상 문제가 될 때
+- 크롤링 실행 시간이 길어져 15분 제한을 넘길 위험이 있을 때
+- GitHub Actions보다 서버/네트워크 위치를 더 통제해야 할 때
 
-```bash
-pip install -r requirements.txt && python -m playwright install chromium
-```
+MVP 무료 운영에서는 Render Cron Job을 만들지 않는다.
 
-현재 프로젝트에는 별도 Dockerfile이나 Render 전용 build script가 없다. 이번 운영 준비에서는 Docker, Celery, Redis 같은 배포 구조를 추가하지 않는다.
+## 금지 사항
 
-## 실패 로그 확인
-
-Render Cron Job 실행 상세 화면에서 최신 run 로그를 확인한다.
-
-먼저 command 시작 로그를 본다.
-
-```text
-scheduled_ssafy_crawl started_at=...
-scheduled_ssafy_crawl selected_sources=notice,mentoring_notice recent_limit=30 max_pages=2
-```
-
-성공 또는 부분 성공 로그에서 아래 값을 확인한다.
-
-- `status`
-- `fetched_by_source`
-- `skipped_before_detail_count`
-- `detail_fetched_count`
-- `ocr_processed_count`
-- `created_count`
-- `updated_count`
-- `skipped_count`
-- `failed_count`
-- `schedule_event_created_count`
-- `no_changes`
-- `error_message`
-- `job_log_id`
-
-`no_changes=true`이면 신규/변경 공지가 없어 상세 처리, OCR, 일정 생성이 최소화된 상태다.
-
-실패 유형별 확인 지점:
-
-- 환경변수 누락: `python manage.py check_crawl_env`
-- 로그인 실패: `SSAFY_ID`, `SSAFY_PASSWORD`, `SSAFY_LOGIN_URL`
-- Hourly 목록 URL 실패: `SSAFY_NOTICE_LIST_URL`, `SSAFY_MENTORING_NOTICE_LIST_URL`
-- Weekly 목록 URL 실패: `SSAFY_RULE_LIST_URL`, `SSAFY_CURRICULUM_LIST_URL`, `SSAFY_FAQ_LIST_URL`, `SSAFY_LEARNING_MATERIAL_LIST_URL`, `SSAFY_EVENT_LIST_URL`
-- 브라우저 실행 실패: `python -m playwright install chromium`
-- FAQ 실패: weekly 또는 `--all` 실행 로그의 `partial_success`와 error summary에서 확인
-
-## Dry Run
-
-DB 저장 없이 command 출력 형태를 확인한다.
-
-```bash
-python manage.py scheduled_ssafy_crawl --dry-run --mode sample
-python manage.py scheduled_ssafy_crawl --dry-run --mode sample --source-type notice,mentoring_notice --recent-limit 30 --max-pages 2
-python manage.py scheduled_ssafy_crawl --dry-run --mode sample --all
-```
-
-dry-run은 `RawSsafyData`, `ScheduleEvent`, `CrawlJobLog`를 생성하지 않는다.
-
-## 주의사항
-
-- SSAFY 계정 ID/PASSWORD를 코드, 문서, 커밋, 로그에 남기지 않는다.
-- CAPTCHA 우회, 접근제어 우회, 탐지 회피 코드를 추가하지 않는다.
-- 매시간 자동 실행은 `notice,mentoring_notice`만 대상으로 한다.
-- 매시간 `--all`을 실행하지 않는다.
-- `quest`는 개인 데이터 가능성이 있으면 제외하고 별도 보안 구조에서 검토한다.
-- 실제 Render 설정은 운영자가 Dashboard에서 직접 적용한다.
-- GitHub Actions workflow는 이 문서의 범위에서 만들지 않는다.
-- 프론트엔드와 Chrome Extension은 이 운영 작업의 범위가 아니다.
+- 매시간 `--all` 실행 금지
+- `quest` 자동 크롤링 금지
+- 대량 과거 데이터 크롤링 금지
+- 전체 OCR 재처리 자동 실행 금지
+- GitHub Actions 로그에 Secret 출력 금지
+- Render Cron Job 생성 금지

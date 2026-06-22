@@ -195,122 +195,128 @@ def load_ssafy_authenticated_documents(
     notices = []
     try:
         with sync_playwright() as playwright:
+            browser = None
+            context = None
             browser = playwright.chromium.launch(headless=True)
             context = browser.new_context()
-            page = context.new_page()
-            page.set_default_timeout(_detail_timeout_ms())
-            _login_ssafy(page, login_url, ssafy_id, ssafy_password)
-            selected_sources = _env_source_set('SSAFY_CRAWLER_SOURCES')
-            discovery_source_types = selected_sources or {'quest', 'curriculum', 'faq', 'learning_material', 'event'}
-            discovered_urls = (
-                _discover_source_urls(
-                    page,
-                    main_url,
-                    login_url=login_url,
-                    source_types=discovery_source_types,
-                )
-                if main_url
-                else {}
-            )
-            faq_url = faq_url or discovered_urls.get('faq')
-            quest_url = quest_url or discovered_urls.get('quest')
-            curriculum_url = curriculum_url or discovered_urls.get('curriculum')
-            learning_material_url = learning_material_url or discovered_urls.get('learning_material')
-            event_url = event_url or discovered_urls.get('event')
-
-            for source_type, list_url, link_extractor in _source_collection_specs(
-                notice_url=notice_url,
-                academic_rule_url=academic_rule_url,
-                faq_url=faq_url,
-                quest_url=quest_url,
-                mentoring_notice_url=mentoring_notice_url,
-                curriculum_url=curriculum_url,
-                learning_material_url=learning_material_url,
-                event_url=event_url,
-            ):
-                source_started_at = _source_log_timestamp()
-                source_started_monotonic = time.monotonic()
-                env_name = SOURCE_LIST_URL_ENV_NAMES.get(source_type, '')
-                _record_collection_debug(
-                    f'source_run_start source_type={source_type} started_at={source_started_at} '
-                    f'env_var={env_name} url={list_url or "-"}',
-                    level='warning',
-                )
-                if not list_url:
-                    _record_collection_debug(
-                        f'skipped_source={source_type} reason=missing_url env_var={env_name}',
-                        level='warning',
-                    )
-                    _record_source_run_end(
-                        source_type=source_type,
-                        started_at=source_started_at,
-                        started_monotonic=source_started_monotonic,
-                        status='skipped',
-                        collected_count=0,
-                    )
-                    continue
-                _record_collection_debug(f'source_url source_type={source_type} env_var={env_name} url={list_url}')
-                try:
-                    collected = _collect_authenticated_list(
-                        page=page,
-                        list_url=list_url,
-                        source_type=source_type,
-                        link_extractor=link_extractor,
+            try:
+                page = context.new_page()
+                page.set_default_timeout(_detail_timeout_ms())
+                _login_ssafy(page, login_url, ssafy_id, ssafy_password)
+                selected_sources = _env_source_set('SSAFY_CRAWLER_SOURCES')
+                discovery_source_types = selected_sources or {'quest', 'curriculum', 'faq', 'learning_material', 'event'}
+                discovered_urls = (
+                    _discover_source_urls(
+                        page,
+                        main_url,
                         login_url=login_url,
+                        source_types=discovery_source_types,
                     )
-                    notices.extend(collected)
-                    _record_collection_debug(f'collected_source={source_type} count={len(collected)}')
-                    _record_source_run_end(
-                        source_type=source_type,
-                        started_at=source_started_at,
-                        started_monotonic=source_started_monotonic,
-                        status='success',
-                        collected_count=len(collected),
-                    )
-                except SsafySessionExpiredError as exc:
-                    exc.collected_items = notices
+                    if main_url
+                    else {}
+                )
+                faq_url = faq_url or discovered_urls.get('faq')
+                quest_url = quest_url or discovered_urls.get('quest')
+                curriculum_url = curriculum_url or discovered_urls.get('curriculum')
+                learning_material_url = learning_material_url or discovered_urls.get('learning_material')
+                event_url = event_url or discovered_urls.get('event')
+
+                for source_type, list_url, link_extractor in _source_collection_specs(
+                    notice_url=notice_url,
+                    academic_rule_url=academic_rule_url,
+                    faq_url=faq_url,
+                    quest_url=quest_url,
+                    mentoring_notice_url=mentoring_notice_url,
+                    curriculum_url=curriculum_url,
+                    learning_material_url=learning_material_url,
+                    event_url=event_url,
+                ):
+                    source_started_at = _source_log_timestamp()
+                    source_started_monotonic = time.monotonic()
+                    env_name = SOURCE_LIST_URL_ENV_NAMES.get(source_type, '')
                     _record_collection_debug(
-                        f'failed_source={source_type} url={list_url} error_reason=session_expired error={exc}',
+                        f'source_run_start source_type={source_type} started_at={source_started_at} '
+                        f'env_var={env_name} url={list_url or "-"}',
                         level='warning',
                     )
-                    _record_source_run_end(
-                        source_type=source_type,
-                        started_at=source_started_at,
-                        started_monotonic=source_started_monotonic,
-                        status='failed',
-                        collected_count=0,
-                        error_count=1,
-                    )
-                    raise exc
-                except SsafySourceTimeoutError as exc:
-                    _record_collection_debug(
-                        f'failed_source={source_type} url={list_url} error_reason=timeout error={exc}',
-                        level='warning',
-                    )
-                    _record_source_run_end(
-                        source_type=source_type,
-                        started_at=source_started_at,
-                        started_monotonic=source_started_monotonic,
-                        status='timeout',
-                        collected_count=0,
-                        error_count=1,
-                    )
-                    continue
-                except Exception as exc:
-                    _record_collection_debug(
-                        f'failed_source={source_type} url={list_url} error={exc}',
-                        level='warning',
-                    )
-                    _record_source_run_end(
-                        source_type=source_type,
-                        started_at=source_started_at,
-                        started_monotonic=source_started_monotonic,
-                        status='failed',
-                        collected_count=0,
-                        error_count=1,
-                    )
-            context.close()
-            browser.close()
+                    if not list_url:
+                        _record_collection_debug(
+                            f'skipped_source={source_type} reason=missing_url env_var={env_name}',
+                            level='warning',
+                        )
+                        _record_source_run_end(
+                            source_type=source_type,
+                            started_at=source_started_at,
+                            started_monotonic=source_started_monotonic,
+                            status='skipped',
+                            collected_count=0,
+                        )
+                        continue
+                    _record_collection_debug(f'source_url source_type={source_type} env_var={env_name} url={list_url}')
+                    try:
+                        collected = _collect_authenticated_list(
+                            page=page,
+                            list_url=list_url,
+                            source_type=source_type,
+                            link_extractor=link_extractor,
+                            login_url=login_url,
+                        )
+                        notices.extend(collected)
+                        _record_collection_debug(f'collected_source={source_type} count={len(collected)}')
+                        _record_source_run_end(
+                            source_type=source_type,
+                            started_at=source_started_at,
+                            started_monotonic=source_started_monotonic,
+                            status='success',
+                            collected_count=len(collected),
+                        )
+                    except SsafySessionExpiredError as exc:
+                        exc.collected_items = notices
+                        _record_collection_debug(
+                            f'failed_source={source_type} url={list_url} error_reason=session_expired error={exc}',
+                            level='warning',
+                        )
+                        _record_source_run_end(
+                            source_type=source_type,
+                            started_at=source_started_at,
+                            started_monotonic=source_started_monotonic,
+                            status='failed',
+                            collected_count=0,
+                            error_count=1,
+                        )
+                        raise exc
+                    except SsafySourceTimeoutError as exc:
+                        _record_collection_debug(
+                            f'failed_source={source_type} url={list_url} error_reason=timeout error={exc}',
+                            level='warning',
+                        )
+                        _record_source_run_end(
+                            source_type=source_type,
+                            started_at=source_started_at,
+                            started_monotonic=source_started_monotonic,
+                            status='timeout',
+                            collected_count=0,
+                            error_count=1,
+                        )
+                        continue
+                    except Exception as exc:
+                        _record_collection_debug(
+                            f'failed_source={source_type} url={list_url} error={exc}',
+                            level='warning',
+                        )
+                        _record_source_run_end(
+                            source_type=source_type,
+                            started_at=source_started_at,
+                            started_monotonic=source_started_monotonic,
+                            status='failed',
+                            collected_count=0,
+                            error_count=1,
+                        )
+            finally:
+                if context:
+                    context.close()
+                if browser:
+                    browser.close()
     except PlaywrightTimeoutError as exc:
         raise SsafyCrawlerError('Timed out while logging in to or collecting SSAFY pages.') from exc
 

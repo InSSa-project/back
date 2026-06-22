@@ -6,6 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.calendar.models import HiddenCalendarEvent
+from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
 
@@ -65,6 +66,97 @@ class CalendarApiTests(TestCase):
             {item['id'] for item in response.json()['data']},
             {rawless_event.id, hidden_source_event.id},
         )
+
+    def test_calendar_events_include_generated_ssafy_event_with_required_fields(self):
+        UserProfile.objects.create(user=self.user, track='Python')
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/notices/real',
+            title='SSAFY source notice',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 11, 9, 0))
+        event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Generated SSAFY real schedule',
+            description='parsed schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={
+                'display_title': 'SSAFY real schedule',
+                'deadline_at': '2026-06-11T18:00:00+09:00',
+                'audience': {'track': 'python', 'track_key': 'python'},
+                'track_key': 'python',
+                'is_common': False,
+                'is_global': True,
+            },
+        )
+
+        response = self.client.get(
+            reverse('calendar-events'),
+            {'start': '2026-06-01', 'end': '2026-06-30', 'track': 'python'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertEqual([item['id'] for item in payload], [event.id])
+        item = payload[0]
+        for field in [
+            'id',
+            'title',
+            'display_title',
+            'start_at',
+            'end_at',
+            'deadline_at',
+            'event_type',
+            'track_key',
+            'is_common',
+            'is_global',
+            'source_url',
+            'user_friendly_description',
+            'display_memo',
+        ]:
+            self.assertIn(field, item)
+        self.assertEqual(item['display_title'], 'SSAFY real schedule')
+        self.assertEqual(item['track_key'], 'python')
+        self.assertEqual(item['source_url'], 'https://edu.ssafy.com/notices/real')
+        self.assertEqual(item['display_memo'], 'parsed schedule')
+        self.assertTrue(item['is_global'])
+        self.assertFalse(item['is_common'])
+
+    def test_calendar_track_filter_keeps_common_events(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        python_event = ScheduleEvent.objects.create(
+            title='Python schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
+        )
+        common_event = ScheduleEvent.objects.create(
+            title='Common SSAFY schedule',
+            start_at=start_at + timedelta(hours=1),
+            end_at=start_at + timedelta(hours=2),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        ScheduleEvent.objects.create(
+            title='Java schedule',
+            start_at=start_at + timedelta(hours=2),
+            end_at=start_at + timedelta(hours=3),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'java_major'},
+        )
+
+        response = self.client.get(reverse('calendar-events'), {'track': 'python'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item['id'] for item in response.json()['data']}, {python_event.id, common_event.id})
 
     def test_calendar_events_return_schedules_when_raw_data_table_is_empty(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
