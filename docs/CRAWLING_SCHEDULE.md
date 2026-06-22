@@ -11,7 +11,7 @@ MVP 기본 방식은 GitHub Actions scheduled workflow다.
 - 실행 주기: 2시간마다 17분
 - 실행 명령: `python manage.py scheduled_ssafy_crawl`
 - 기본 대상: `notice,mentoring_notice`
-- 저장 위치: Supabase PostgreSQL, `DATABASE_URL` 사용
+- 저장 위치: Supabase PostgreSQL, 기본은 `DB_*` 개별 환경변수 사용
 
 Render Cron Job은 생성하지 않는다. Render Cron Job은 월 최소 비용이 발생할 수 있으므로, MVP 무료 운영에서는 사용하지 않고 향후 유료 안정화 옵션으로만 검토한다.
 
@@ -64,18 +64,46 @@ python manage.py scheduled_ssafy_crawl
 
 GitHub repository의 `Settings` -> `Secrets and variables` -> `Actions` -> `Repository secrets`에 등록한다.
 
-필수:
+공통 필수:
 
 ```text
 SECRET_KEY
-DATABASE_URL
-DATABASE_SSL_REQUIRE
 SSAFY_ID
 SSAFY_PASSWORD
 SSAFY_LOGIN_URL
 SSAFY_NOTICE_LIST_URL
 SSAFY_MENTORING_NOTICE_LIST_URL
 ```
+
+운영 DB 필수, 현재 프로젝트 기본 방식:
+
+```text
+DB_ENGINE
+DB_NAME
+DB_USER
+DB_PASSWORD
+DB_HOST
+DB_PORT
+```
+
+`DB_ENGINE`은 `postgres` 또는 `postgresql`로 등록한다. `DB_CONN_MAX_AGE`는 선택값이며, 등록하지 않으면 Django 설정의 기본값을 사용한다.
+
+대체 가능한 DB 방식:
+
+```text
+DATABASE_URL
+```
+
+`DATABASE_URL`을 등록하면 `DB_*` 방식보다 우선 사용된다. 이 경우 `DB_ENGINE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`는 없어도 된다.
+
+선택:
+
+```text
+DATABASE_SSL_REQUIRE
+DB_CONN_MAX_AGE
+```
+
+`DATABASE_SSL_REQUIRE`는 `DATABASE_URL` 방식에서 SSL 강제를 켤 때 사용한다. 개별 `DB_*` 방식에서는 필수 Secret이 아니다.
 
 크롤링 제어용 선택:
 
@@ -98,13 +126,13 @@ GOOGLE_APPLICATION_CREDENTIALS
 
 ## Secrets 보안
 
-workflow는 Secret 값을 `echo`로 출력하지 않는다. `python manage.py check_crawl_env`는 누락된 key 이름만 출력하고 `SSAFY_ID`, `SSAFY_PASSWORD`, `DATABASE_URL` 값을 출력하지 않는다.
+workflow는 Secret 값을 `echo`로 출력하지 않는다. `python manage.py check_crawl_env`는 누락된 key 이름만 출력하고 `SSAFY_ID`, `SSAFY_PASSWORD`, `DATABASE_URL`, `DB_PASSWORD` 값을 출력하지 않는다.
 
 주의:
 
 - Secret 값을 workflow YAML에 직접 적지 않는다.
 - `.env`를 커밋하지 않는다.
-- 로그나 artifact에 SSAFY 계정, 비밀번호, DB URL, OCR 키를 남기지 않는다.
+- 로그나 artifact에 SSAFY 계정, 비밀번호, DB URL, DB 비밀번호, OCR 키를 남기지 않는다.
 - 디버그 로그가 필요해도 `SSAFY_CRAWLER_DEBUG_HTML`을 자동 workflow에서 켜지 않는다.
 
 ## 사용량과 비용
@@ -211,7 +239,14 @@ python manage.py scheduled_ssafy_crawl --dry-run --mode sample
 python manage.py check_crawl_env
 ```
 
-로컬 `.env`에 `DATABASE_URL`이 없으면 `check_crawl_env`는 실패한다. GitHub Actions에서는 `DATABASE_URL` Secret을 반드시 등록한다.
+GitHub Actions에서는 운영 DB로 SQLite를 사용할 수 없다. runner의 SQLite 파일은 실행이 끝나면 사라지므로 프론트엔드와 공유되는 운영 데이터가 되지 않는다.
+
+`check_crawl_env`의 DB 검사는 아래 둘 중 하나면 통과한다.
+
+- `DATABASE_URL` 존재
+- `DB_ENGINE=postgres` 또는 `DB_ENGINE=postgresql`이고 `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` 존재
+
+`DATABASE_SSL_REQUIRE`가 없어도 환경 검사는 통과한다.
 
 ## Render Cron Job
 
