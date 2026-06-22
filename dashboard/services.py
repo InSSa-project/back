@@ -10,8 +10,15 @@ from apps.risk.services import RiskService
 from schedules.models import ScheduleEvent
 from schedules.services import filter_events_for_user_profile
 from schedules.utils import normalize_schedule_display_title
-from sync.models import RawSsafyData
-from sync.services.notice_policy import notice_source_url, notice_title, user_visible_notice_queryset
+from sync.models import RawSsafyData, UserNoticeReadStatus
+from sync.services.notice_policy import (
+    notice_publication_date,
+    notice_publication_values,
+    notice_sort_key,
+    notice_source_url,
+    notice_title,
+    user_visible_notice_queryset,
+)
 
 
 UPCOMING_LIMIT = 3
@@ -58,7 +65,8 @@ RAW_TEXT_TITLE_STOPWORDS = {
 
 def build_home_dashboard(user):
     now = timezone.now()
-    future_events = _future_events(_upcoming_event_candidates(user, now), now)
+    week_start, week_end = _week_bounds(now)
+    future_events = _future_events(_upcoming_event_candidates(user, now, week_start, week_end), now)
     upcoming_events = sorted(future_events, key=lambda event: (_event_target_at(event, now), event.id))
     recent_notices = _recent_notices()
 
@@ -69,6 +77,13 @@ def build_home_dashboard(user):
 
     return {
         'focus': _serialize_focus(upcoming_events[0], now) if upcoming_events else None,
+        'new_notice_count': new_notice_count,
+        'new_notice_count_label': 'recent_7_days_notice_date_or_collected_at',
+        'unread_new_notice_count': notice_action_count,
+        'unread_notice_count_basis': 'recent_7_days',
+        'period_label': 'this_week',
+        'week_start': timezone.localtime(week_start).isoformat(),
+        'week_end': timezone.localtime(week_end).isoformat(),
         'highlights': [
             {'label': '오늘 일정', 'value': f'{today_count}개'},
             {'label': '새 공지', 'value': f'{new_notice_count}개'},
@@ -96,6 +111,7 @@ def build_home_dashboard(user):
             },
         ],
         'upcoming_schedules': [_serialize_upcoming_event(event) for event in upcoming_events[:UPCOMING_LIMIT]],
+        'week_schedules': [_serialize_upcoming_event(event) for event in upcoming_events[:UPCOMING_LIMIT]],
         'recent_notices': [_serialize_notice(raw_data) for raw_data in recent_notices[:NOTICE_LIMIT]],
     }
 
@@ -121,10 +137,15 @@ def _visible_event_queryset(user):
     return queryset
 
 
-def _upcoming_event_candidates(user, now):
-    queryset = _visible_event_queryset(user).filter(start_at__gte=now).order_by('start_at', 'id')[:EVENT_SCAN_LIMIT]
+def _upcoming_event_candidates(user, now, week_start, week_end):
+    queryset = (
+        _visible_event_queryset(user)
+        .filter(start_at__lte=week_end, end_at__gte=week_start)
+        .order_by('start_at', 'id')[:EVENT_SCAN_LIMIT]
+    )
     events = list(queryset)
-    return _filter_events_for_profile(user, events)
+    events = _filter_events_for_profile(user, events)
+    return [event for event in events if _event_occurs_in_range(event, week_start, week_end)]
 
 
 def _filter_events_for_profile(user, events):
@@ -150,22 +171,38 @@ def _today_event_count(user, now):
 
 
 def _new_notice_count(now):
-    since = now - timedelta(days=7)
-    return user_visible_notice_queryset(RawSsafyData.objects.all()).filter(collected_at__gte=since).count()
+    since = timezone.localdate(now) - timedelta(days=7)
+    today = timezone.localdate(now)
+    rows = user_visible_notice_queryset(RawSsafyData.objects.all()).only('id', 'source_type', 'metadata_json')
+    return sum(1 for row in rows if _notice_date_in_range(row, since, today))
 
 
 def _unread_notice_count(user, now, fallback_count=None):
-    # TODO: 사용자별 공지 읽음 상태 모델이 추가되면 unread notice count 기준으로 변경
-    return _new_notice_count(now) if fallback_count is None else fallback_count
+    if not getattr(user, 'is_authenticated', False):
+        return _new_notice_count(now) if fallback_count is None else fallback_count
+
+    since = timezone.localdate(now) - timedelta(days=7)
+    today = timezone.localdate(now)
+    rows = user_visible_notice_queryset(RawSsafyData.objects.all()).only('id', 'source_type', 'metadata_json', 'collected_at')
+    recent_notice_ids = [row.id for row in rows if _notice_date_in_range(row, since, today)]
+    if not recent_notice_ids:
+        return 0
+
+    read_notice_ids = set(
+        UserNoticeReadStatus.objects.filter(user=user, raw_data_id__in=recent_notice_ids)
+        .values_list('raw_data_id', flat=True)
+    )
+    return len([notice_id for notice_id in recent_notice_ids if notice_id not in read_notice_ids])
 
 
 def _recent_notices():
     try:
-        return list(
+        rows = list(
             user_visible_notice_queryset(RawSsafyData.objects.all())
             .only('id', 'title', 'source_type', 'source_url', 'metadata_json', 'raw_text', 'collected_at')
-            .order_by('-collected_at', '-id')[:NOTICE_LIMIT]
+            .order_by('-collected_at', '-id')[:50]
         )
+        return sorted(rows, key=notice_sort_key)[:NOTICE_LIMIT]
     except Exception:
         return []
 
@@ -204,10 +241,13 @@ def _serialize_upcoming_event(event):
 
 def _serialize_notice(raw_data):
     collected_at = timezone.localtime(raw_data.collected_at)
+    published_at, notice_date = notice_publication_values(raw_data)
     return {
         'id': raw_data.id,
         'title': notice_title(raw_data),
-        'date': collected_at.strftime('%Y.%m.%d'),
+        'date': notice_date.strftime('%Y.%m.%d') if notice_date else collected_at.strftime('%Y.%m.%d'),
+        'published_at': published_at.isoformat() if published_at else None,
+        'notice_date': notice_date.isoformat() if notice_date else None,
         'source_type': raw_data.source_type,
         'source_url': notice_source_url(raw_data),
     }
@@ -262,6 +302,33 @@ def _event_overlaps_today(event, today_start, today_end):
     if end_at is None:
         return today_start <= start_at <= today_end
     return start_at <= today_end and end_at >= today_start
+
+
+def _event_occurs_in_range(event, range_start, range_end):
+    if event.start_at and event.end_at and event.start_at <= range_end and event.end_at >= range_start:
+        return True
+    deadline_at = _event_deadline_at(event)
+    return bool(deadline_at and range_start <= deadline_at <= range_end)
+
+
+def _week_bounds(now):
+    local_now = timezone.localtime(now)
+    week_start_date = local_now.date() - timedelta(days=local_now.weekday())
+    week_end_date = week_start_date + timedelta(days=6)
+    current_tz = timezone.get_current_timezone()
+    week_start = timezone.make_aware(datetime.combine(week_start_date, time.min), current_tz)
+    week_end = timezone.make_aware(datetime.combine(week_end_date, time.max), current_tz)
+    return week_start, week_end
+
+
+def _notice_date_in_range(raw_data, start_date, end_date):
+    notice_date = notice_publication_date(raw_data)
+    if notice_date is None:
+        collected_at = getattr(raw_data, 'collected_at', None)
+        if collected_at is None:
+            return False
+        notice_date = timezone.localdate(collected_at)
+    return start_date <= notice_date <= end_date
 
 
 def _notice_action_value(count):

@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -67,4 +68,31 @@ class CrawlJobLog(models.Model):
 
     def __str__(self):
         return f'{self.status} ({self.started_at:%Y-%m-%d %H:%M:%S})'
+
+
+class UserNoticeReadStatus(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='notice_read_statuses',
+    )
+    raw_data = models.ForeignKey(
+        RawSsafyData,
+        on_delete=models.CASCADE,
+        related_name='read_statuses',
+    )
+    read_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'raw_data'], name='unique_user_notice_read_status'),
+        ]
+        indexes = [
+            models.Index(fields=['user', 'read_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id}:{self.raw_data_id}'
 

@@ -9,12 +9,13 @@ from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.html import strip_tags
 from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_POST
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.exceptions import AuthenticationFailed
 
 from apps.users.authentication import JwtAuthentication
 
 from schedules.models import ScheduleEvent
-from sync.models import CrawlJobLog, RawSsafyData
+from sync.models import CrawlJobLog, RawSsafyData, UserNoticeReadStatus
 from sync.services.notice_normalizer import (
     CATEGORIES,
     TRACKS,
@@ -162,6 +163,67 @@ def notice_detail(request, raw_data_id):
     return JsonResponse(_serialize_notice(raw_data, include_detail=True))
 
 
+@require_GET
+def notice_summary(request, raw_data_id):
+    raw_data = (
+        user_visible_notice_queryset(RawSsafyData.objects.filter(pk=raw_data_id))
+        .prefetch_related('ai_documents', 'schedule_events')
+        .first()
+    )
+    if raw_data is None:
+        return JsonResponse({'detail': 'Notice not found.'}, status=404)
+
+    content = _build_notice_content(raw_data)
+    summary = _build_notice_summary(raw_data, content)
+    if not summary:
+        return JsonResponse(
+            {
+                'detail': 'Summary is not available for this notice.',
+                'source_title': notice_title(raw_data),
+                'source_url': notice_source_url(raw_data),
+            },
+            status=422,
+        )
+
+    return JsonResponse(
+        {
+            'summary': summary,
+            'source_title': notice_title(raw_data),
+            'source_url': notice_source_url(raw_data),
+            'generated_at': timezone.now().isoformat(),
+            'is_ai_generated': False,
+            'summary_type': 'rule_based',
+        }
+    )
+
+
+@csrf_exempt
+@require_POST
+def mark_notice_read(request, raw_data_id):
+    user = _authenticate_user(request)
+    if user is None:
+        return JsonResponse({'detail': 'Authentication credentials were invalid.'}, status=401)
+    if not getattr(user, 'is_authenticated', False):
+        return JsonResponse({'detail': 'Authentication credentials were not provided.'}, status=401)
+
+    raw_data = user_visible_notice_queryset(RawSsafyData.objects.filter(pk=raw_data_id)).first()
+    if raw_data is None:
+        return JsonResponse({'detail': 'Notice not found.'}, status=404)
+
+    status, _created = UserNoticeReadStatus.objects.update_or_create(
+        user=user,
+        raw_data=raw_data,
+        defaults={'read_at': timezone.now()},
+    )
+    return JsonResponse(
+        {
+            'notice_id': raw_data.id,
+            'is_read': True,
+            'read_at': status.read_at.isoformat(),
+        }
+    )
+
+
 @require_POST
 def run_crawl(request):
     permission_error = _staff_permission_error(request)
@@ -241,6 +303,23 @@ def _staff_permission_error(request):
     if not getattr(user, 'is_staff', False):
         return JsonResponse({'detail': 'Admin permission is required.'}, status=403)
     return None
+
+
+def _authenticate_user(request):
+    if getattr(request.user, 'is_authenticated', False):
+        return request.user
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if not auth_header:
+        return request.user
+    try:
+        authenticated = JwtAuthentication().authenticate(request)
+    except AuthenticationFailed:
+        return None
+    if authenticated is None:
+        return request.user
+    user, _auth = authenticated
+    request.user = user
+    return user
 
 
 def _parse_mode(request):
