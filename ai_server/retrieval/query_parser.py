@@ -1,7 +1,8 @@
 import calendar
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 class ScheduleQueryType:
@@ -24,7 +25,7 @@ class ParsedQuery:
 
 class DateExtractor:
     def __init__(self, today: date | None = None):
-        self.today = today or date.today()
+        self.today = today or datetime.now(ZoneInfo('Asia/Seoul')).date()
 
     def extract(self, question: str) -> tuple[str, str, bool]:
         normalized = self._normalize(question)
