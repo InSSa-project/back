@@ -1,5 +1,6 @@
-﻿from ai_server.llm.gemini_provider import GeminiProvider
-from ai_server.llm.http_model_client import HttpModelClient
+from ai_server.core.config import get_settings
+from ai_server.llm.gemini_provider import GeminiProvider
+from ai_server.llm.http_model_client import GmsOpenAiClient, HttpModelClient
 from ai_server.llm.openai_provider import OpenAiProvider
 
 
@@ -22,7 +23,12 @@ class LLMClientFactory:
         normalized = (provider_name or 'openai').strip().lower()
         if normalized == 'openai':
             return OpenAiProvider()
+        if normalized in {'gms', 'gms_openai', 'gms-openai'}:
+            return GmsOpenAiClient()
         if normalized == 'gemini':
+            settings = get_settings()
+            if 'gms.ssafy.io' in settings.gemini_api_base_url:
+                return GmsOpenAiClient()
             return GeminiProvider()
         if normalized in {'http', 'fastapi', 'local', 'fine_tuned'}:
             return HttpModelClient()

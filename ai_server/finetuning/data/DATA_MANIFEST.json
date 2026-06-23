@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-06-22T12:44:13.078038+00:00",
+  "source_database": "local Django default database with DB_ENGINE=sqlite override",
+  "privacy_policy": "public SSAFY notices, public RAG documents, and public schedule events only; owner-bound personal schedules and user scores are excluded.",
+  "files": {
+    "raw\\notices\\sync_raw_notices.jsonl": {
+      "count": 297
+    },
+    "raw\\mentoring\\sync_raw_mentoring.jsonl": {
+      "count": 127
+    },
+    "raw\\evaluations\\evaluation_sources.jsonl": {
+      "count": 89
+    },
+    "raw\\evaluations\\evaluation_schedule_events.jsonl": {
+      "count": 21
+    },
+    "raw\\notices\\ai_documents_public.jsonl": {
+      "count": 297
+    },
+    "curated\\evaluation_guidance\\evaluation_qa_seed.jsonl": {
+      "count": 80
+    }
+  }
+}

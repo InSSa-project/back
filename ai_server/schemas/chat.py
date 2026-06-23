@@ -22,7 +22,7 @@ class Reference(BaseModel):
     title: str
     source_type: str = ''
     source_url: str = ''
-    external_url: str = ''
+    detail_url: str = ''
     score: float
     chunk_id: str
     snippet: str = ''

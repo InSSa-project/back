@@ -11,6 +11,9 @@ from typing import Any
 class LLMIntentResult:
     intent: str = 'unknown'
     confidence: float = 0.0
+    route: str = 'none'
+    data_sources: list[str] = field(default_factory=list)
+    date_range_type: str = ''
     start_date: str = ''
     end_date: str = ''
     filters: list[str] = field(default_factory=list)
@@ -51,6 +54,23 @@ class LLMIntentClassifier:
         'project', 'personal', 'public', 'holiday', 'notice', 'important',
         'study', 'online_week',
     }
+    ALLOWED_DATE_RANGE_TYPES = {
+        '', 'today', 'tomorrow', 'this_week', 'next_week', 'this_month',
+        'next_month', 'explicit', 'upcoming', 'future',
+    }
+    ALLOWED_ROUTES = {'db', 'rag', 'llm', 'hybrid', 'clarify', 'none'}
+    ALLOWED_DATA_SOURCES = {
+        'schedule',
+        'notice',
+        'official_docs',
+        'risk',
+        'score',
+        'memory',
+        'chat_history',
+        'rag',
+        'calendar',
+        'user_profile',
+    }
 
     def __init__(self, llm_client, today: date | None = None):
         self.llm_client = llm_client
@@ -82,8 +102,12 @@ class LLMIntentClassifier:
             'Use ISO date strings when dates are obvious from the question or rule summary. '
             'If a user asks for the Nth closest item, set rank to N. '
             'If the question asks to exclude something, put it in exclude_filters. '
-            'Schema: {"intent":"...","confidence":0.0,"start_date":"YYYY-MM-DD",'
-            '"end_date":"YYYY-MM-DD","filters":[],"exclude_filters":[],"rank":0,'
+            'Set route to where the server should retrieve or answer from: db, rag, llm, hybrid, clarify, none. '
+            'Set data_sources to the required verified sources. '
+            'Schema: {"intent":"...","confidence":0.0,'
+            '"route":"db","data_sources":["schedule"],'
+            '"date_range":{"type":"this_week","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"},'
+            '"filters":[],"exclude_filters":[],"rank":0,'
             '"requires_personal_context":false,"answer_mode":"direct","reason":"..."}'
         )
         user = json.dumps(
@@ -119,14 +143,27 @@ class LLMIntentClassifier:
         if intent not in self.ALLOWED_INTENTS:
             intent = 'unknown'
         confidence = self._float_between(payload.get('confidence'), 0.0, 1.0)
+        route = str(payload.get('route') or 'none').strip().lower()
+        if route not in self.ALLOWED_ROUTES:
+            route = 'none'
+        data_sources = self._coerce_data_sources(payload.get('data_sources'))
         rank = self._int_between(payload.get('rank'), 0, 20)
         filters = self._coerce_filter_list(payload.get('filters'))
         exclude_filters = self._coerce_filter_list(payload.get('exclude_filters'))
+        date_range = payload.get('date_range') if isinstance(payload.get('date_range'), dict) else {}
+        date_range_type = str(date_range.get('type') or payload.get('date_range_type') or '').strip()
+        if date_range_type not in self.ALLOWED_DATE_RANGE_TYPES:
+            date_range_type = ''
+        start_date = self._date_string(date_range.get('start_date') or payload.get('start_date'))
+        end_date = self._date_string(date_range.get('end_date') or payload.get('end_date'))
         return LLMIntentResult(
             intent=intent,
             confidence=confidence,
-            start_date=self._date_string(payload.get('start_date')),
-            end_date=self._date_string(payload.get('end_date')),
+            route=route,
+            data_sources=data_sources,
+            date_range_type=date_range_type,
+            start_date=start_date,
+            end_date=end_date,
             filters=filters,
             exclude_filters=exclude_filters,
             rank=rank,
@@ -134,6 +171,16 @@ class LLMIntentClassifier:
             answer_mode=str(payload.get('answer_mode') or 'direct')[:40],
             reason=str(payload.get('reason') or '')[:200],
         )
+
+    def _coerce_data_sources(self, value) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result = []
+        for item in value:
+            normalized = str(item or '').strip().lower()
+            if normalized in self.ALLOWED_DATA_SOURCES and normalized not in result:
+                result.append(normalized)
+        return result
 
     def _coerce_filter_list(self, value) -> list[str]:
         if not isinstance(value, list):

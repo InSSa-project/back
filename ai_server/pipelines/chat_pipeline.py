@@ -1,12 +1,16 @@
 import json
 import re
+from dataclasses import asdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ai_server.classification.query_classifier import QueryClassifier
+from ai_server.classification.confidence_gate import ConfidenceGate
 from ai_server.classification.domain_intent_router import DomainIntent, DomainIntentRouter
 from ai_server.classification.personal_context_service import PersonalContextAnswerService
 from ai_server.classification.llm_intent_classifier import LLMIntentClassifier, LLMIntentResult
+from ai_server.classification.rule_parser import RuleParser
+from ai_server.classification.server_verified_parser import ServerVerifiedParser
 from ai_server.classification.server_verified_router import ServerVerifiedIntentRouter, VerifiedRoute
 from ai_server.core.config import get_settings
 from ai_server.llm.router import LlmRouter
@@ -21,14 +25,18 @@ from ai_server.retrieval.query_parser import ParsedQuery, ScheduleQueryParser, S
 from ai_server.retrieval.schedule_constraints import ScheduleConstraintMerger
 from ai_server.retrieval.schedule_formatter import ScheduleAnswerFormatter
 from ai_server.schemas.chat import ChatRequest, ChatResponse
+from ai_server.validation.result_validator import ResultValidator
 
 
 class ChatPipeline:
     def __init__(self, rag_service=None, llm_client=None):
         self.settings = get_settings()
         self.classifier = QueryClassifier()
+        self.rule_parser = RuleParser()
+        self.confidence_gate = ConfidenceGate()
         self.domain_intent_router = DomainIntentRouter()
         self.server_verified_router = ServerVerifiedIntentRouter()
+        self.server_verified_parser = ServerVerifiedParser()
         self.schedule_query_parser = ScheduleQueryParser()
         self.schedule_constraint_merger = ScheduleConstraintMerger(self.schedule_query_parser.date_extractor)
         self.retrieval_policy_router = RetrievalPolicyRouter()
@@ -43,11 +51,29 @@ class ChatPipeline:
         self.prompt_builder = PromptBuilder()
         self.response_style = ResponseStyle()
         self.schedule_formatter = ScheduleAnswerFormatter()
+        self.result_validator = ResultValidator()
         self.llm = llm_client or LlmRouter().get_provider(self.settings.llm_provider)
 
     def run(self, request: ChatRequest) -> ChatResponse:
+        parsed_query = self.schedule_query_parser.parse(request.message)
+        classified = self.classifier.classify(request.message)
+        verified_decision = self.server_verified_router.decide(request.message, parsed_query, classified)
+        rule_result = self.rule_parser.parse(request.message, parsed_query, classified, verified_decision)
+        gate_result = self.confidence_gate.decide(rule_result)
+        response = self._run_core(request)
+        response.usage.update(
+            {
+                'rule_parser': asdict(rule_result),
+                'confidence_gate': asdict(gate_result),
+            }
+        )
+        return response
+
+    def _run_core(self, request: ChatRequest) -> ChatResponse:
         if self._is_low_information_message(request.message):
             return self._low_information_response()
+        if self._is_greeting_message(request.message):
+            return self._greeting_response()
 
         parsed_query = self.schedule_query_parser.parse(request.message)
         classified = self.classifier.classify(request.message)
@@ -100,9 +126,21 @@ class ChatPipeline:
             if llm_intent_response:
                 return llm_intent_response
             fallback_chunks = self._schedule_fallback_chunks(request.message, parsed_query, schedule_filters, retrieved)
-            return self._schedule_db_response(intent, query_type, parsed_query, retrieved, fallback_chunks=fallback_chunks)
+            validation = self.result_validator.validate_schedule(retrieved, parsed_query, fallback_chunks)
+            if validation.should_retry:
+                retry_response = self._retry_schedule_with_llm_intent(
+                    request.message,
+                    parsed_query,
+                    schedule_filters,
+                    validation,
+                )
+                if retry_response:
+                    return retry_response
+            response = self._schedule_db_response(intent, query_type, parsed_query, retrieved, fallback_chunks=fallback_chunks)
+            response.usage.update(validation.as_usage())
+            return response
 
-        llm_intent_response = self._llm_intent_general_response(request.message, parsed_query, filters, query_type)
+        llm_intent_response = self._llm_intent_general_response(request, parsed_query, filters, query_type)
         if llm_intent_response:
             return llm_intent_response
 
@@ -111,6 +149,18 @@ class ChatPipeline:
         else:
             rag_result = self.rag_service.search_public(request.message, filters=filters)
         retrieval_evaluation = rag_result.evaluation
+        rag_validation = self.result_validator.validate_rag(retrieval_evaluation)
+        if rag_validation.should_retry:
+            retry_response = self._retry_rag_with_llm_intent(
+                request,
+                parsed_query,
+                filters,
+                query_type,
+                intent,
+                rag_validation,
+            )
+            if retry_response:
+                return retry_response
         policy = self.answer_policy_router.decide(query_type, retrieval_evaluation)
         if not policy.use_llm:
             return ChatResponse(
@@ -122,6 +172,7 @@ class ChatPipeline:
                 usage={
                     'mode': 'official_no_context',
                     'retrieval': retrieval_evaluation.__dict__,
+                    **rag_validation.as_usage(),
                     'server_verified_route': verified_decision.route,
                     'server_verified_reason': verified_decision.reason,
                 },
@@ -150,6 +201,7 @@ class ChatPipeline:
                 **llm_response.get('usage', {}),
                 **answer_usage,
                 'retrieval': retrieval_evaluation.__dict__,
+                **rag_validation.as_usage(),
                 'extracted_date': self._format_extracted_date(parsed_query),
                 'prompt': prompt_result.metadata,
                 'server_verified_route': verified_decision.route,
@@ -166,6 +218,21 @@ class ChatPipeline:
         if not normalized:
             return True
         return not re.search(r'[A-Za-z0-9\uac00-\ud7a3]', normalized)
+
+    def _is_greeting_message(self, message: str) -> bool:
+        normalized = re.sub(r'\s+', '', (message or '').lower())
+        return normalized in {'안녕', '안녕하세요', '하이', 'hello', 'hi'}
+
+    def _greeting_response(self) -> ChatResponse:
+        answer = '안녕하세요. 일정, 공지, 성적/위험도, 준비할 일 중 궁금한 걸 물어보면 바로 확인해드릴게요.'
+        return ChatResponse(
+            answer=answer,
+            intent='general_chat',
+            query_type='GREETING',
+            answer_policy='SERVER_GREETING_DIRECT',
+            references=[],
+            usage={'mode': 'server_greeting_direct', 'rag_used': False, 'llm_tokens': 0},
+        )
 
     def _low_information_response(self) -> ChatResponse:
         return ChatResponse(
@@ -413,11 +480,22 @@ class ChatPipeline:
         )
 
     def _build_filters(self, request: ChatRequest) -> dict:
-        return {
+        filters = {
             'user_id': request.user_context.user_id,
             'campus': request.user_context.campus,
             'generation': request.user_context.generation,
         }
+        return self._official_doc_filters(request.message, filters)
+
+    def _official_doc_filters(self, question: str, filters: dict, data_sources: list[str] | None = None) -> dict:
+        text = re.sub(r'\s+', ' ', (question or '').lower()).strip()
+        academic_terms = (
+            '학사규정', '규정', '과락', '퇴소', '중도퇴소', '수료', '재시험', '월말평가',
+            '과목평가', '출결', '결석', '지각', '통과 기준', '불합격',
+        )
+        if 'official_docs' in (data_sources or []) or any(term in text for term in academic_terms):
+            filters['source_type'] = 'academic_rule'
+        return filters
 
     def _intent_from_query_type(self, query_type: str) -> str:
         return query_type.lower()
@@ -440,14 +518,77 @@ class ChatPipeline:
         )
         return any(marker in normalized for marker in official_markers)
 
+    def _retry_rag_with_llm_intent(self, request: ChatRequest, parsed_query, filters: dict, query_type: str, intent: str, validation):
+        intent_result = self._classify_llm_intent(request.message, parsed_query)
+        if intent_result.confidence < 0.55:
+            return None
+        verified_plan = self.server_verified_parser.verify(intent_result)
+        if not verified_plan.allowed or verified_plan.route not in {'rag', 'hybrid'}:
+            return None
 
-    def _llm_intent_general_response(self, question: str, parsed_query, filters: dict, query_type: str):
+        if 'notice' in verified_plan.data_sources and 'official_docs' not in verified_plan.data_sources:
+            retry_result = self.rag_service.search_notices(request.message, parsed_query=parsed_query)
+        else:
+            retry_result = self.rag_service.search_public(
+                request.message,
+                filters=self._official_doc_filters(request.message, dict(filters), verified_plan.data_sources),
+            )
+
+        retry_evaluation = retry_result.evaluation
+        retry_validation = self.result_validator.validate_rag(retry_evaluation)
+        if retry_validation.status != 'enough':
+            return None
+
+        retry_query_type = 'SSAFY_OFFICIAL' if verified_plan.data_sources else query_type
+        retry_intent = intent_result.intent or intent
+        policy = self.answer_policy_router.decide(retry_query_type, retry_evaluation)
+        chunks_for_prompt = [] if retry_evaluation.insufficient_context else retry_result.chunks
+        prompt_result = self._build_prompt(
+            request=request,
+            intent=retry_intent,
+            query_type=retry_query_type,
+            chunks=chunks_for_prompt,
+            retrieval_evaluation=retry_evaluation,
+            answer_policy=policy.answer_policy,
+            fallback_prefix=policy.fallback_prefix,
+            parsed_query=parsed_query,
+        )
+        llm_response = self.llm.complete(prompt_result.messages)
+        answer, answer_usage = limit_answer(llm_response['answer'])
+        return ChatResponse(
+            answer=answer,
+            intent=retry_intent,
+            query_type=retry_query_type,
+            answer_policy=f'LLM_INTENT_RETRY_{policy.answer_policy}',
+            references=retry_result.references if policy.use_references else [],
+            usage={
+                **llm_response.get('usage', {}),
+                **answer_usage,
+                'mode': 'llm_intent_rag_retry',
+                'retrieval': retry_evaluation.__dict__,
+                **validation.as_usage(),
+                'result_validator_retry_executed': True,
+                'result_validator_retry_status': retry_validation.status,
+                'result_validator_retry_reason': retry_validation.reason,
+                'prompt': prompt_result.metadata,
+                **verified_plan.as_usage(),
+            },
+        )
+
+
+    def _llm_intent_general_response(self, request: ChatRequest, parsed_query, filters: dict, query_type: str):
+        question = request.message
         if query_type != ScheduleQueryType.GENERAL_CHAT:
             return None
         if not self._has_llm_intent_fallback_marker(question):
             return None
         intent_result = self._classify_llm_intent(question, parsed_query)
-        if not intent_result.is_schedule_intent or intent_result.confidence < 0.55:
+        verified_plan = self.server_verified_parser.verify(intent_result)
+        if not verified_plan.allowed:
+            return None
+        if not intent_result.is_schedule_intent:
+            return self._dispatch_llm_intent_route(request, parsed_query, filters, intent_result, verified_plan)
+        if intent_result.confidence < 0.55:
             return None
         constraints = self.schedule_constraint_merger.from_llm_intent(parsed_query, intent_result)
         verified_query = constraints.to_parsed_query()
@@ -457,7 +598,135 @@ class ChatPipeline:
         chunks = self._apply_rank(chunks, constraints.rank)
         if not chunks:
             return None
-        return self._llm_schedule_response(intent_result, verified_query, chunks)
+        return self._llm_schedule_response(intent_result, verified_query, chunks, verified_plan=verified_plan)
+
+    def _dispatch_llm_intent_route(self, request: ChatRequest, parsed_query, filters: dict, intent_result, verified_plan):
+        question = request.message
+        if verified_plan.route == 'clarify':
+            answer = '질문 의도가 조금 애매해요. 일정, 공지, 성적/위험도 중 어떤 정보를 확인할지 조금만 더 구체적으로 알려주세요.'
+            return ChatResponse(
+                answer=answer,
+                intent=intent_result.intent,
+                query_type='LLM_INTENT_CLARIFY',
+                answer_policy='LLM_INTENT_CLARIFY',
+                references=[],
+                usage={
+                    'mode': 'llm_intent_clarify',
+                    'llm_tokens': 0,
+                    **verified_plan.as_usage(),
+                },
+            )
+        if verified_plan.route == 'db':
+            return self._dispatch_llm_db_route(question, parsed_query, filters, intent_result, verified_plan)
+        if verified_plan.route == 'rag':
+            return self._dispatch_llm_rag_route(request, parsed_query, filters, intent_result, verified_plan)
+        if verified_plan.route == 'hybrid':
+            db_response = self._dispatch_llm_db_route(question, parsed_query, filters, intent_result, verified_plan)
+            if db_response and db_response.answer_policy != 'LLM_INTENT_SCHEDULE_DB_NO_MATCH':
+                return db_response
+            return self._dispatch_llm_rag_route(request, parsed_query, filters, intent_result, verified_plan)
+        if verified_plan.route == 'llm':
+            return self._dispatch_llm_direct_route(question, parsed_query, intent_result, verified_plan)
+        return None
+
+    def _dispatch_llm_db_route(self, question: str, parsed_query, filters: dict, intent_result, verified_plan):
+        if intent_result.is_schedule_intent:
+            constraints = self.schedule_constraint_merger.from_llm_intent(parsed_query, intent_result)
+            verified_query = constraints.to_parsed_query()
+            chunks = self.rag_service.search_schedules(
+                verified_query,
+                filters=self._filters_from_constraints(dict(filters), constraints),
+                question='',
+            )
+            chunks = self._apply_constraint_filters(chunks, constraints)
+            chunks = self._sort_constraint_chunks(chunks, constraints)
+            chunks = self._apply_rank(chunks, constraints.rank)
+            validation = self.result_validator.validate_schedule(chunks, verified_query)
+            response = self._llm_schedule_response(intent_result, verified_query, chunks, verified_plan=verified_plan)
+            response.usage.update(validation.as_usage())
+            return response
+        return None
+
+    def _dispatch_llm_rag_route(self, request: ChatRequest, parsed_query, filters: dict, intent_result, verified_plan):
+        question = request.message
+        if 'notice' in verified_plan.data_sources and 'official_docs' not in verified_plan.data_sources:
+            rag_result = self.rag_service.search_notices(question, parsed_query=parsed_query)
+        else:
+            rag_result = self.rag_service.search_public(
+                question,
+                filters=self._official_doc_filters(question, dict(filters), verified_plan.data_sources),
+            )
+        retrieval_evaluation = rag_result.evaluation
+        rag_validation = self.result_validator.validate_rag(retrieval_evaluation)
+        policy = self.answer_policy_router.decide('SSAFY_OFFICIAL', retrieval_evaluation)
+        if not policy.use_llm:
+            return ChatResponse(
+                answer=official_no_context_answer(),
+                intent=intent_result.intent,
+                query_type='LLM_INTENT_RAG',
+                answer_policy=f'LLM_INTENT_{policy.answer_policy}',
+                references=[],
+                usage={
+                    'mode': 'llm_intent_rag_no_context',
+                    'retrieval': retrieval_evaluation.__dict__,
+                    **rag_validation.as_usage(),
+                    **verified_plan.as_usage(),
+                },
+            )
+        chunks_for_prompt = [] if retrieval_evaluation.insufficient_context else rag_result.chunks
+        prompt_result = self._build_prompt(
+            request=request,
+            intent=intent_result.intent,
+            query_type='LLM_INTENT_RAG',
+            chunks=chunks_for_prompt,
+            retrieval_evaluation=retrieval_evaluation,
+            answer_policy=policy.answer_policy,
+            fallback_prefix=policy.fallback_prefix,
+            parsed_query=parsed_query,
+        )
+        llm_response = self.llm.complete(prompt_result.messages)
+        answer, answer_usage = limit_answer(llm_response['answer'])
+        return ChatResponse(
+            answer=answer,
+            intent=intent_result.intent,
+            query_type='LLM_INTENT_RAG',
+            answer_policy=f'LLM_INTENT_{policy.answer_policy}',
+            references=rag_result.references if policy.use_references else [],
+            usage={
+                **llm_response.get('usage', {}),
+                **answer_usage,
+                'mode': 'llm_intent_rag',
+                'retrieval': retrieval_evaluation.__dict__,
+                **rag_validation.as_usage(),
+                'prompt': prompt_result.metadata,
+                **verified_plan.as_usage(),
+            },
+        )
+
+    def _dispatch_llm_direct_route(self, question: str, parsed_query, intent_result, verified_plan):
+        messages = [
+            {
+                'role': 'developer',
+                'content': 'Answer in Korean. If the question needs official SSAFY facts, say you need verified context.',
+            },
+            {'role': 'user', 'content': question},
+        ]
+        llm_response = self.llm.complete(messages)
+        answer, answer_usage = limit_answer(llm_response['answer'])
+        return ChatResponse(
+            answer=answer,
+            intent=intent_result.intent,
+            query_type='LLM_INTENT_DIRECT',
+            answer_policy='LLM_INTENT_DIRECT',
+            references=[],
+            usage={
+                **llm_response.get('usage', {}),
+                **answer_usage,
+                'mode': 'llm_intent_direct',
+                'extracted_date': self._format_extracted_date(parsed_query),
+                **verified_plan.as_usage(),
+            },
+        )
 
     def _llm_intent_schedule_response(self, question: str, parsed_query, filters: dict, chunks):
         if not self._should_try_llm_intent_for_schedule(question, parsed_query, chunks):
@@ -465,6 +734,9 @@ class ChatPipeline:
         intent_result = self._classify_llm_intent(question, parsed_query)
         if not intent_result.is_schedule_intent or intent_result.confidence < 0.55:
             return None
+        verified_plan = self.server_verified_parser.verify(intent_result)
+        if not verified_plan.allowed:
+            return None
         constraints = self.schedule_constraint_merger.from_llm_intent(parsed_query, intent_result)
         verified_query = constraints.to_parsed_query()
         chunks = self.rag_service.search_schedules(verified_query, filters=self._filters_from_constraints(dict(filters), constraints), question='')
@@ -473,7 +745,41 @@ class ChatPipeline:
         chunks = self._apply_rank(chunks, constraints.rank)
         if not chunks:
             return None
-        return self._llm_schedule_response(intent_result, verified_query, chunks)
+        validation = self.result_validator.validate_schedule(chunks, verified_query)
+        response = self._llm_schedule_response(intent_result, verified_query, chunks, verified_plan=verified_plan)
+        response.usage.update(validation.as_usage())
+        return response
+
+    def _retry_schedule_with_llm_intent(self, question: str, parsed_query, filters: dict, validation):
+        intent_result = self._classify_llm_intent(question, parsed_query)
+        if not intent_result.is_schedule_intent or intent_result.confidence < 0.55:
+            return None
+        verified_plan = self.server_verified_parser.verify(intent_result)
+        if not verified_plan.allowed:
+            return None
+        constraints = self.schedule_constraint_merger.from_llm_intent(parsed_query, intent_result)
+        verified_query = constraints.to_parsed_query()
+        chunks = self.rag_service.search_schedules(
+            verified_query,
+            filters=self._filters_from_constraints(dict(filters), constraints),
+            question='',
+        )
+        chunks = self._apply_constraint_filters(chunks, constraints)
+        chunks = self._sort_constraint_chunks(chunks, constraints)
+        chunks = self._apply_rank(chunks, constraints.rank)
+        retry_validation = self.result_validator.validate_schedule(chunks, verified_query)
+        if not chunks:
+            return None
+        response = self._llm_schedule_response(intent_result, verified_query, chunks, verified_plan=verified_plan)
+        response.usage.update(
+            {
+                **validation.as_usage(),
+                'result_validator_retry_executed': True,
+                'result_validator_retry_status': retry_validation.status,
+                'result_validator_retry_reason': retry_validation.reason,
+            }
+        )
+        return response
 
     def _classify_llm_intent(self, question: str, parsed_query):
         summary = {
@@ -654,7 +960,7 @@ class ChatPipeline:
             return []
         return [chunks[rank - 1]]
 
-    def _llm_schedule_response(self, intent_result, parsed_query, chunks) -> ChatResponse:
+    def _llm_schedule_response(self, intent_result, parsed_query, chunks, verified_plan=None) -> ChatResponse:
         response = self._schedule_db_response(
             intent=intent_result.intent,
             query_type=parsed_query.query_type,
@@ -666,12 +972,17 @@ class ChatPipeline:
             {
                 'llm_intent': intent_result.intent,
                 'llm_intent_confidence': intent_result.confidence,
+                'llm_intent_route': intent_result.route,
+                'llm_intent_data_sources': intent_result.data_sources,
+                'llm_intent_date_range_type': intent_result.date_range_type,
                 'llm_intent_filters': intent_result.filters,
                 'llm_intent_exclude_filters': intent_result.exclude_filters,
                 'llm_intent_rank': intent_result.rank,
                 'llm_intent_reason': intent_result.reason,
             }
         )
+        if verified_plan:
+            response.usage.update(verified_plan.as_usage())
         return response
 
     def _schedule_filters(self, question: str, filters: dict) -> dict:

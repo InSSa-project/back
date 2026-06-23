@@ -1,12 +1,13 @@
 import json
 import logging
+import time
 from pathlib import Path
 
 import requests
 from django.conf import settings
 from django.utils import timezone
 
-from .models import AiChatReference, AiDocument, ChatMessage, ChatSession
+from .models import AiChatReference, AiDocument, AiPipelineRun, AiQualityLog, ChatMessage, ChatSession
 
 logger = logging.getLogger(__name__)
 
@@ -69,33 +70,36 @@ class FastAPIAIClient:
 
     def _normalize_reference(self, reference):
         metadata = reference.get('metadata') or {}
-        source_url = self._reference_source_url(reference, metadata)
         return {
             'document_id': reference.get('ai_document_id'),
+            'ai_document_id': reference.get('ai_document_id'),
             'title': reference.get('title', ''),
             'source_type': reference.get('source_type') or metadata.get('source_type', ''),
-            'source_url': source_url,
-            'external_url': source_url,
+            'source_url': self._reference_url(reference, metadata),
+            'detail_url': self._reference_detail_url(reference, metadata),
             'score': reference.get('score', 0),
             'snippet': reference.get('snippet', ''),
             'chunk_id': reference.get('chunk_id', ''),
             'raw_data_id': reference.get('raw_data_id'),
+            'metadata': metadata,
         }
 
-    def _reference_source_url(self, reference, metadata):
-        for source in (reference, metadata):
-            for key in ('source_url', 'external_url', 'detail_url', 'url'):
-                value = source.get(key)
-                if value:
-                    return str(value)
+    def _reference_url(self, reference, metadata):
+        return (
+            reference.get('source_url')
+            or metadata.get('source_url')
+            or metadata.get('original_url')
+            or metadata.get('url')
+            or ''
+        )
 
-        raw_json = metadata.get('raw_json')
-        if isinstance(raw_json, dict):
-            for key in ('source_url', 'external_url', 'detail_url', 'url'):
-                value = raw_json.get(key)
-                if value:
-                    return str(value)
-        return ''
+    def _reference_detail_url(self, reference, metadata):
+        return (
+            reference.get('detail_url')
+            or metadata.get('detail_url')
+            or self._reference_url(reference, metadata)
+            or ''
+        )
 
 
 class AIService:
@@ -103,12 +107,20 @@ class AIService:
         self.ai_server_client = ai_server_client or FastAPIAIClient()
 
     def answer(self, user, message, session_id=None, options=None):
+        started_at = time.monotonic()
         if getattr(settings, 'AI_SERVER_ENABLED', False):
             payload = self.ai_server_client.chat(user=user, message=message, session_id=session_id)
             self._annotate_route_metrics(payload)
             persisted_session = self._persist_chat(user=user, message=message, payload=payload, session_id=session_id)
             if persisted_session:
                 payload['session_id'] = persisted_session.id
+            self._persist_pipeline_run(
+                user=user,
+                message=message,
+                payload=payload,
+                session=persisted_session,
+                latency_ms=self._elapsed_ms(started_at),
+            )
             self._append_route_log(user=user, message=message, payload=payload, session_id=session_id)
             return payload
         payload = {
@@ -120,8 +132,18 @@ class AIService:
             'usage': {},
         }
         self._annotate_route_metrics(payload)
+        self._persist_pipeline_run(
+            user=user,
+            message=message,
+            payload=payload,
+            session=None,
+            latency_ms=self._elapsed_ms(started_at),
+        )
         self._append_route_log(user=user, message=message, payload=payload, session_id=session_id)
         return payload
+
+    def _elapsed_ms(self, started_at):
+        return max(0, int((time.monotonic() - started_at) * 1000))
 
     def _annotate_route_metrics(self, payload):
         usage = dict(payload.get('usage') or {})
@@ -241,6 +263,122 @@ class AIService:
         except Exception:
             # Chat persistence should not block the user-facing answer.
             return None
+
+    def _persist_pipeline_run(self, user, message, payload, session=None, latency_ms=None):
+        try:
+            usage = payload.get('usage') or {}
+            references = payload.get('references') or []
+            answer_policy = payload.get('answer_policy', '')
+            failure_type = self._failure_type(payload)
+            run = AiPipelineRun.objects.create(
+                user=user if getattr(user, 'is_authenticated', False) else None,
+                session=session,
+                question=message,
+                answer=payload.get('answer', ''),
+                intent=payload.get('intent', ''),
+                query_type=payload.get('query_type', ''),
+                answer_policy=answer_policy,
+                route_stage=usage.get('route_stage', ''),
+                failure_type=failure_type,
+                is_success=not bool(failure_type),
+                retrieved_context_json=self._retrieved_context_snapshot(usage, references),
+                references_json=references,
+                usage_json=usage,
+                latency_ms=latency_ms,
+            )
+            self._persist_quality_log(run)
+        except Exception as exc:
+            logger.debug('ai_pipeline_run_persist_failed error_type=%s', exc.__class__.__name__)
+
+    def _persist_quality_log(self, run):
+        try:
+            metrics = self._quality_metrics(run)
+            AiQualityLog.objects.create(
+                pipeline_run=run,
+                user=run.user,
+                evaluator='auto',
+                quality_score=metrics['quality_score'],
+                latency_ms=metrics['latency_ms'],
+                retrieved_count=metrics['retrieved_count'],
+                is_fallback=metrics['is_fallback'],
+                is_error=metrics['is_error'],
+                is_no_context=metrics['is_no_context'],
+                metrics_json=metrics,
+            )
+        except Exception as exc:
+            logger.debug('ai_quality_log_persist_failed error_type=%s', exc.__class__.__name__)
+
+    def _quality_metrics(self, run):
+        usage = run.usage_json or {}
+        context = run.retrieved_context_json or {}
+        policy = str(run.answer_policy or '')
+        answer = run.answer or ''
+        retrieved_count = self._safe_int(context.get('retrieved_count'))
+        fallback_count = self._safe_int(context.get('fallback_retrieved_count'))
+        reference_count = self._safe_int(context.get('reference_count'))
+        latency_ms = self._safe_int(run.latency_ms)
+        is_fallback = 'FALLBACK' in policy
+        is_no_context = any(marker in policy for marker in ('NO_CONTEXT', 'NO_MATCH', 'NO_EXACT_MATCH'))
+        is_error = bool(run.failure_type) or policy == 'ERROR'
+
+        score = 1.0
+        if is_error:
+            score = 0.1
+        elif is_no_context:
+            score = 0.45
+        elif is_fallback:
+            score = 0.65
+
+        if not is_error and not is_no_context:
+            if retrieved_count == 0 and reference_count == 0 and 'SCHEDULE_DB_DIRECT' not in policy:
+                score -= 0.15
+            if fallback_count:
+                score -= 0.1
+            if latency_ms >= 20000:
+                score -= 0.2
+            elif latency_ms >= 10000:
+                score -= 0.1
+            if len(answer.strip()) < 10:
+                score -= 0.1
+
+        score = max(0.0, min(1.0, round(score, 3)))
+        return {
+            'quality_score': score,
+            'is_error': is_error,
+            'is_fallback': is_fallback,
+            'is_no_context': is_no_context,
+            'retrieved_count': retrieved_count,
+            'fallback_retrieved_count': fallback_count,
+            'reference_count': reference_count,
+            'latency_ms': latency_ms,
+            'answer_chars': len(answer),
+            'mode': usage.get('mode', ''),
+            'answer_policy': policy,
+        }
+
+    def _safe_int(self, value):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _failure_type(self, payload):
+        usage = payload.get('usage') or {}
+        if payload.get('answer_policy') == 'ERROR':
+            return str(usage.get('mode') or 'error')
+        mode = str(usage.get('mode') or '')
+        if mode.endswith('_error') or mode.startswith('ai_server_'):
+            return mode
+        return ''
+
+    def _retrieved_context_snapshot(self, usage, references):
+        return {
+            'retrieval': usage.get('retrieval', {}),
+            'prompt': usage.get('prompt', {}),
+            'reference_count': len(references),
+            'retrieved_count': usage.get('retrieved_count'),
+            'fallback_retrieved_count': usage.get('fallback_retrieved_count'),
+        }
 
     def _get_or_create_session(self, user, message, session_id=None):
         if session_id:
