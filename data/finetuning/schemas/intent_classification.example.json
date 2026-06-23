@@ -1,0 +1,11 @@
+﻿{
+  "instruction": "사용자 질문을 INSSA 라우팅 JSON으로 분류하라.",
+  "input": "이번 주 숨막히는 거 있어?",
+  "output": {
+    "intent": "schedule_recommendation",
+    "date_range": "this_week",
+    "filters": ["important", "deadline", "exam"],
+    "requires_personal_context": true,
+    "answer_style": "mentor"
+  }
+}

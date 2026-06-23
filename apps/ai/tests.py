@@ -25,6 +25,7 @@ from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
+from io import StringIO
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -891,7 +892,125 @@ class AiUsagePersistenceTests(TestCase):
             self.assertTrue(record['messages'][1]['content'])
             self.assertTrue(record['messages'][2]['content'])
 
+    def test_lora_dataset_export_includes_mentor_advice_samples(self):
+        AiDocument.objects.create(
+            title='What project should I build?',
+            content='Mentor story about choosing a project by finding weak points and practicing execution.',
+            document_type='SYNC_MENTORING_NOTICE',
+            metadata_json={'source_type': 'mentoring_notice'},
+        )
 
+        output = Path(settings.BASE_DIR) / 'tmp' / f'lora_mentor_export_{uuid4().hex}.jsonl'
+        try:
+            call_command(
+                'export_lora_dataset',
+                output=str(output),
+                limit=1,
+                include='mentor_advice',
+                verbosity=0,
+            )
+            records = [json.loads(line) for line in output.read_text(encoding='utf-8').splitlines() if line.strip()]
+        finally:
+            output.unlink(missing_ok=True)
+
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record['metadata']['task_type'], 'mentor_advice')
+        self.assertEqual(record['metadata']['source_type'], 'mentoring_notice')
+        self.assertEqual([message['role'] for message in record['messages']], ['system', 'user', 'assistant'])
+        self.assertIn('멘토', record['messages'][1]['content'])
+        self.assertIn('멘토 글', record['messages'][2]['content'])
+
+
+
+
+    def test_lora_dataset_export_skips_error_conversation_answers(self):
+        user = get_user_model().objects.create_user(
+            username='lora-error-filter-user',
+            email='lora-error-filter@example.com',
+            password='password',
+        )
+        session = ChatSession.objects.create(user=user, title='Error sample')
+        ChatMessage.objects.create(session=session, role=ChatMessage.ROLE_USER, content='hello')
+        ChatMessage.objects.create(session=session, role=ChatMessage.ROLE_ASSISTANT, content='AI 답변을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.')
+
+        output = Path(settings.BASE_DIR) / 'tmp' / f'lora_error_filter_{uuid4().hex}.jsonl'
+        try:
+            call_command(
+                'export_lora_dataset',
+                output=str(output),
+                limit=5,
+                include='conversation',
+                verbosity=0,
+            )
+            records = [json.loads(line) for line in output.read_text(encoding='utf-8').splitlines() if line.strip()]
+        finally:
+            output.unlink(missing_ok=True)
+
+        self.assertEqual(records, [])
+
+    def test_lora_dataset_validator_reports_task_types_and_pii_warnings(self):
+        output = Path(settings.BASE_DIR) / 'tmp' / f'lora_validate_{uuid4().hex}.jsonl'
+        record = {
+            'messages': [
+                {'role': 'system', 'content': 'You are inSSa.'},
+                {'role': 'user', 'content': 'Please review me@example.com'},
+                {'role': 'assistant', 'content': 'I will avoid storing personal data.'},
+            ],
+            'metadata': {'task_type': 'mentor_advice'},
+        }
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(record) + '\n', encoding='utf-8')
+            stdout = StringIO()
+            call_command('validate_lora_dataset', input=str(output), stdout=stdout)
+        finally:
+            output.unlink(missing_ok=True)
+
+        value = stdout.getvalue()
+        self.assertIn('total_count=1', value)
+        self.assertIn('mentor_advice:1', value)
+        self.assertIn('email_like:1', value)
+        self.assertIn('blocking_issue_count=0', value)
+
+    def test_lora_dataset_split_preserves_records(self):
+        source = Path(settings.BASE_DIR) / 'tmp' / f'lora_split_source_{uuid4().hex}.jsonl'
+        train_output = Path(settings.BASE_DIR) / 'tmp' / f'lora_split_train_{uuid4().hex}.jsonl'
+        eval_output = Path(settings.BASE_DIR) / 'tmp' / f'lora_split_eval_{uuid4().hex}.jsonl'
+        records = []
+        for index in range(10):
+            records.append(
+                {
+                    'messages': [
+                        {'role': 'system', 'content': 'system'},
+                        {'role': 'user', 'content': f'user {index}'},
+                        {'role': 'assistant', 'content': f'assistant {index}'},
+                    ],
+                    'metadata': {'task_type': 'mentor_advice' if index < 6 else 'notice_summary'},
+                }
+            )
+        try:
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(''.join(json.dumps(record) + '\n' for record in records), encoding='utf-8')
+            call_command(
+                'split_lora_dataset',
+                input=str(source),
+                train_output=str(train_output),
+                eval_output=str(eval_output),
+                eval_ratio=0.2,
+                seed=7,
+                verbosity=0,
+            )
+            train_records = [json.loads(line) for line in train_output.read_text(encoding='utf-8').splitlines()]
+            eval_records = [json.loads(line) for line in eval_output.read_text(encoding='utf-8').splitlines()]
+        finally:
+            source.unlink(missing_ok=True)
+            train_output.unlink(missing_ok=True)
+            eval_output.unlink(missing_ok=True)
+
+        self.assertEqual(len(train_records) + len(eval_records), 10)
+        self.assertGreaterEqual(len(eval_records), 2)
+        self.assertTrue(all(record['messages'][0]['role'] == 'system' for record in train_records + eval_records))
 
 
 class DomainIntentRouterTests(SimpleTestCase):

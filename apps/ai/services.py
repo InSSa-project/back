@@ -72,13 +72,34 @@ class FastAPIAIClient:
         metadata = reference.get('metadata') or {}
         return {
             'document_id': reference.get('ai_document_id'),
+            'ai_document_id': reference.get('ai_document_id'),
             'title': reference.get('title', ''),
             'source_type': reference.get('source_type') or metadata.get('source_type', ''),
+            'source_url': self._reference_url(reference, metadata),
+            'detail_url': self._reference_detail_url(reference, metadata),
             'score': reference.get('score', 0),
             'snippet': reference.get('snippet', ''),
             'chunk_id': reference.get('chunk_id', ''),
             'raw_data_id': reference.get('raw_data_id'),
+            'metadata': metadata,
         }
+
+    def _reference_url(self, reference, metadata):
+        return (
+            reference.get('source_url')
+            or metadata.get('source_url')
+            or metadata.get('original_url')
+            or metadata.get('url')
+            or ''
+        )
+
+    def _reference_detail_url(self, reference, metadata):
+        return (
+            reference.get('detail_url')
+            or metadata.get('detail_url')
+            or self._reference_url(reference, metadata)
+            or ''
+        )
 
 
 class AIService:
