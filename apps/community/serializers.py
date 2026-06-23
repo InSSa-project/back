@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from apps.users.models import UserProfile
@@ -6,10 +7,17 @@ from .models import CommunityComment, CommunityPost
 
 
 DELETED_COMMENT_CONTENT = 'Deleted comment.'
+POST_TITLE_MAX_LENGTH = 100
+POST_CONTENT_MAX_LENGTH = 5000
+COMMENT_CONTENT_MAX_LENGTH = 1000
 
 
 def build_author_payload(user, request=None):
-    profile = getattr(user, 'profile', None)
+    try:
+        profile = getattr(user, 'profile', None)
+    except ObjectDoesNotExist:
+        profile = None
+
     generation = None
     profile_image_url = None
 
@@ -42,12 +50,16 @@ class CommunityPostWriteSerializer(serializers.ModelSerializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError('Title is required.')
+        if len(value) > POST_TITLE_MAX_LENGTH:
+            raise serializers.ValidationError(f'Title must be {POST_TITLE_MAX_LENGTH} characters or less.')
         return value
 
     def validate_content(self, value):
         value = value.strip()
         if not value:
             raise serializers.ValidationError('Content is required.')
+        if len(value) > POST_CONTENT_MAX_LENGTH:
+            raise serializers.ValidationError(f'Post content must be {POST_CONTENT_MAX_LENGTH} characters or less.')
         return value
 
 
@@ -123,6 +135,10 @@ class CommunityCommentWriteSerializer(serializers.ModelSerializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError('Content is required.')
+        if len(value) > COMMENT_CONTENT_MAX_LENGTH:
+            raise serializers.ValidationError(
+                f'Comment content must be {COMMENT_CONTENT_MAX_LENGTH} characters or less.'
+            )
         return value
 
     def validate_parent_id(self, parent_id):
@@ -158,6 +174,10 @@ class CommunityCommentUpdateSerializer(serializers.ModelSerializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError('Content is required.')
+        if len(value) > COMMENT_CONTENT_MAX_LENGTH:
+            raise serializers.ValidationError(
+                f'Comment content must be {COMMENT_CONTENT_MAX_LENGTH} characters or less.'
+            )
         return value
 
 
@@ -193,5 +213,7 @@ class CommunityCommentSerializer(serializers.ModelSerializer):
         return comment.content
 
     def get_is_owner(self, comment):
+        if comment.is_deleted:
+            return False
         request = self.context.get('request')
         return bool(request and request.user.is_authenticated and comment.author_id == request.user.id)
