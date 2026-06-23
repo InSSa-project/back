@@ -54,6 +54,39 @@ class FaissVectorStore:
             if score > 0
         ]
 
+    def search_by_terms(self, query: str, top_k: int, filters: dict | None = None):
+        filters = filters or {}
+        terms = self._query_terms(query)
+        if not terms:
+            return []
+        records = self._load().get('records', [])
+        scored = []
+        for record in records:
+            metadata = record.get('metadata', {})
+            if not self._matches_filters(metadata, filters):
+                continue
+            text = f"{record.get('title', '')}\n{record.get('content', '')}".lower()
+            matches = sum(1 for term in terms if term in text)
+            if not matches:
+                continue
+            # Lexical hits are used as a safety net for long OCR official documents.
+            score = min(1.0, 0.1 * matches)
+            scored.append((score, record))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [
+            RetrievedChunk(
+                chunk_id=record['chunk_id'],
+                ai_document_id=record['ai_document_id'],
+                raw_data_id=record.get('raw_data_id'),
+                title=record.get('title', ''),
+                content=record.get('content', ''),
+                document_type=record.get('document_type', ''),
+                metadata=record.get('metadata', {}),
+                score=round(float(score), 4),
+            )
+            for score, record in scored[:top_k]
+        ]
+
     def search_by_metadata(
         self,
         start_date: str,
@@ -122,3 +155,22 @@ class FaissVectorStore:
         left_norm = math.sqrt(sum(a * a for a in left)) or 1.0
         right_norm = math.sqrt(sum(b * b for b in right)) or 1.0
         return dot / (left_norm * right_norm)
+
+    def _query_terms(self, query: str) -> list[str]:
+        text = (query or '').lower()
+        terms = []
+        term_groups = {
+            '과락': ['과락', '불합격', '미수료', '평가', '성적'],
+            '불합격': ['불합격', '과락', '미수료', '평가', '성적'],
+            '퇴소': ['퇴소', '중도퇴소'],
+            '중도퇴소': ['중도퇴소', '퇴소'],
+            '수료': ['수료', '이수', '미수료'],
+            '재시험': ['재시험', '평가', '불합격'],
+            '출결': ['출결', '결석', '지각'],
+            '결석': ['결석', '출결'],
+            '지각': ['지각', '출결'],
+        }
+        for trigger, values in term_groups.items():
+            if trigger in text:
+                terms.extend(values)
+        return list(dict.fromkeys(terms))

@@ -21,6 +21,8 @@ class Reference(BaseModel):
     raw_data_id: int | None = None
     title: str
     source_type: str = ''
+    source_url: str = ''
+    detail_url: str = ''
     score: float
     chunk_id: str
     snippet: str = ''

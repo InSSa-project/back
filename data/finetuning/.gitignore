@@ -1,0 +1,6 @@
+﻿raw/
+exports/
+*.jsonl
+*.csv
+*.xlsx
+*.zip
