@@ -1,0 +1,12 @@
+﻿{
+  "instruction": "SSAFY 생활 지원 AI 비서답게 짧고 따뜻하게 답변하라.",
+  "input": {
+    "question": "나 과락 세 개인데 괜찮아?",
+    "context": {
+      "subject_fail_count": 3,
+      "subject_total": 13,
+      "subject_required_pass": 8
+    }
+  },
+  "output": "아직 바로 끝났다고 보긴 어려워요. 다만 추가 과락 여유가 줄어든 상태라 다음 과목평가를 우선 준비하는 게 좋아요."
+}
