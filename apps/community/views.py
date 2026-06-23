@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
@@ -54,6 +55,7 @@ class CommunityPostListCreateView(APIView):
         post = CommunityPostQueryService().get_post(post.id, request.user)
         return success_response(
             CommunityPostDetailSerializer(post, context={'request': request}).data,
+            message='Community post created.',
             status_code=status.HTTP_201_CREATED,
         )
 
@@ -81,9 +83,12 @@ class CommunityPostDetailView(APIView):
 
         serializer = CommunityPostWriteSerializer(post, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(edited_at=timezone.now())
         post = self._get_post(request, post_id)
-        return success_response(CommunityPostDetailSerializer(post, context={'request': request}).data)
+        return success_response(
+            CommunityPostDetailSerializer(post, context={'request': request}).data,
+            message='Community post updated.',
+        )
 
     def delete(self, request, post_id):
         post = self._get_plain_post(post_id)

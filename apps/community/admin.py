@@ -5,10 +5,10 @@ from .models import CommunityComment, CommunityPost, CommunityPostLike
 
 @admin.register(CommunityPost)
 class CommunityPostAdmin(admin.ModelAdmin):
-    list_display = ['id', 'board_type', 'title', 'author', 'created_at', 'updated_at']
+    list_display = ['id', 'board_type', 'title', 'author', 'edited_at', 'created_at', 'updated_at']
     list_filter = ['board_type', 'created_at']
     search_fields = ['title', 'content', 'author__email', 'author__name']
-    readonly_fields = ['created_at', 'updated_at']
+    readonly_fields = ['edited_at', 'created_at', 'updated_at']
 
 
 @admin.register(CommunityPostLike)

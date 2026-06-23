@@ -38,6 +38,53 @@ class CommunityApiTests(TestCase):
             content=content,
         )
 
+    def _assert_post_detail_contract(self, payload):
+        expected_fields = {
+            'id',
+            'board_type',
+            'title',
+            'content',
+            'author',
+            'like_count',
+            'comment_count',
+            'is_liked',
+            'is_owner',
+            'is_edited',
+            'edited_at',
+            'created_at',
+            'updated_at',
+        }
+        self.assertTrue(expected_fields.issubset(payload.keys()))
+        self.assertIsInstance(payload['id'], int)
+        self.assertIsInstance(payload['like_count'], int)
+        self.assertIsInstance(payload['comment_count'], int)
+        self.assertIsInstance(payload['is_liked'], bool)
+        self.assertIsInstance(payload['is_owner'], bool)
+        self.assertIsInstance(payload['is_edited'], bool)
+        self.assertIn('id', payload['author'])
+        self.assertIn('name', payload['author'])
+        self.assertIn('generation', payload['author'])
+        self.assertIn('profile_image_url', payload['author'])
+
+    def _assert_post_list_contract(self, payload):
+        expected_fields = {
+            'id',
+            'board_type',
+            'title',
+            'content_preview',
+            'author',
+            'like_count',
+            'comment_count',
+            'is_liked',
+            'is_owner',
+            'is_edited',
+            'edited_at',
+            'created_at',
+            'updated_at',
+        }
+        self.assertTrue(expected_fields.issubset(payload.keys()))
+        self.assertIsInstance(payload['is_edited'], bool)
+
     def test_authenticated_user_can_create_general_post(self):
         response = self.client.post(
             reverse('community-post-list'),
@@ -47,11 +94,27 @@ class CommunityApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['status'], 'success')
+        self.assertEqual(response.json()['message'], 'Community post created.')
         payload = response.json()['data']
+        self._assert_post_detail_contract(payload)
+        self.assertIn('id', payload)
         self.assertEqual(payload['board_type'], 'general')
+        self.assertEqual(payload['content'], 'Looking for members')
         self.assertEqual(payload['author']['name'], 'Community User')
         self.assertEqual(payload['author']['generation'], 14)
+        self.assertFalse(payload['is_edited'])
+        self.assertIsNone(payload['edited_at'])
         self.assertTrue(CommunityPost.objects.filter(author=self.user, title='Study group').exists())
+
+        list_response = self.client.get(reverse('community-post-list'), **self._auth(self.user))
+        detail_response = self.client.get(reverse('community-post-detail', args=[payload['id']]), **self._auth(self.user))
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(list_response.json()['data']['results'][0]['id'], payload['id'])
+        self._assert_post_list_contract(list_response.json()['data']['results'][0])
+        self._assert_post_detail_contract(detail_response.json()['data'])
 
     def test_authenticated_user_can_create_suggestion_post(self):
         response = self.client.post(
@@ -123,10 +186,35 @@ class CommunityApiTests(TestCase):
 
         self.assertEqual(blocked_patch.status_code, 403)
         self.assertEqual(owner_patch.status_code, 200)
-        self.assertEqual(owner_patch.json()['data']['title'], 'Updated')
+        self.assertEqual(owner_patch.json()['message'], 'Community post updated.')
+        payload = owner_patch.json()['data']
+        self._assert_post_detail_contract(payload)
+        self.assertEqual(payload['title'], 'Updated')
+        self.assertEqual(payload['content'], 'Content')
+        self.assertTrue(payload['is_edited'])
+        self.assertIsNotNone(payload['edited_at'])
         self.assertEqual(blocked_delete.status_code, 403)
         self.assertEqual(owner_delete.status_code, 204)
         self.assertFalse(CommunityPost.objects.filter(pk=post.id).exists())
+
+    def test_post_update_response_contains_changed_title_and_content(self):
+        post = self._create_post(title='Before title', content='Before content')
+
+        response = self.client.patch(
+            reverse('community-post-detail', args=[post.id]),
+            data={'title': 'After title', 'content': 'After content'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self._assert_post_detail_contract(payload)
+        self.assertEqual(payload['id'], post.id)
+        self.assertEqual(payload['title'], 'After title')
+        self.assertEqual(payload['content'], 'After content')
+        self.assertTrue(payload['is_edited'])
+        self.assertIsNotNone(payload['edited_at'])
 
     def test_staff_can_delete_other_users_post(self):
         staff = get_user_model().objects.create_user(
@@ -157,6 +245,31 @@ class CommunityApiTests(TestCase):
         self.assertEqual(second_like.json()['data']['like_count'], 1)
         self.assertEqual(unlike.json()['data']['is_liked'], False)
         self.assertEqual(second_unlike.json()['data']['like_count'], 0)
+
+    def test_like_and_comment_do_not_change_post_edited_at(self):
+        post = self._create_post()
+        patch_response = self.client.patch(
+            reverse('community-post-detail', args=[post.id]),
+            data={'title': 'Edited once'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        self.assertEqual(patch_response.status_code, 200)
+        post.refresh_from_db()
+        edited_at = post.edited_at
+
+        like_response = self.client.post(reverse('community-post-like', args=[post.id]), **self._auth(self.other_user))
+        comment_response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'No post edit'},
+            content_type='application/json',
+            **self._auth(self.other_user),
+        )
+
+        self.assertEqual(like_response.status_code, 200)
+        self.assertEqual(comment_response.status_code, 201)
+        post.refresh_from_db()
+        self.assertEqual(post.edited_at, edited_at)
 
     def test_is_liked_is_per_user_and_missing_post_like_returns_404(self):
         post = self._create_post()
@@ -259,6 +372,21 @@ class CommunityApiTests(TestCase):
         self.assertIsNone(payload[0]['author'])
         self.assertEqual(payload[1]['parent_id'], root.id)
         self.assertEqual(detail_response.json()['data']['comment_count'], 1)
+
+    def test_comment_list_returns_empty_array_for_existing_post_without_comments(self):
+        post = self._create_post()
+
+        response = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'success')
+        self.assertEqual(response.json()['data'], [])
+        self.assertEqual(response.json()['message'], 'OK')
+
+    def test_comment_list_returns_404_only_when_post_does_not_exist(self):
+        response = self.client.get(reverse('community-comment-list', args=[999999]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 404)
 
     def test_invalid_input_and_missing_resources_return_expected_statuses(self):
         post = self._create_post()
