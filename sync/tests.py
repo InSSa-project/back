@@ -5122,3 +5122,180 @@ def _fake_playwright_modules(state=None):
         'playwright': playwright_module,
         'playwright.sync_api': sync_api_module,
     }
+
+
+
+# ---------------------------------------------------------------------------
+# OCR Grid Parser 버그 수정 테스트
+# ---------------------------------------------------------------------------
+from datetime import date as _date
+from sync.services.ocr_grid_parser import (
+    normalize_ocr_boxes as _nob,
+    _month_from_split_boxes,
+    _has_il_following,
+    _build_date_cells,
+    parse_grid_schedule_candidates,
+)
+from sync.services.schedule_parser import (
+    GENERIC_TITLES as _GENERIC_TITLES,
+    EVENT_KEYWORDS as _EVENT_KEYWORDS,
+    ONLINE_WEEK_KEYWORDS as _ONLINE_WEEK_KEYWORDS,
+    _parse_event_type,
+)
+
+
+def _mk_box(text, x1, y1, x2, y2):
+    return {'text': text, 'x1': float(x1), 'y1': float(y1),
+            'x2': float(x2), 'y2': float(y2)}
+
+
+def _timetable_header_boxes():
+    """주간 시간표 헤더 '시간 | 2월 2일 | 2월 3일 | 2월 4일 | 2월 5일 | 2월 6일'
+    각 날짜를 ['2','월','N','일'] 4개의 박스로 분리해 표현 (실제 OCR 패턴)."""
+    boxes = []
+    col_centers = [250, 450, 650, 850, 1050]
+    for idx, day in enumerate([2, 3, 4, 5, 6]):
+        cx = col_centers[idx]
+        boxes.append(_mk_box('2',   cx - 50, 240, cx - 35, 260))  # month prefix
+        boxes.append(_mk_box('월',  cx - 35, 240, cx - 10, 260))
+        boxes.append(_mk_box(str(day), cx,   240, cx + 15, 260))  # day number
+        boxes.append(_mk_box('일',  cx + 15, 240, cx + 35, 260))
+    return boxes
+
+
+class OcrGridParserSplitDateTests(TestCase):
+    """Fix 1: '2월 4일' 같이 분리된 OCR 박스를 _build_date_cells 가 올바르게 처리."""
+
+    def test_month_prefix_digit_excluded_in_timetable_mode(self):
+        """'2월 4일'의 월-prefix '2' 박스는 timetable_mode에서 day=2로 잡히면 안 된다."""
+        boxes = _nob(_timetable_header_boxes())
+        cells = _build_date_cells(2, boxes, timetable_mode=True)
+        # day=2 셀이 0개이거나, 있다면 cx가 day-'2' 박스(cx=250)에 해당해야 함
+        day2_cells = [c for c in cells if c['day'] == 2]
+        # 각 col_index가 고유해야 함 (중복 col이 없어야 함)
+        col_indices = [c['col_index'] for c in cells]
+        self.assertEqual(len(col_indices), len(set(col_indices)),
+                         f"중복 col_index 발생 (month-prefix 제거 실패): {cells}")
+
+    def test_correct_five_weekday_cells_in_timetable_mode(self):
+        """분리된 OCR 박스에서 2~6일 5개 셀이 정확히 생성된다."""
+        boxes = _nob(_timetable_header_boxes())
+        cells = _build_date_cells(2, boxes, timetable_mode=True)
+        dates = sorted({c['date'] for c in cells})
+        expected = [_date(2026, 2, d) for d in range(2, 7)]
+        self.assertEqual(dates, expected,
+                         f"기대 날짜 {expected} != 실제 {dates}")
+
+    def test_content_area_bare_digit_no_il_excluded_in_timetable_mode(self):
+        """시간표 내용 영역 '1'(예: '10:00' 분리, '일' 없음)은 날짜 헤더가 아니다."""
+        boxes_raw = _timetable_header_boxes()
+        # 내용 영역: '1', '0', ':' (시간 슬롯, '일' 없음) → spurious row 만들면 안 됨
+        boxes_raw.append(_mk_box('1', 50, 320, 60, 335))
+        boxes_raw.append(_mk_box('0', 60, 320, 70, 335))
+        boxes_raw.append(_mk_box(':', 70, 320, 75, 335))
+        boxes = _nob(boxes_raw)
+        cells = _build_date_cells(2, boxes, timetable_mode=True)
+        row_indices = {c['row_index'] for c in cells}
+        self.assertEqual(len(row_indices), 1,
+                         f"내용 영역 bare digit이 spurious row split 생성: rows={row_indices}")
+
+    def test_calendar_mode_accepts_bare_digit_without_il(self):
+        """calendar mode (timetable_mode=False)에서는 '일' 없는 숫자도 날짜로 인식."""
+        boxes_raw = [
+            _mk_box('4', 650, 240, 665, 260),
+            _mk_box('5', 850, 240, 865, 260),
+        ]
+        boxes = _nob(boxes_raw)
+        cells = _build_date_cells(2, boxes, timetable_mode=False)
+        days = {c['day'] for c in cells}
+        self.assertIn(4, days)
+        self.assertIn(5, days)
+
+    def test_has_il_following_true_when_il_is_adjacent(self):
+        """_has_il_following: '일' 박스가 바로 우측에 있으면 True."""
+        boxes = _nob([
+            _mk_box('4', 650, 240, 665, 260),
+            _mk_box('일', 665, 240, 685, 260),
+        ])
+        self.assertTrue(_has_il_following(boxes[0], boxes))
+
+    def test_has_il_following_false_when_no_il(self):
+        """_has_il_following: '일'이 없으면 False."""
+        boxes = _nob([
+            _mk_box('1', 50, 320, 60, 335),
+            _mk_box('0', 60, 320, 70, 335),
+        ])
+        self.assertFalse(_has_il_following(boxes[0], boxes))
+
+    def test_timetable_parse_produces_events_on_distinct_weekdays(self):
+        """시간표 parse_grid_schedule_candidates: Mon-Fri 5일 각각 이벤트 생성."""
+        source_title = '마이스터고 2월 1주차 시간표'
+        # 월 섹션 헤더 '2월'
+        ocr_boxes = [
+            {'text': '2',  'x1': 50., 'y1': 50., 'x2': 65., 'y2': 70.},
+            {'text': '월', 'x1': 65., 'y1': 50., 'x2': 90., 'y2': 70.},
+        ]
+        # 날짜 헤더 + 각 열에 과목
+        col_centers = [250., 450., 650., 850., 1050.]
+        subjects = ['List', 'Matrix', 'Stack', 'Queue', 'Graph']
+        for idx, day in enumerate([2, 3, 4, 5, 6]):
+            cx = col_centers[idx]
+            ocr_boxes += [
+                {'text': '2',    'x1': cx-50, 'y1': 240., 'x2': cx-35, 'y2': 260.},
+                {'text': '월',   'x1': cx-35, 'y1': 240., 'x2': cx-10, 'y2': 260.},
+                {'text': str(day),'x1': cx,   'y1': 240., 'x2': cx+15, 'y2': 260.},
+                {'text': '일',   'x1': cx+15, 'y1': 240., 'x2': cx+35, 'y2': 260.},
+                {'text': subjects[idx],
+                               'x1': cx-10, 'y1': 350., 'x2': cx+60, 'y2': 370.},
+            ]
+
+        candidates, debug = parse_grid_schedule_candidates(
+            ocr_boxes, source_title=source_title
+        )
+        event_dates = sorted({c.event_date for c in candidates})
+        self.assertGreater(len(event_dates), 1,
+                           f"모든 이벤트가 단일 날짜: {event_dates} (분배 실패)")
+
+
+class ScheduleParserCleanupTests(TestCase):
+    """schedule_parser.py 깨진 상수 제거 및 정리 테스트."""
+
+    def _is_garbled(self, text):
+        return any(
+            (0x100 <= ord(c) <= 0xABFF) or (0xD7A4 <= ord(c) <= 0xF8FF)
+            for c in text
+        )
+
+    def test_generic_titles_no_garbled_strings(self):
+        """GENERIC_TITLES에 깨진 한글/CJK 문자열이 없어야 한다."""
+        for title in _GENERIC_TITLES:
+            self.assertFalse(self._is_garbled(title),
+                             f"GENERIC_TITLES 깨진 문자열: {repr(title)}")
+
+    def test_event_keywords_no_garbled_strings(self):
+        """EVENT_KEYWORDS에 깨진 문자열이 없어야 한다."""
+        for kw in _EVENT_KEYWORDS:
+            self.assertFalse(self._is_garbled(kw),
+                             f"EVENT_KEYWORDS 깨진 문자열: {repr(kw)}")
+
+    def test_online_week_keywords_contains_only_clean_entries(self):
+        """ONLINE_WEEK_KEYWORDS는 정상 한글/영어만 포함."""
+        self.assertIn('온라인 위크', _ONLINE_WEEK_KEYWORDS)
+        self.assertIn('online week', _ONLINE_WEEK_KEYWORDS)
+        for kw in _ONLINE_WEEK_KEYWORDS:
+            self.assertFalse(self._is_garbled(kw),
+                             f"ONLINE_WEEK_KEYWORDS 깨진 문자열: {repr(kw)}")
+
+    def test_parse_event_type_classifies_correctly(self):
+        """_parse_event_type이 한글 키워드로 올바르게 분류한다."""
+        cases = [
+            ('과목평가 결과', 'exam'),
+            ('마감 과제 제출', 'assignment'),
+            ('관통 프로젝트 일정', 'project'),
+            ('AI 특강 안내', 'lecture'),
+            ('15기 입학식', 'event'),
+            ('일반 공지사항', 'notice'),
+        ]
+        for line, expected in cases:
+            with self.subTest(line=line):
+                self.assertEqual(_parse_event_type(line), expected)

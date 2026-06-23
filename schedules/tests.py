@@ -1272,3 +1272,66 @@ class ScheduleEventApiTests(TestCase):
         self.assertIn('PATCH', response['Access-Control-Allow-Methods'])
         self.assertIn('PUT', response['Access-Control-Allow-Methods'])
         self.assertIn('DELETE', response['Access-Control-Allow-Methods'])
+
+
+
+# ---------------------------------------------------------------------------
+# _is_timetable_source_period_mismatch 버그 수정 테스트 (Fix 2)
+# ---------------------------------------------------------------------------
+from datetime import date as _date, datetime as _datetime, time as _time
+from schedules.services import _is_timetable_source_period_mismatch as _mismatch_fn
+
+
+class _MockSchedule:
+    """_is_timetable_source_period_mismatch 테스트용 경량 목 오브젝트."""
+    def __init__(self, event_date):
+        from django.utils import timezone
+        naive = _datetime.combine(event_date, _time.min)
+        self.start_at = timezone.make_aware(naive, timezone.get_current_timezone())
+        self.metadata_json = {'parser_type': 'timetable_grid'}
+
+
+class TimetablePeriodMismatchTests(TestCase):
+    """'15기 2월 1주차 시간표' 같은 제목에서 첫 숫자 '15'를 월로 잘못 읽는 버그 수정."""
+
+    def _check(self, source_title, event_date, expect_mismatch):
+        result = _mismatch_fn(source_title, _MockSchedule(event_date))
+        label = 'mismatch' if expect_mismatch else 'no mismatch'
+        self.assertEqual(result, expect_mismatch,
+                         f"source={repr(source_title)}, date={event_date} → "
+                         f"기대={label}, 실제={result}")
+
+    def test_기수_prefix_포함_제목_2월1주차_2일(self):
+        """'[학습] 15기 2월 1주차 시간표' + Feb 2 → no mismatch."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 2, 2), expect_mismatch=False)
+
+    def test_기수_prefix_포함_제목_2월1주차_3일(self):
+        """'[학습] 15기 2월 1주차 시간표' + Feb 3 → no mismatch."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 2, 3), expect_mismatch=False)
+
+    def test_기수_prefix_포함_제목_2월2주차_9일(self):
+        """'[학습] 15기 2월 1주차 시간표' + Feb 9 (2주차) → mismatch."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 2, 9), expect_mismatch=True)
+
+    def test_기수_없는_제목_2월1주차_4일(self):
+        """'마이스터고 2월 1주차 시간표' + Feb 4 → no mismatch."""
+        self._check('마이스터고 2월 1주차 시간표', _date(2026, 2, 4), expect_mismatch=False)
+
+    def test_다른_달_이벤트_mismatch(self):
+        """'[학습] 15기 2월 1주차 시간표' + Mar 2 → mismatch (월 다름)."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 3, 2), expect_mismatch=True)
+
+    def test_주차_없는_제목은_검사_안함(self):
+        """제목에 주차가 없으면 False (mismatch 판단 불가)."""
+        self._check('2월 시간표', _date(2026, 2, 2), expect_mismatch=False)
+
+    def test_월_없는_제목은_검사_안함(self):
+        """제목에 월이 없으면 False."""
+        self._check('1주차 시간표', _date(2026, 2, 2), expect_mismatch=False)
+
+    def test_timetable_grid가_아닌_parser는_검사_안함(self):
+        """parser_type이 timetable_grid가 아니면 항상 False."""
+        mock = _MockSchedule(_date(2026, 3, 2))
+        mock.metadata_json = {'parser_type': 'text_date'}
+        result = _mismatch_fn('[학습] 15기 2월 1주차 시간표', mock)
+        self.assertFalse(result)
