@@ -2229,6 +2229,7 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
             'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2236,7 +2237,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=9', rendered)
+        self.assertIn('checked_count=10', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/mentoring', rendered)
@@ -2258,6 +2259,7 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
             'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2265,7 +2267,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=9', rendered)
+        self.assertIn('checked_count=10', rendered)
         self.assertNotIn('db-secret-password', rendered)
         self.assertNotIn('db.example.com', rendered)
         self.assertNotIn('render-admin', rendered)
@@ -2283,6 +2285,7 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
             'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2353,6 +2356,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('- SSAFY_RULE_LIST_URL', rendered)
         self.assertIn('- SSAFY_MENTORING_DATA_LIST_URL or SSAFY_MENTORING_DATA_URL', rendered)
         self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL or SSAFY_MENTORING_LIST_URL', rendered)
+        self.assertIn('- SSAFY_MENTORING_QNA_LIST_URL', rendered)
         self.assertNotIn('- SSAFY_QUEST_LIST_URL', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
@@ -2377,16 +2381,37 @@ class SampleNoticeImportTests(TestCase):
             'sync.management.commands.scheduled_ssafy_crawl.preview_notice_import',
             side_effect=fake_preview_notice_import,
         ):
-            call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
+            with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': ''}, clear=False):
+                call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
 
         self.assertEqual(CrawlJobLog.objects.count(), 0)
         self.assertEqual(seen['mode'], 'sample')
-        self.assertEqual(seen['sources'], 'notice,academic_rule,mentoring,mentoring_notice')
+        self.assertEqual(seen['sources'], 'notice,academic_rule,mentoring,mentoring_notice,mentoring_qna')
         self.assertEqual(seen['recent_limit'], '30')
         self.assertEqual(seen['max_pages'], '2')
-        self.assertIn('selected_sources=notice,academic_rule,mentoring,mentoring_notice', output.getvalue())
+        self.assertIn('selected_sources=notice,academic_rule,mentoring,mentoring_notice,mentoring_qna', output.getvalue())
         self.assertIn('dry_run=true', output.getvalue())
         self.assertIn('no_changes=true', output.getvalue())
+
+    def test_scheduled_crawl_preserves_env_source_filter(self):
+        output = StringIO()
+        seen = {}
+        summary = ImportSummary(raw_count=0, updated_count=0, duplicate_count=0, event_count=0)
+
+        def fake_preview_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            return {'mode': mode, 'summary': summary, 'crawler_debug': [], 'message': ''}
+
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,mentoring,mentoring_notice,mentoring_qna'}, clear=False):
+            with patch(
+                'sync.management.commands.scheduled_ssafy_crawl.preview_notice_import',
+                side_effect=fake_preview_notice_import,
+            ):
+                call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
+
+        self.assertEqual(seen['sources'], 'notice,mentoring,mentoring_notice,mentoring_qna')
+        self.assertIn('selected_sources=notice,mentoring,mentoring_notice,mentoring_qna', output.getvalue())
 
     def test_scheduled_crawl_all_keeps_all_sources_without_hourly_limits(self):
         seen = {}

@@ -10,7 +10,7 @@ MVP 기본 방식은 GitHub Actions scheduled workflow다.
 - 실행 위치: GitHub-hosted `ubuntu-latest` runner
 - 실행 주기: 2시간마다 17분
 - 실행 명령: `python manage.py scheduled_ssafy_crawl`
-- 기본 대상: `notice,academic_rule,mentoring,mentoring_notice`
+- 기본 대상: `notice,academic_rule,mentoring,mentoring_notice,mentoring_qna`
 - 저장 위치: Supabase PostgreSQL, 기본은 `DB_*` 개별 환경변수 사용
 
 Render Cron Job은 생성하지 않는다. Render Cron Job은 월 최소 비용이 발생할 수 있으므로, MVP 무료 운영에서는 사용하지 않고 향후 유료 안정화 옵션으로만 검토한다.
@@ -58,7 +58,7 @@ python -m playwright install --with-deps chromium
 python manage.py scheduled_ssafy_crawl
 ```
 
-이 명령은 인자를 주지 않으면 자동으로 `notice,academic_rule,mentoring,mentoring_notice`, `recent_limit=30`, `max_pages=2`를 사용한다. 전체 과거 데이터 크롤링이나 전체 OCR 재처리는 자동 workflow에서 실행하지 않는다.
+이 명령은 인자를 주지 않으면 자동으로 `notice,academic_rule,mentoring,mentoring_notice,mentoring_qna`, `recent_limit=30`, `max_pages=2`를 사용한다. `SSAFY_CRAWLER_SOURCES` 환경변수가 있으면 그 값을 우선 사용한다. 전체 과거 데이터 크롤링이나 전체 OCR 재처리는 자동 workflow에서 실행하지 않는다.
 
 ## GitHub Secrets
 
@@ -75,6 +75,7 @@ SSAFY_NOTICE_LIST_URL
 SSAFY_RULE_LIST_URL
 SSAFY_MENTORING_DATA_LIST_URL
 SSAFY_MENTORING_NOTICE_LIST_URL
+SSAFY_MENTORING_QNA_LIST_URL
 ```
 
 운영 DB 필수, 현재 프로젝트 기본 방식:
@@ -210,7 +211,7 @@ GitHub Actions 실행 상세 화면에서 실패한 step을 확인한다.
 
 ```text
 scheduled_ssafy_crawl started_at=...
-scheduled_ssafy_crawl selected_sources=notice,academic_rule,mentoring,mentoring_notice recent_limit=30 max_pages=2
+scheduled_ssafy_crawl selected_sources=notice,academic_rule,mentoring,mentoring_notice,mentoring_qna recent_limit=30 max_pages=2
 status=
 fetched_by_source=
 created_count=
