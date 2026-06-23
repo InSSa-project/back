@@ -489,6 +489,13 @@ Create/update request:
 }
 ```
 
+Validation rules:
+
+```text
+title: 1-100 characters after trimming leading and trailing whitespace
+content: 1-5,000 characters after trimming leading and trailing whitespace
+```
+
 Create success response:
 
 ```json
@@ -600,6 +607,47 @@ Reply create request:
 }
 ```
 
+Comment validation rules:
+
+```text
+comment/reply content: 1-1,000 characters after trimming leading and trailing whitespace
+```
+
+Comment create success response:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "post_id": 10,
+    "parent_id": null,
+    "author": {
+      "id": 2,
+      "name": "Kim",
+      "generation": 14,
+      "profile_image_url": null
+    },
+    "content": "Thanks for the information.",
+    "is_deleted": false,
+    "is_owner": true,
+    "created_at": "2026-06-23T10:00:00+09:00",
+    "updated_at": "2026-06-23T10:00:00+09:00"
+  },
+  "message": "OK"
+}
+```
+
+Length errors return 400 with field-level serializer errors, for example:
+
+```json
+{
+  "content": [
+    "Comment content must be 1000 characters or less."
+  ]
+}
+```
+
 Comments are returned as a flat list ordered by `created_at` ascending. Replies can point to any existing comment on the same post, so nested replies are allowed. `parent_id` from another post returns 400.
 
 When the post exists but has no comments, the endpoint returns 200 with an empty array:
@@ -614,7 +662,21 @@ When the post exists but has no comments, the endpoint returns 200 with an empty
 
 Only a missing post returns 404 for the comments endpoint.
 
-Deleted comments are soft-deleted with `is_deleted=true`; child replies remain visible. Deleted comment content is returned as `"Deleted comment."` and author data is returned as `null`.
+Deleted comments are soft-deleted with `is_deleted=true`; child replies remain visible. Deleted comment content is returned as `"Deleted comment."`, author data is returned as `null`, and `is_owner` is returned as `false`.
+
+```json
+{
+  "id": 1,
+  "post_id": 10,
+  "parent_id": null,
+  "author": null,
+  "content": "Deleted comment.",
+  "is_deleted": true,
+  "is_owner": false,
+  "created_at": "2026-06-23T10:00:00+09:00",
+  "updated_at": "2026-06-23T10:05:00+09:00"
+}
+```
 
 Only the comment author can update a comment. The author or staff users can delete a comment.
 
