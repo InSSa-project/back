@@ -1,5 +1,7 @@
+import concurrent.futures
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
 from apps.users.jwt.service import JwtService
@@ -613,3 +615,161 @@ class CommunityApiTests(TestCase):
         self.assertEqual(missing_post.status_code, 404)
         self.assertEqual(missing_comment.status_code, 404)
         self.assertEqual(blank_comment.status_code, 400)
+
+    def test_invalid_string_post_id_does_not_match_url_pattern(self):
+        from django.urls import resolve, Resolver404
+        for path in [
+            '/api/v1/community/posts/undefined/',
+            '/api/v1/community/posts/undefined/comments/',
+            '/api/v1/community/posts/NaN/',
+            '/api/v1/community/posts/NaN/comments/',
+        ]:
+            with self.assertRaises(Resolver404, msg=f"{path} unexpectedly resolved"):
+                resolve(path)
+
+    def test_zero_post_id_returns_404_not_500(self):
+        for path in ['/api/v1/community/posts/0/', '/api/v1/community/posts/0/comments/']:
+            response = self.client.get(path, **self._auth(self.user))
+            self.assertNotEqual(response.status_code, 500, f"{path} returned 500")
+            self.assertEqual(response.status_code, 404)
+
+    def test_success_response_does_not_convert_empty_list_to_dict(self):
+        post = self._create_post()
+
+        response = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body['status'], 'success')
+        self.assertIsInstance(body['data'], list)
+        self.assertEqual(body['data'], [])
+        self.assertEqual(body['message'], 'OK')
+
+    def test_post_detail_and_comment_list_are_both_200_in_sequence(self):
+        post = self._create_post()
+        CommunityComment.objects.create(post=post, author=self.user, content='Hello')
+
+        detail = self.client.get(reverse('community-post-detail', args=[post.id]), **self._auth(self.user))
+        comments = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(comments.status_code, 200)
+        self._assert_post_detail_contract(detail.json()['data'])
+        self.assertEqual(len(comments.json()['data']), 1)
+
+    def test_comment_post_response_contains_all_required_fields(self):
+        post = self._create_post()
+
+        response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'New comment'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        data = response.json()['data']
+        for field in ['id', 'post_id', 'parent_id', 'author', 'content', 'is_deleted', 'is_owner', 'created_at', 'updated_at']:
+            self.assertIn(field, data, f"Missing field: {field}")
+        self.assertIsInstance(data['id'], int)
+        self.assertEqual(data['post_id'], post.id)
+        self.assertIsNone(data['parent_id'])
+        self.assertFalse(data['is_deleted'])
+        self.assertTrue(data['is_owner'])
+
+    def test_comment_post_db_row_matches_response_id(self):
+        post = self._create_post()
+
+        response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'Check DB'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        returned_id = response.json()['data']['id']
+        self.assertTrue(CommunityComment.objects.filter(pk=returned_id, post=post).exists())
+
+    def test_comment_post_immediately_visible_in_list(self):
+        post = self._create_post()
+
+        create = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'Immediate'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        list_response = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(create.status_code, 201)
+        self.assertEqual(list_response.status_code, 200)
+        ids = [c['id'] for c in list_response.json()['data']]
+        self.assertIn(create.json()['data']['id'], ids)
+
+    def test_deleted_comment_included_in_list_with_masked_content(self):
+        post = self._create_post()
+        deleted = CommunityComment.objects.create(post=post, author=self.user, content='Will be deleted', is_deleted=True)
+        live = CommunityComment.objects.create(post=post, author=self.user, content='Alive')
+
+        response = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['data']
+        self.assertEqual(len(data), 2)
+        deleted_item = next(c for c in data if c['id'] == deleted.id)
+        self.assertTrue(deleted_item['is_deleted'])
+        self.assertIsNone(deleted_item['author'])
+        self.assertEqual(deleted_item['content'], 'Deleted comment.')
+
+    def test_migration_edited_at_field_present_in_post_detail(self):
+        post = self._create_post()
+
+        response = self.client.get(reverse('community-post-detail', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()['data']
+        self.assertIn('edited_at', data)
+        self.assertIn('is_edited', data)
+        self.assertIsNone(data['edited_at'])
+        self.assertFalse(data['is_edited'])
+
+
+@override_settings(
+    SECURE_SSL_REDIRECT=False,
+    JWT_ACCESS_SLIDING_EXPIRATION=True,
+    JWT_ACCESS_LIFETIME_SECONDS=60,
+    JWT_ACCESS_MAX_LIFETIME_SECONDS=3600,
+)
+class JwtSlidingSessionConcurrencyTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            username='jwt-concurrency',
+            email='jwt-concurrency@example.com',
+            password='password',
+            name='JWT User',
+        )
+
+    def test_repeated_jwt_verification_updates_session_without_error(self):
+        from apps.users.models import JwtSession
+        token = JwtService().issue_token(self.user, token_type='access')
+
+        for _ in range(5):
+            payload = JwtService().verify(token, expected_type='access')
+            self.assertEqual(payload['user_id'], self.user.id)
+
+        session = JwtSession.objects.get(user=self.user, token_type='access')
+        self.assertIsNone(session.revoked_at)
+
+    def test_jwt_verify_uses_update_not_select_for_update(self):
+        from apps.users.models import JwtSession
+        token = JwtService().issue_token(self.user, token_type='access')
+        session_before = JwtSession.objects.get(user=self.user, token_type='access')
+        idle_before = session_before.idle_expires_at
+
+        JwtService().verify(token, expected_type='access')
+
+        session_after = JwtSession.objects.get(user=self.user, token_type='access')
+        self.assertGreaterEqual(session_after.idle_expires_at, idle_before)
+        self.assertIsNone(session_after.revoked_at)
