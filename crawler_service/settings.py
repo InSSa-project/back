@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'apps.ocr',
     'apps.notifications',
     'apps.risk',
+    'apps.community',
     'sync',
     'schedules',
     'dashboard',
