@@ -417,7 +417,136 @@ GET /api/v1/ssafy/sync/logs
 
 ---
 
-# 10. ERROR CODES
+# 10. COMMUNITY API
+
+All community APIs require JWT Bearer authentication.
+
+## 10-1. Board Types
+
+```text
+general: free board
+suggestion: service suggestion board
+```
+
+## 10-2. Post List
+
+```http
+GET /api/v1/community/posts/?board_type=general&page=1
+```
+
+Response data uses the project response wrapper. The `data` value is paginated:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "id": 1,
+        "board_type": "general",
+        "title": "Study group",
+        "content_preview": "Looking for algorithm study members.",
+        "author": {
+          "id": 2,
+          "name": "Kim",
+          "generation": 14,
+          "profile_image_url": null
+        },
+        "like_count": 0,
+        "comment_count": 0,
+        "is_liked": false,
+        "is_owner": true,
+        "created_at": "2026-06-23T10:00:00+09:00",
+        "updated_at": "2026-06-23T10:00:00+09:00"
+      }
+    ]
+  },
+  "message": "OK"
+}
+```
+
+## 10-3. Post CRUD
+
+```http
+POST /api/v1/community/posts/
+GET /api/v1/community/posts/{post_id}/
+PATCH /api/v1/community/posts/{post_id}/
+DELETE /api/v1/community/posts/{post_id}/
+```
+
+Create/update request:
+
+```json
+{
+  "board_type": "general",
+  "title": "Study group",
+  "content": "Looking for algorithm study members."
+}
+```
+
+Only the post author can update a post. The author or staff users can delete a post.
+
+## 10-4. Post Like
+
+```http
+POST /api/v1/community/posts/{post_id}/like/
+DELETE /api/v1/community/posts/{post_id}/like/
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "is_liked": true,
+    "like_count": 3
+  },
+  "message": "OK"
+}
+```
+
+Duplicate likes are prevented by a database unique constraint.
+
+## 10-5. Comments
+
+```http
+GET /api/v1/community/posts/{post_id}/comments/
+POST /api/v1/community/posts/{post_id}/comments/
+PATCH /api/v1/community/comments/{comment_id}/
+DELETE /api/v1/community/comments/{comment_id}/
+```
+
+Comment create request:
+
+```json
+{
+  "content": "Thanks for the information.",
+  "parent_id": null
+}
+```
+
+Reply create request:
+
+```json
+{
+  "content": "I agree.",
+  "parent_id": 15
+}
+```
+
+Comments are returned as a flat list ordered by `created_at` ascending. Replies can point to any existing comment on the same post, so nested replies are allowed. `parent_id` from another post returns 400.
+
+Deleted comments are soft-deleted with `is_deleted=true`; child replies remain visible. Deleted comment content is returned as `"Deleted comment."` and author data is returned as `null`.
+
+Only the comment author can update a comment. The author or staff users can delete a comment.
+
+---
+
+# 11. ERROR CODES
 
 | Code | Meaning |
 |---|---|
@@ -429,9 +558,9 @@ GET /api/v1/ssafy/sync/logs
 
 ---
 
-# 11. API 설계 원칙
+# 12. API 설계 원칙
 
-## 11-1. REST 원칙 준수
+## 12-1. REST 원칙 준수
 
 - GET: 조회
 - POST: 생성
@@ -441,7 +570,7 @@ GET /api/v1/ssafy/sync/logs
 
 ---
 
-## 11-2. 일관된 Response
+## 12-2. 일관된 Response
 
 모든 API는:
 
@@ -453,7 +582,7 @@ status + data + message
 
 ---
 
-## 11-3. 비동기 고려
+## 12-3. 비동기 고려
 
 다음 API는 비동기 처리 고려:
 
@@ -463,7 +592,7 @@ status + data + message
 
 ---
 
-# 12. 인증 필요 API
+# 13. 인증 필요 API
 
 ## 보호 API
 
@@ -472,10 +601,11 @@ status + data + message
 - /notifications/*
 - /risk/*
 - /users/me
+- /community/*
 
 ---
 
-# 13. 확장 가능 API
+# 14. 확장 가능 API
 
 향후 추가:
 
@@ -486,7 +616,7 @@ status + data + message
 
 ---
 
-# 14. 최종 구조 목표
+# 15. 최종 구조 목표
 
 INSSA API는 단순 CRUD가 아니라:
 
