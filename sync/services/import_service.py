@@ -212,6 +212,7 @@ def _import_raw_items(raw_items):
                 f'brdItmSeq={notice_id or "-"} title={item.get("title", "")} '
                 f'source_url={item.get("source_url", "")} existing_id={existing_raw_data.id}'
             )
+            _create_schedule_events_for_duplicate_without_events(existing_raw_data, summary)
             continue
 
         item = _apply_ocr_pipeline(item, summary)
@@ -1150,6 +1151,23 @@ def _create_schedule_events_for_raw_data(raw_data, summary):
         raw_data.status = RawSsafyData.STATUS_FAILED
         raw_data.save(update_fields=['status', 'metadata_json'])
         summary.failed_items.append(f'{raw_data.source_type}:{exc.__class__.__name__}')
+
+
+def _create_schedule_events_for_duplicate_without_events(raw_data, summary):
+    if raw_data.source_type != 'notice':
+        return
+    if _raw_data_has_schedule_events(raw_data):
+        return
+    _create_schedule_events_for_raw_data(raw_data, summary)
+
+
+def _raw_data_has_schedule_events(raw_data):
+    if ScheduleEvent.objects.filter(raw_data=raw_data).exists():
+        return True
+    return (
+        ScheduleEvent.objects.filter(metadata_json__raw_data_id=raw_data.id).exists()
+        or ScheduleEvent.objects.filter(metadata_json__raw_data_id=str(raw_data.id)).exists()
+    )
 
 
 def _raw_images_changed(raw_data, item):
