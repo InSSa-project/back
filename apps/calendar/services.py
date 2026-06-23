@@ -5,7 +5,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from schedules.models import ScheduleEvent
-from schedules.services import filter_events_for_user_profile
+from schedules.services import filter_calendar_visible_events
 from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
 from .models import HiddenCalendarEvent
@@ -33,10 +33,7 @@ class CalendarService:
         if event_type:
             queryset = queryset.filter(event_type=str(event_type).strip())
 
-        events = list(queryset.order_by('start_at', 'id'))
-        profile = _user_profile(user)
-        if profile is not None:
-            events = filter_events_for_user_profile(events, profile)
+        events = filter_calendar_visible_events(queryset.order_by('start_at', 'id'))
         if track:
             events = [event for event in events if _matches_track(event, track)]
         return events
@@ -58,12 +55,6 @@ def _parse_boundary(value, is_end):
 
     boundary_time = time.max if is_end else time.min
     return timezone.make_aware(datetime.combine(parsed_date, boundary_time), timezone.get_current_timezone())
-
-
-def _user_profile(user):
-    if not getattr(user, 'is_authenticated', False):
-        return None
-    return getattr(user, 'profile', None) or getattr(user, 'userprofile', None) or user
 
 
 def _matches_track(event, expected):

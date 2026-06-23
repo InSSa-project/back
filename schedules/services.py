@@ -15,6 +15,22 @@ from sync.services.tracks import COMMON_TRACK_KEY, common_track_metadata, normal
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
+CALENDAR_NOTICE_SOURCE_TYPES = {'notice', 'ssafy_notice', 'announcement'}
+CALENDAR_HOLIDAY_SOURCE_TYPES = {'national_holiday', 'holiday'}
+CALENDAR_MANUAL_SOURCE_TYPES = {'manual'}
+CALENDAR_HIDDEN_SOURCE_TYPES = {
+    'academic_rule',
+    'academic_rules',
+    'geeknews',
+    'mentor',
+    'mentor_notice',
+    'mentor_story',
+    'mentoring',
+    'mentoring_notice',
+    'mentoring_qna',
+}
+CALENDAR_HIDDEN_EVENT_TYPES = {'mentoring'}
+CALENDAR_HIDDEN_URL_MARKERS = ('mento', 'mentor')
 logger = logging.getLogger(__name__)
 
 
@@ -157,6 +173,113 @@ def _month_week_index(event_date):
     if event_date < first_monday:
         return None
     return ((event_date - first_monday).days // 7) + 1
+
+
+def filter_calendar_visible_events(events):
+    events = list(events)
+    metadata_raw_by_id = _metadata_raw_data_map(events)
+    return [
+        event
+        for event in events
+        if is_calendar_visible_event(event, metadata_raw_by_id=metadata_raw_by_id)
+    ]
+
+
+def is_calendar_visible_event(event, metadata_raw_by_id=None):
+    metadata = getattr(event, 'metadata_json', None) or {}
+    source_types = _calendar_event_source_types(event, metadata, metadata_raw_by_id or {})
+    source_urls = _calendar_event_source_urls(event, metadata, metadata_raw_by_id or {})
+    event_type = _normalize_source_value(getattr(event, 'event_type', ''))
+
+    if _is_user_created_calendar_event(event, source_types):
+        return True
+    if event_type in CALENDAR_HIDDEN_EVENT_TYPES:
+        return False
+    if any(source_type in CALENDAR_HIDDEN_SOURCE_TYPES for source_type in source_types):
+        return False
+    if any(_is_hidden_calendar_url(source_url) for source_url in source_urls):
+        return False
+    if event_type == 'holiday':
+        return any(source_type in CALENDAR_HOLIDAY_SOURCE_TYPES for source_type in source_types)
+    if any(source_type in CALENDAR_HOLIDAY_SOURCE_TYPES for source_type in source_types):
+        return True
+    return any(source_type in CALENDAR_NOTICE_SOURCE_TYPES for source_type in source_types)
+
+
+def _metadata_raw_data_map(events):
+    raw_data_ids = set()
+    for event in events:
+        metadata = getattr(event, 'metadata_json', None) or {}
+        raw_data_id = metadata.get('raw_data_id')
+        if raw_data_id and not getattr(event, 'raw_data_id', None):
+            raw_data_ids.add(raw_data_id)
+    if not raw_data_ids:
+        return {}
+
+    try:
+        from sync.models import RawSsafyData
+
+        return RawSsafyData.objects.in_bulk(raw_data_ids)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _calendar_event_source_types(event, metadata, metadata_raw_by_id):
+    source_types = {
+        _normalize_source_value(getattr(event, 'source_type', '')),
+        _normalize_source_value(metadata.get('source_type')),
+        _normalize_source_value(metadata.get('raw_source_type')),
+    }
+    raw_data = getattr(event, 'raw_data', None)
+    if raw_data is not None:
+        source_types.add(_normalize_source_value(getattr(raw_data, 'source_type', '')))
+
+    metadata_raw_data = _metadata_raw_data(metadata, metadata_raw_by_id)
+    if metadata_raw_data is not None:
+        source_types.add(_normalize_source_value(getattr(metadata_raw_data, 'source_type', '')))
+    return {source_type for source_type in source_types if source_type}
+
+
+def _calendar_event_source_urls(event, metadata, metadata_raw_by_id):
+    source_urls = {
+        str(metadata.get('source_url') or ''),
+        str(metadata.get('raw_source_url') or ''),
+    }
+    raw_data = getattr(event, 'raw_data', None)
+    if raw_data is not None:
+        source_urls.add(str(getattr(raw_data, 'source_url', '') or ''))
+
+    metadata_raw_data = _metadata_raw_data(metadata, metadata_raw_by_id)
+    if metadata_raw_data is not None:
+        source_urls.add(str(getattr(metadata_raw_data, 'source_url', '') or ''))
+    return {source_url for source_url in source_urls if source_url}
+
+
+def _metadata_raw_data(metadata, metadata_raw_by_id):
+    raw_data_id = metadata.get('raw_data_id')
+    if not raw_data_id:
+        return None
+    try:
+        return metadata_raw_by_id.get(raw_data_id) or metadata_raw_by_id.get(int(raw_data_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_user_created_calendar_event(event, source_types):
+    return bool(
+        getattr(event, 'owner_id', None)
+        or any(source_type in CALENDAR_MANUAL_SOURCE_TYPES for source_type in source_types)
+        or _normalize_source_value(getattr(event, 'event_type', '')) == 'personal'
+    )
+
+
+def _is_hidden_calendar_url(source_url):
+    normalized_url = str(source_url or '').lower()
+    return any(marker in normalized_url for marker in CALENDAR_HIDDEN_URL_MARKERS)
+
+
+def _normalize_source_value(value):
+    return str(value or '').strip().lower()
 
 
 def filter_events_for_user_profile(events, profile):

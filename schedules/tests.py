@@ -355,6 +355,78 @@ class ScheduleEventApiTests(TestCase):
         self.assertTrue(payload[0]['is_global'])
         self.assertFalse(payload[0]['is_important'])
 
+    def test_event_list_excludes_mentoring_reference_events(self):
+        notice_raw = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://edu.ssafy.com/edu/board/notice/detail.do?id=1',
+            title='Official notice',
+            raw_text='body',
+        )
+        mentoring_raw = RawSsafyData.objects.create(
+            source_type='mentoring_qna',
+            source_url='https://edu.ssafy.com/edu/board/mentoQna/detail.do?id=2',
+            title='Mentor QnA',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        public_notice = ScheduleEvent.objects.create(
+            raw_data=notice_raw,
+            title='Official notice schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+        personal_event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Personal schedule',
+            start_at=start_at + timedelta(hours=1),
+            end_at=start_at + timedelta(hours=2),
+            event_type='personal',
+            source_type='manual',
+        )
+        holiday_event = ScheduleEvent.objects.create(
+            title='National holiday',
+            start_at=start_at + timedelta(hours=2),
+            end_at=start_at + timedelta(hours=3),
+            event_type='holiday',
+            source_type='national_holiday',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=mentoring_raw,
+            title='Mentoring raw schedule',
+            start_at=start_at + timedelta(hours=3),
+            end_at=start_at + timedelta(hours=4),
+            event_type='notice',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='Mentoring metadata schedule',
+            start_at=start_at + timedelta(hours=4),
+            end_at=start_at + timedelta(hours=5),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': mentoring_raw.id,
+                'source_url': mentoring_raw.source_url,
+            },
+        )
+        ScheduleEvent.objects.create(
+            title='Mentoring event type schedule',
+            start_at=start_at + timedelta(hours=5),
+            end_at=start_at + timedelta(hours=6),
+            event_type='mentoring',
+            source_type='notice',
+        )
+
+        response = self.client.get(reverse('schedule-event-list'), {'start': '2026-06-10', 'end': '2026-06-10'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {item['id'] for item in response.json()},
+            {public_notice.id, personal_event.id, holiday_event.id},
+        )
+
     def test_authenticated_profile_mismatch_does_not_hide_public_generated_events(self):
         UserProfile.objects.create(
             user=self.user,
@@ -774,7 +846,7 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             {item['event_type'] for item in response.json()},
-            {'study', 'assignment', 'lecture', 'deadline', 'notice', 'mentoring', 'unknown', 'other', '기타'},
+            {'study', 'assignment', 'lecture', 'deadline', 'notice', 'unknown', 'other', '기타'},
         )
 
     def test_event_list_exam_event_type_returns_only_exam_events(self):

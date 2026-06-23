@@ -13,6 +13,7 @@ from rest_framework.exceptions import AuthenticationFailed
 
 from .models import ScheduleEvent
 from apps.users.authentication import JwtAuthentication
+from schedules.services import filter_calendar_visible_events
 from sync.models import RawSsafyData
 from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
@@ -107,7 +108,7 @@ def event_list(request):
     event_type = request.GET.get('event_type')
     if event_type:
         events = _filter_queryset_by_event_type(events, event_type)
-    events = list(events)
+    events = filter_calendar_visible_events(events.select_related('raw_data'))
     events = _filter_events_by_audience_params(events, request.GET)
     events = [event for event in events if _event_occurs_in_range(event, start_at, end_at)]
     events = [event for event in events if not _is_hidden_meaningless_event(event)]
