@@ -246,6 +246,28 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(RawSsafyData.objects.count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
 
+    def test_duplicate_notice_without_schedule_event_is_reparsed(self):
+        item = _notice_item('https://example.com/notices/missing-event', 'notice-missing-event')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=item['source_url'],
+            title=item['title'],
+            raw_text=item['raw_text'],
+            raw_html=item['raw_html'],
+            metadata_json=item['metadata_json'],
+            status=RawSsafyData.STATUS_PARSED,
+        )
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(job_log.skipped_count, 1)
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().raw_data.source_url, item['source_url'])
+
     def test_schedule_event_api_handles_existing_duplicate_rows(self):
         run_sample_notice_import()
         existing = ScheduleEvent.objects.first()
