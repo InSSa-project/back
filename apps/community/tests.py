@@ -6,6 +6,7 @@ from apps.users.jwt.service import JwtService
 from apps.users.models import UserProfile
 
 from .models import CommunityComment, CommunityPost, CommunityPostLike
+from .serializers import COMMENT_CONTENT_MAX_LENGTH, POST_CONTENT_MAX_LENGTH, POST_TITLE_MAX_LENGTH
 
 
 @override_settings(SECURE_SSL_REDIRECT=False)
@@ -370,6 +371,7 @@ class CommunityApiTests(TestCase):
         payload = list_response.json()['data']
         self.assertEqual(payload[0]['content'], 'Deleted comment.')
         self.assertIsNone(payload[0]['author'])
+        self.assertFalse(payload[0]['is_owner'])
         self.assertEqual(payload[1]['parent_id'], root.id)
         self.assertEqual(detail_response.json()['data']['comment_count'], 1)
 
@@ -387,6 +389,207 @@ class CommunityApiTests(TestCase):
         response = self.client.get(reverse('community-comment-list', args=[999999]), **self._auth(self.user))
 
         self.assertEqual(response.status_code, 404)
+
+    def test_new_post_comment_list_is_available_immediately_without_refresh(self):
+        create_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': 'Fresh post', 'content': 'Fresh content'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        response = self.client.get(
+            reverse('community-comment-list', args=[create_response.json()['data']['id']]),
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['data'], [])
+
+    def test_new_comment_is_available_immediately_without_refresh(self):
+        create_post_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': 'Commentable post', 'content': 'Commentable content'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        post_id = create_post_response.json()['data']['id']
+
+        create_comment_response = self.client.post(
+            reverse('community-comment-list', args=[post_id]),
+            data={'content': 'Immediate comment'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        list_response = self.client.get(reverse('community-comment-list', args=[post_id]), **self._auth(self.user))
+
+        self.assertEqual(create_comment_response.status_code, 201)
+        self.assertIn('id', create_comment_response.json()['data'])
+        self.assertEqual(create_comment_response.json()['data']['author']['name'], 'Community User')
+        self.assertTrue(create_comment_response.json()['data']['is_owner'])
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual([item['id'] for item in list_response.json()['data']], [create_comment_response.json()['data']['id']])
+
+    def test_existing_comment_lists_are_stable_on_first_and_repeated_requests(self):
+        empty_post = self._create_post(title='Empty existing')
+        comment_post = self._create_post(title='Commented existing')
+        comment = CommunityComment.objects.create(post=comment_post, author=self.user, content='Existing comment')
+
+        empty_responses = [
+            self.client.get(reverse('community-comment-list', args=[empty_post.id]), **self._auth(self.user))
+            for _ in range(3)
+        ]
+        comment_responses = [
+            self.client.get(reverse('community-comment-list', args=[comment_post.id]), **self._auth(self.user))
+            for _ in range(3)
+        ]
+
+        for response in empty_responses:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['data'], [])
+        for response in comment_responses:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual([item['id'] for item in response.json()['data']], [comment.id])
+
+    def test_comment_list_handles_author_without_profile(self):
+        no_profile_user = get_user_model().objects.create_user(
+            username='comment-no-profile',
+            email='comment-no-profile@example.com',
+            password='password',
+            name='No Profile Commenter',
+        )
+        post = self._create_post(author=no_profile_user)
+        comment = CommunityComment.objects.create(post=post, author=no_profile_user, content='No profile comment')
+
+        response = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data'][0]
+        self.assertEqual(payload['id'], comment.id)
+        self.assertEqual(payload['author']['name'], 'No Profile Commenter')
+        self.assertIsNone(payload['author']['generation'])
+
+    def test_deleted_comment_contract_for_author_null_and_replies(self):
+        post = self._create_post()
+        root = CommunityComment.objects.create(post=post, author=self.user, content='Root', is_deleted=True)
+        reply = CommunityComment.objects.create(post=post, author=self.other_user, parent=root, content='Reply')
+
+        response = self.client.get(reverse('community-comment-list', args=[post.id]), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertEqual(payload[0]['id'], root.id)
+        self.assertIsNone(payload[0]['author'])
+        self.assertEqual(payload[0]['content'], 'Deleted comment.')
+        self.assertTrue(payload[0]['is_deleted'])
+        self.assertFalse(payload[0]['is_owner'])
+        self.assertEqual(payload[1]['id'], reply.id)
+        self.assertEqual(payload[1]['parent_id'], root.id)
+
+    def test_post_title_length_limits(self):
+        valid_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': 't' * POST_TITLE_MAX_LENGTH, 'content': 'content'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        invalid_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': 't' * (POST_TITLE_MAX_LENGTH + 1), 'content': 'content'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(valid_response.status_code, 201)
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertIn('title', invalid_response.json())
+
+    def test_post_content_length_limits(self):
+        valid_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': 'Valid content length', 'content': 'c' * POST_CONTENT_MAX_LENGTH},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        invalid_response = self.client.post(
+            reverse('community-post-list'),
+            data={
+                'board_type': 'general',
+                'title': 'Invalid content length',
+                'content': 'c' * (POST_CONTENT_MAX_LENGTH + 1),
+            },
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(valid_response.status_code, 201)
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertIn('content', invalid_response.json())
+
+    def test_comment_content_length_limits(self):
+        post = self._create_post()
+
+        valid_response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'c' * COMMENT_CONTENT_MAX_LENGTH},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        invalid_response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'c' * (COMMENT_CONTENT_MAX_LENGTH + 1)},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(valid_response.status_code, 201)
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertIn('content', invalid_response.json())
+
+    def test_reply_content_length_limit_and_failed_create_does_not_leave_row(self):
+        post = self._create_post()
+        parent = CommunityComment.objects.create(post=post, author=self.user, content='Parent')
+
+        response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': 'r' * (COMMENT_CONTENT_MAX_LENGTH + 1), 'parent_id': parent.id},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('content', response.json())
+        self.assertEqual(CommunityComment.objects.filter(post=post).count(), 1)
+
+    def test_whitespace_only_inputs_are_rejected(self):
+        post = self._create_post()
+
+        title_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': '   ', 'content': 'content'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        content_response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'general', 'title': 'title', 'content': '   '},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+        comment_response = self.client.post(
+            reverse('community-comment-list', args=[post.id]),
+            data={'content': '   '},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(title_response.status_code, 400)
+        self.assertEqual(content_response.status_code, 400)
+        self.assertEqual(comment_response.status_code, 400)
+        self.assertIn('title', title_response.json())
+        self.assertIn('content', content_response.json())
+        self.assertIn('content', comment_response.json())
 
     def test_invalid_input_and_missing_resources_return_expected_statuses(self):
         post = self._create_post()
