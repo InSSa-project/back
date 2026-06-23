@@ -43,7 +43,7 @@ class SemanticChunker:
                 'ai_document_id': document.id,
                 'raw_data_id': document.raw_data_id,
                 'document_type': document.document_type,
-                'source_type': document.document_type,
+                'source_type': document.metadata_json.get('source_type', document.document_type),
                 'event_type': document.metadata_json.get('event_type', ''),
                 'start_date': document.metadata_json.get('start_date', ''),
                 'end_date': document.metadata_json.get('end_date', document.metadata_json.get('start_date', '')),

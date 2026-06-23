@@ -103,3 +103,26 @@ class OAuthAccount(models.Model):
 
     def __str__(self):
         return f'{self.provider}:{self.provider_user_id}'
+
+
+class JwtSession(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='jwt_sessions')
+    jti = models.CharField(max_length=64, unique=True)
+    token_type = models.CharField(max_length=20)
+    issued_at = models.DateTimeField()
+    last_seen_at = models.DateTimeField()
+    idle_expires_at = models.DateTimeField()
+    max_expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'token_type'], name='users_jwtse_user_id_b01b91_idx'),
+            models.Index(fields=['idle_expires_at'], name='users_jwtse_idle_ex_79f6ca_idx'),
+            models.Index(fields=['max_expires_at'], name='users_jwtse_max_exp_cfe6b7_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id}:{self.token_type}:{self.jti}'
