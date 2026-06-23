@@ -58,6 +58,7 @@ class CommunityPostListSerializer(serializers.ModelSerializer):
     comment_count = serializers.IntegerField(read_only=True)
     is_liked = serializers.BooleanField(read_only=True)
     is_owner = serializers.SerializerMethodField()
+    is_edited = serializers.SerializerMethodField()
 
     class Meta:
         model = CommunityPost
@@ -71,6 +72,8 @@ class CommunityPostListSerializer(serializers.ModelSerializer):
             'comment_count',
             'is_liked',
             'is_owner',
+            'is_edited',
+            'edited_at',
             'created_at',
             'updated_at',
         ]
@@ -86,6 +89,9 @@ class CommunityPostListSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         return bool(request and request.user.is_authenticated and post.author_id == request.user.id)
 
+    def get_is_edited(self, post):
+        return post.edited_at is not None
+
 
 class CommunityPostDetailSerializer(CommunityPostListSerializer):
     class Meta(CommunityPostListSerializer.Meta):
@@ -99,6 +105,8 @@ class CommunityPostDetailSerializer(CommunityPostListSerializer):
             'comment_count',
             'is_liked',
             'is_owner',
+            'is_edited',
+            'edited_at',
             'created_at',
             'updated_at',
         ]

@@ -459,6 +459,8 @@ Response data uses the project response wrapper. The `data` value is paginated:
         "comment_count": 0,
         "is_liked": false,
         "is_owner": true,
+        "is_edited": false,
+        "edited_at": null,
         "created_at": "2026-06-23T10:00:00+09:00",
         "updated_at": "2026-06-23T10:00:00+09:00"
       }
@@ -486,6 +488,66 @@ Create/update request:
   "content": "Looking for algorithm study members."
 }
 ```
+
+Create success response:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 10,
+    "board_type": "general",
+    "title": "Study group",
+    "content": "Looking for algorithm study members.",
+    "author": {
+      "id": 1,
+      "name": "Kim",
+      "generation": 14,
+      "profile_image_url": null
+    },
+    "like_count": 0,
+    "comment_count": 0,
+    "is_liked": false,
+    "is_owner": true,
+    "is_edited": false,
+    "edited_at": null,
+    "created_at": "2026-06-23T10:00:00+09:00",
+    "updated_at": "2026-06-23T10:00:00+09:00"
+  },
+  "message": "Community post created."
+}
+```
+
+Update success response keeps the same post detail shape. `title` and `content` reflect saved values immediately:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 10,
+    "board_type": "general",
+    "title": "Updated study group",
+    "content": "Updated content.",
+    "author": {
+      "id": 1,
+      "name": "Kim",
+      "generation": 14,
+      "profile_image_url": null
+    },
+    "like_count": 0,
+    "comment_count": 0,
+    "is_liked": false,
+    "is_owner": true,
+    "is_edited": true,
+    "edited_at": "2026-06-23T12:34:56+09:00",
+    "created_at": "2026-06-23T10:00:00+09:00",
+    "updated_at": "2026-06-23T12:34:56+09:00"
+  },
+  "message": "Community post updated."
+}
+```
+
+`is_edited` is true when `edited_at` is not null. `edited_at` is set only after a successful post PATCH. Likes, comments, comment updates, and comment deletes do not change the post `edited_at`.
 
 Only the post author can update a post. The author or staff users can delete a post.
 
@@ -539,6 +601,18 @@ Reply create request:
 ```
 
 Comments are returned as a flat list ordered by `created_at` ascending. Replies can point to any existing comment on the same post, so nested replies are allowed. `parent_id` from another post returns 400.
+
+When the post exists but has no comments, the endpoint returns 200 with an empty array:
+
+```json
+{
+  "status": "success",
+  "data": [],
+  "message": "OK"
+}
+```
+
+Only a missing post returns 404 for the comments endpoint.
 
 Deleted comments are soft-deleted with `is_deleted=true`; child replies remain visible. Deleted comment content is returned as `"Deleted comment."` and author data is returned as `null`.
 
