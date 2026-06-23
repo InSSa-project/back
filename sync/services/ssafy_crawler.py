@@ -55,9 +55,11 @@ _DETAIL_DEBUG_COUNTS = {}
 SOURCE_LIST_URL_ENV_NAMES = {
     'notice': 'SSAFY_NOTICE_LIST_URL',
     'academic_rule': 'SSAFY_RULE_LIST_URL',
+    'mentoring': 'SSAFY_MENTORING_DATA_LIST_URL',
     'faq': 'SSAFY_FAQ_LIST_URL',
     'quest': 'SSAFY_QUEST_LIST_URL',
-    'mentoring_notice': 'SSAFY_MENTORING_LIST_URL',
+    'mentoring_notice': 'SSAFY_MENTORING_NOTICE_LIST_URL',
+    'mentoring_qna': 'SSAFY_MENTORING_QNA_LIST_URL',
     'curriculum': 'SSAFY_CURRICULUM_LIST_URL',
     'learning_material': 'SSAFY_LEARNING_MATERIAL_LIST_URL',
     'event': 'SSAFY_EVENT_LIST_URL',
@@ -154,6 +156,7 @@ def load_ssafy_authenticated_documents(
     faq_list_url=None,
     quest_list_url=None,
     mentoring_notice_list_url=None,
+    mentoring_qna_list_url=None,
     curriculum_list_url=None,
     learning_material_list_url=None,
     event_list_url=None,
@@ -166,11 +169,13 @@ def load_ssafy_authenticated_documents(
     academic_rule_url = rule_list_url or os.getenv('SSAFY_RULE_LIST_URL')
     faq_url = faq_list_url or os.getenv('SSAFY_FAQ_LIST_URL')
     quest_url = quest_list_url or os.getenv('SSAFY_QUEST_LIST_URL')
+    mentoring_url = os.getenv('SSAFY_MENTORING_DATA_LIST_URL') or os.getenv('SSAFY_MENTORING_DATA_URL')
     mentoring_notice_url = (
         mentoring_notice_list_url
-        or os.getenv('SSAFY_MENTORING_LIST_URL')
         or os.getenv('SSAFY_MENTORING_NOTICE_LIST_URL')
+        or (os.getenv('SSAFY_MENTORING_LIST_URL') if not mentoring_url else '')
     )
+    mentoring_qna_url = mentoring_qna_list_url or os.getenv('SSAFY_MENTORING_QNA_LIST_URL')
     curriculum_url = curriculum_list_url or os.getenv('SSAFY_CURRICULUM_LIST_URL')
     learning_material_url = learning_material_list_url or os.getenv('SSAFY_LEARNING_MATERIAL_LIST_URL')
     event_url = event_list_url or os.getenv('SSAFY_EVENT_LIST_URL')
@@ -224,9 +229,11 @@ def load_ssafy_authenticated_documents(
                 for source_type, list_url, link_extractor in _source_collection_specs(
                     notice_url=notice_url,
                     academic_rule_url=academic_rule_url,
+                    mentoring_url=mentoring_url,
                     faq_url=faq_url,
                     quest_url=quest_url,
                     mentoring_notice_url=mentoring_notice_url,
+                    mentoring_qna_url=mentoring_qna_url,
                     curriculum_url=curriculum_url,
                     learning_material_url=learning_material_url,
                     event_url=event_url,
@@ -356,7 +363,7 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
 
     for page_index in range(1, max_pages + 1):
         _raise_if_source_timed_out(source_type, source_deadline)
-        _open_list_page(page, list_url, current_url, requested_page)
+        _open_list_page(page, list_url, current_url, requested_page, source_type=source_type)
         _prepare_academic_page_for_collection(page, source_type, current_url)
         session_reason = _session_expired_reason(page, login_url=login_url)
         if session_reason:
@@ -457,7 +464,10 @@ def _collect_authenticated_list(page, list_url, source_type, link_extractor, log
 
         seen_page_urls.add(_normalize_url_without_fragment(current_url))
         next_page_number = _extract_next_page_number(soup, requested_page)
-        next_url = _page_url_for_number(list_url, next_page_number) if next_page_number else ''
+        if source_type == 'mentoring_qna':
+            next_url = _page_url(page) if next_page_number else ''
+        else:
+            next_url = _page_url_for_number(list_url, next_page_number) if next_page_number else ''
         if not next_url:
             break
         current_url = next_url
@@ -615,7 +625,11 @@ def _raise_if_source_timed_out(source_type, deadline):
         raise SsafySourceTimeoutError(f'source_timeout source_type={source_type}')
 
 
-def _open_list_page(page, list_url, current_url, page_number):
+def _open_list_page(page, list_url, current_url, page_number, source_type=''):
+    if source_type == 'mentoring_qna':
+        _open_click_paginated_list_page(page, list_url, current_url, page_number)
+        return
+
     page.goto(current_url, wait_until='networkidle')
     if page_number <= 1:
         return
@@ -680,6 +694,143 @@ def _open_list_page(page, list_url, current_url, page_number):
             f'pagination_click_failed url={list_url} page={page_number} error={exc}',
             level='warning',
         )
+
+
+def _open_click_paginated_list_page(page, list_url, current_url, page_number):
+    if page_number <= 1 or not _same_url_path(_page_url(page), list_url):
+        page.goto(list_url if page_number <= 1 else (current_url or list_url), wait_until='networkidle')
+    if page_number <= 1:
+        return
+
+    clicked = _click_pagination_control(page, list_url, page_number, source_type='mentoring_qna')
+    if clicked:
+        return
+
+    if _submit_current_pagination_form(page, list_url, page_number, source_type='mentoring_qna'):
+        return
+
+    _record_collection_debug(
+        f'pagination_click_unavailable source_type=mentoring_qna url={list_url} page={page_number}',
+        level='warning',
+    )
+
+
+def _submit_current_pagination_form(page, list_url, page_number, source_type=''):
+    try:
+        submitted = page.evaluate(
+            """
+            (pageNumber) => {
+              const names = ['pageNo', 'pageIndex', 'currentPageNo'];
+              let touched = false;
+              for (const name of names) {
+                const input = document.querySelector(`input[name="${name}"]`);
+                if (input) {
+                  input.value = String(pageNumber);
+                  touched = true;
+                }
+              }
+              const form = document.querySelector('form[name="searchForm"], form[name="frm"], form');
+              if (touched && form) {
+                if (typeof form.requestSubmit === 'function') {
+                  form.requestSubmit();
+                } else {
+                  form.submit();
+                }
+                return true;
+              }
+              return false;
+            }
+            """,
+            page_number,
+        )
+        if submitted:
+            page.wait_for_load_state('networkidle')
+            _record_collection_debug(
+                f'pagination_form_submit source_type={source_type or "-"} source_url={list_url} page={page_number}'
+            )
+            return True
+    except Exception as exc:
+        _record_collection_debug(
+            f'pagination_form_submit_failed source_type={source_type or "-"} url={list_url} page={page_number} error={exc}',
+            level='warning',
+        )
+    return False
+
+
+def _click_pagination_control(page, list_url, page_number, source_type=''):
+    try:
+        clicked = page.evaluate(
+            """
+            (pageNumber) => {
+              const target = String(pageNumber);
+              const detailPattern = /(?:fnDetail2?|goDetail|detail|selectDetail|viewDetail)/i;
+              const pageFunctionPattern = /(?:fn\\w*Page|goPage|movePage|linkPage|page|paging|fnSearch|fnList|search|list)/i;
+              const targetArgumentPattern = new RegExp(`[(,]\\\\s*['"]?${target}(?:['"]?\\\\s*[,)]|\\\\s*\\\\))`);
+              const explicitPageUrlPattern = new RegExp(`[?&](?:pageNo|pageIndex|currentPageNo)=${target}(?:&|$)`, 'i');
+              const containerSelectors = [
+                '.pagination',
+                '.paging',
+                '.paginate',
+                '.board_pager',
+                '.paging-wrap',
+                '.pagination-area',
+                '.pagination-wrap',
+                '.paging-area',
+                '.paging_wrap',
+                '.pagenate',
+                '.board-paging',
+                '.pagination-list'
+              ];
+              const scopedContainers = containerSelectors
+                .flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+              const scopes = scopedContainers.length ? scopedContainers : [document];
+              const candidates = scopes.flatMap((scope) => (
+                Array.from(scope.querySelectorAll('a[href], a[onclick], button, input[type="button"], input[type="submit"]'))
+              ));
+              const seen = new Set();
+              const uniqueCandidates = candidates.filter((node) => {
+                if (seen.has(node)) return false;
+                seen.add(node);
+                return true;
+              });
+              const node = uniqueCandidates.find((candidate) => {
+                const text = (candidate.textContent || candidate.value || '').trim();
+                const onclick = candidate.getAttribute('onclick') || '';
+                const href = candidate.getAttribute('href') || '';
+                const label = `${candidate.getAttribute('aria-label') || ''} ${candidate.getAttribute('title') || ''}`.trim();
+                if (detailPattern.test(onclick) && !explicitPageUrlPattern.test(href)) {
+                  return false;
+                }
+                return text === target
+                  || label === target
+                  || explicitPageUrlPattern.test(href)
+                  || (pageFunctionPattern.test(onclick) && targetArgumentPattern.test(onclick));
+              });
+              if (!node) return false;
+              node.click();
+              return true;
+            }
+            """,
+            page_number,
+        )
+        if clicked:
+            page.wait_for_load_state('networkidle')
+            _record_collection_debug(
+                f'pagination_click_fallback source_type={source_type or "-"} source_url={list_url} page={page_number}'
+            )
+            return True
+    except Exception as exc:
+        _record_collection_debug(
+            f'pagination_click_failed source_type={source_type or "-"} url={list_url} page={page_number} error={exc}',
+            level='warning',
+        )
+    return False
+
+
+def _same_url_path(left_url, right_url):
+    left = urlparse(left_url or '')
+    right = urlparse(right_url or '')
+    return bool(left.path and right.path and left.path.rstrip('/') == right.path.rstrip('/'))
 
 
 def _extract_next_page_url(soup, current_url, seen_page_urls):
@@ -1186,6 +1337,41 @@ def _extract_mentoring_notice_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'], include_titles=True)
 
 
+def _extract_mentoring_links(soup, base_url):
+    return _extract_links_by_keywords(soup, base_url, ['mentor', 'mentoring', '\uba58\ud1a0\ub9c1', '\uba58\ud1a0'], include_titles=True)
+
+
+def _extract_mentoring_qna_links(soup, base_url):
+    # mentoQna detail URLs are list.do?brdItmSeq=ID (not detail.do), so we cannot
+    # use the standard extractor which filters out list.do paths.
+    links = []
+    seen = set()
+    base_path = urlparse(base_url).path
+    for anchor in soup.select('a[href], a[onclick]'):
+        href = anchor.get('href', '').strip()
+        onclick = anchor.get('onclick', '').strip()
+        text = _clean_text(anchor.get_text(' ', strip=True))
+
+        # fnDetail2(id) onclick \u2192 try detail.do first (standard SSAFY pattern)
+        onclick_url = _extract_detail_url_from_onclick(onclick, base_url)
+        if onclick_url and onclick_url not in seen:
+            seen.add(onclick_url)
+            links.append({'url': onclick_url, 'title': text})
+            continue
+
+        if not href or href.startswith(('javascript:', '#', 'mailto:')):
+            continue
+        absolute_url = urljoin(base_url, href)
+        if absolute_url in seen:
+            continue
+        parsed = urlparse(absolute_url)
+        # Accept list.do?brdItmSeq=... on the same path as the base list URL
+        if parsed.path == base_path and 'brdItmSeq=' in parsed.query:
+            seen.add(absolute_url)
+            links.append({'url': absolute_url, 'title': text})
+    return links
+
+
 def _extract_curriculum_links(soup, base_url):
     return _extract_links_by_keywords(soup, base_url, ['curriculum', 'course', '\ucee4\ub9ac\ud058\ub7fc', '\uac15\uc758\uacc4\ud68d', '\uad50\uc218'])
 
@@ -1201,22 +1387,26 @@ def _extract_event_links(soup, base_url):
 def _source_collection_specs(
     notice_url,
     academic_rule_url,
+    mentoring_url,
     faq_url,
     quest_url,
     mentoring_notice_url,
-    curriculum_url,
-    learning_material_url,
+    mentoring_qna_url='',
+    curriculum_url='',
+    learning_material_url='',
     event_url='',
 ):
     specs = [
         ('notice', notice_url, _extract_notice_link_items),
         ('academic_rule', academic_rule_url, _extract_academic_rule_links),
+        ('mentoring', mentoring_url, _extract_mentoring_links),
+        ('mentoring_notice', mentoring_notice_url, _extract_mentoring_notice_links),
+        ('mentoring_qna', mentoring_qna_url, _extract_mentoring_qna_links),
         ('quest', quest_url, _extract_quest_links),
         ('curriculum', curriculum_url, _extract_curriculum_links),
         ('faq', faq_url, _extract_faq_links),
         ('learning_material', learning_material_url, _extract_learning_material_links),
         ('event', event_url, _extract_event_links),
-        ('mentoring_notice', mentoring_notice_url, _extract_mentoring_notice_links),
     ]
     selected_sources = _env_source_set('SSAFY_CRAWLER_SOURCES')
     skipped_sources = _env_source_set('SSAFY_CRAWLER_SKIP_SOURCES')
@@ -1490,7 +1680,17 @@ def extract_academic_rule_reply_image_urls_from_html(raw_html, source_url):
     soup = BeautifulSoup(raw_html, 'html.parser')
     image_urls = []
     seen = set()
-    for image in soup.select('tr.reply img'):
+    detail_image_selectors = (
+        'tr.reply img, '
+        '.reply img, '
+        '.accordion-collapse img, '
+        '.accordion-content img, '
+        '.collapse img, '
+        '.panel-collapse img, '
+        '.panel-body img, '
+        '[aria-labelledby] img'
+    )
+    for image in soup.select(detail_image_selectors):
         for attribute in LAZY_IMAGE_ATTRIBUTES:
             _append_image_url(image_urls, seen, image.get(attribute, ''), source_url)
         _append_srcset_image_urls(image_urls, seen, image.get('srcset', ''), source_url)
@@ -1501,7 +1701,11 @@ def extract_academic_rule_reply_image_urls_from_html(raw_html, source_url):
 def _academic_rule_reply_row_count(raw_html):
     if not raw_html:
         return 0
-    return len(BeautifulSoup(raw_html, 'html.parser').select('tr.reply'))
+    return len(
+        BeautifulSoup(raw_html, 'html.parser').select(
+            'tr.reply, .reply, .accordion-collapse, .accordion-content, .panel-collapse, .panel-body'
+        )
+    )
 
 
 def _append_srcset_image_urls(image_urls, seen, srcset, source_url):

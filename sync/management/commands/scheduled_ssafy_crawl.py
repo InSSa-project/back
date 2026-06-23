@@ -12,7 +12,7 @@ from sync.models import CrawlJobLog
 from sync.services.import_service import preview_notice_import, run_notice_import
 
 
-DEFAULT_SCHEDULED_SOURCES = ('notice', 'mentoring_notice')
+DEFAULT_SCHEDULED_SOURCES = ('notice', 'academic_rule', 'mentoring', 'mentoring_notice')
 DEFAULT_RECENT_LIMIT = 30
 DEFAULT_MAX_PAGES = 2
 
@@ -36,7 +36,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--all',
             action='store_true',
-            help='Collect all configured sources. Hourly default only checks notice and mentoring_notice.',
+            help='Collect all configured sources. Hourly default checks notice, academic_rule, mentoring, and mentoring_notice.',
         )
         parser.add_argument('--skip-source', help='Comma-separated source list to skip, e.g. mentoring_notice.')
         parser.add_argument(

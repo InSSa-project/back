@@ -35,6 +35,7 @@ from sync.services.ssafy_crawler import (
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
+    _extract_mentoring_qna_links,
     _extract_pagination_totals,
     _filter_controls_debug,
     _pagination_controls_debug,
@@ -1380,7 +1381,9 @@ class SampleNoticeImportTests(TestCase):
         holiday = ScheduleEvent.objects.get(title='어린이날')
         self.assertEqual(timezone.localdate(holiday.start_at).isoformat(), '2026-05-05')
         self.assertEqual(holiday.event_type, 'holiday')
-        self.assertEqual(holiday.source_type, 'seed')
+        self.assertEqual(holiday.source_type, 'national_holiday')
+        self.assertEqual(holiday.description, '')
+        self.assertEqual(holiday.metadata_json['source'], 'korean_public_holiday_provider')
         self.assertIn('created_count=', output.getvalue())
 
     def test_seed_korean_holidays_uses_requested_year_fixture(self):
@@ -1393,6 +1396,45 @@ class SampleNoticeImportTests(TestCase):
     def test_seed_korean_holidays_rejects_unsupported_year(self):
         with self.assertRaisesMessage(CommandError, 'Unsupported Korean holiday year: 2028'):
             call_command('seed_korean_holidays', '--year', '2028')
+
+    def test_seed_korean_holidays_is_idempotent(self):
+        call_command('seed_korean_holidays', '--year', '2026')
+        first_count = ScheduleEvent.objects.filter(source_type='national_holiday').count()
+
+        call_command('seed_korean_holidays', '--year', '2026')
+
+        self.assertEqual(ScheduleEvent.objects.filter(source_type='national_holiday').count(), first_count)
+
+    def test_seed_korean_holidays_prefers_national_holiday_over_ssafy_holiday_duplicate(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='holiday notice', raw_text='holiday')
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 5))
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='어린이날 공휴일',
+            description='SSAFY duplicated holiday',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='holiday',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='SSAFY 특강',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='notice',
+            source_type='notice',
+        )
+
+        call_command('seed_korean_holidays', '--year', '2026')
+
+        self.assertFalse(ScheduleEvent.objects.filter(title='어린이날 공휴일', source_type='notice').exists())
+        self.assertTrue(ScheduleEvent.objects.filter(title='SSAFY 특강', source_type='notice').exists())
+        national = ScheduleEvent.objects.get(title='어린이날')
+        self.assertEqual(national.source_type, 'national_holiday')
+        self.assertEqual(national.description, '')
 
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
@@ -1727,6 +1769,40 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual([item['source_type'] for item in items], ['notice', 'mentoring_notice'])
         self.assertEqual(collect.call_args_list[1].kwargs['list_url'], 'https://example.com/list/mentoring')
 
+    def test_authenticated_documents_collects_mentoring_and_mentoring_notice_separately(self):
+        fake_env = {
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_ID': 'tester',
+            'SSAFY_PASSWORD': 'secret',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/list/notice',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/list/mentoring-data',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/list/mentoring-notice',
+            'SSAFY_CRAWLER_SOURCES': 'notice,mentoring,mentoring_notice',
+        }
+
+        with patch.dict('os.environ', fake_env, clear=True):
+            with patch.dict('sys.modules', _fake_playwright_modules()):
+                with patch(
+                    'sync.services.ssafy_crawler._collect_authenticated_list',
+                    side_effect=[
+                        [_source_item('notice', 'https://example.com/notice/1', 'Notice 1', 'notice-1')],
+                        [_source_item('mentoring', 'https://example.com/mentoring/1', 'Mentoring', 'mentoring-1')],
+                        [
+                            _source_item(
+                                'mentoring_notice',
+                                'https://example.com/mentoring-notice/1',
+                                'Mentoring notice',
+                                'mentoring-notice-1',
+                            )
+                        ],
+                    ],
+                ) as collect:
+                    items = load_ssafy_authenticated_documents()
+
+        self.assertEqual([item['source_type'] for item in items], ['notice', 'mentoring', 'mentoring_notice'])
+        self.assertEqual(collect.call_args_list[1].kwargs['list_url'], 'https://example.com/list/mentoring-data')
+        self.assertEqual(collect.call_args_list[2].kwargs['list_url'], 'https://example.com/list/mentoring-notice')
+
     def test_authenticated_documents_closes_playwright_resources_when_collection_fails(self):
         fake_env = {
             'SSAFY_LOGIN_URL': 'https://example.com/login',
@@ -2055,11 +2131,11 @@ class SampleNoticeImportTests(TestCase):
 
     def test_source_filter_and_skip_source_env(self):
         with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,academic_rule'}, clear=False):
-            specs = _source_collection_specs('notice-url', 'rule-url', 'faq-url', '', '', '', '', '')
+            specs = _source_collection_specs('notice-url', 'rule-url', '', 'faq-url', '', '', '', '', '')
         self.assertEqual([source for source, _, _ in specs], ['notice', 'academic_rule'])
 
         with patch.dict('os.environ', {'SSAFY_CRAWLER_SKIP_SOURCES': 'mentoring_notice'}, clear=False):
-            specs = _source_collection_specs('notice-url', 'rule-url', '', '', 'mentor-url', '', '', '')
+            specs = _source_collection_specs('notice-url', 'rule-url', '', '', '', 'mentor-url', '', '', '')
         self.assertNotIn('mentoring_notice', [source for source, _, _ in specs])
 
     def test_crawl_command_sets_source_options(self):
@@ -2150,6 +2226,8 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
         }
 
@@ -2158,7 +2236,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=7', rendered)
+        self.assertIn('checked_count=9', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/mentoring', rendered)
@@ -2177,6 +2255,8 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
         }
 
@@ -2185,7 +2265,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=7', rendered)
+        self.assertIn('checked_count=9', rendered)
         self.assertNotIn('db-secret-password', rendered)
         self.assertNotIn('db.example.com', rendered)
         self.assertNotIn('render-admin', rendered)
@@ -2200,6 +2280,8 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
         }
 
@@ -2217,6 +2299,8 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
         }
 
@@ -2238,13 +2322,16 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
             'SSAFY_MENTORING_LIST_URL': 'https://example.com/mentoring',
         }
 
         with patch.dict('os.environ', env, clear=True):
             call_command('check_crawl_env', stdout=output)
 
-        self.assertIn('SSAFY crawl environment check OK.', output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- SSAFY_MENTORING_DATA_LIST_URL or SSAFY_MENTORING_DATA_URL', rendered)
 
     def test_check_crawl_env_prints_missing_keys_without_values(self):
         output = StringIO()
@@ -2263,6 +2350,8 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- SSAFY_RULE_LIST_URL', rendered)
+        self.assertIn('- SSAFY_MENTORING_DATA_LIST_URL or SSAFY_MENTORING_DATA_URL', rendered)
         self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL or SSAFY_MENTORING_LIST_URL', rendered)
         self.assertNotIn('- SSAFY_QUEST_LIST_URL', rendered)
         self.assertNotIn('render-admin', rendered)
@@ -2292,10 +2381,10 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(CrawlJobLog.objects.count(), 0)
         self.assertEqual(seen['mode'], 'sample')
-        self.assertEqual(seen['sources'], 'notice,mentoring_notice')
+        self.assertEqual(seen['sources'], 'notice,academic_rule,mentoring,mentoring_notice')
         self.assertEqual(seen['recent_limit'], '30')
         self.assertEqual(seen['max_pages'], '2')
-        self.assertIn('selected_sources=notice,mentoring_notice', output.getvalue())
+        self.assertIn('selected_sources=notice,academic_rule,mentoring,mentoring_notice', output.getvalue())
         self.assertIn('dry_run=true', output.getvalue())
         self.assertIn('no_changes=true', output.getvalue())
 
@@ -2763,6 +2852,48 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertTrue(any('pagination_failed source_type=notice' in message for message in get_last_collection_debug()))
 
+    def test_mentoring_qna_pagination_clicks_page_controls_instead_of_direct_url(self):
+        page = _ClickPaginatedPage(
+            {
+                1: '''
+                <table><tbody>
+                  <tr><td><a href="/edu/board/mentoQna/list.do?brdItmSeq=101">QNA 1</a></td></tr>
+                </tbody></table>
+                <nav class="pagination"><a href="#;" onclick="fnPage('2')">2</a></nav>
+                ''',
+                2: '''
+                <table><tbody>
+                  <tr><td><a href="/edu/board/mentoQna/list.do?brdItmSeq=102">QNA 2</a></td></tr>
+                </tbody></table>
+                ''',
+            },
+            url='https://edu.ssafy.com/edu/board/mentoQna/list.do',
+        )
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_MAX_PAGES': '2'}):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                side_effect=lambda _page, detail_url, **kwargs: _source_item(
+                    'mentoring_qna',
+                    detail_url,
+                    kwargs.get('list_title') or detail_url,
+                    detail_url.rsplit('=', 1)[-1],
+                ),
+            ):
+                details = _collect_authenticated_list(
+                    page,
+                    'https://edu.ssafy.com/edu/board/mentoQna/list.do',
+                    'mentoring_qna',
+                    _extract_mentoring_qna_links,
+                )
+
+        self.assertEqual(page.goto_calls, ['https://edu.ssafy.com/edu/board/mentoQna/list.do'])
+        self.assertEqual(page.clicked_pages, [2])
+        self.assertEqual([detail['source_url'] for detail in details], [
+            'https://edu.ssafy.com/edu/board/mentoQna/list.do?brdItmSeq=101',
+            'https://edu.ssafy.com/edu/board/mentoQna/list.do?brdItmSeq=102',
+        ])
+
     def test_pagination_debug_reports_hidden_inputs_and_functions(self):
         soup = BeautifulSoup(
             '''
@@ -3036,6 +3167,35 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(image_urls[-1], 'https://edu.ssafy.com/rules/welfare.png')
         self.assertNotIn('https://edu.ssafy.com/assets/profile-background.png', image_urls)
         self.assertNotIn('https://edu.ssafy.com/assets/header-logo.jpg', image_urls)
+
+    def test_academic_rule_reply_image_urls_collects_accordion_lazy_images(self):
+        html = '''
+        <main>
+          <img src="/assets/header-logo.jpg">
+          <div class="accordion-collapse">
+            <img data-src="/rules/attendance-lazy.png">
+            <img data-original="relative/life.png">
+          </div>
+          <div class="panel-body">
+            <img data-srcset="/rules/security.png 640w, /rules/security@2x.png 2x">
+          </div>
+        </main>
+        '''
+
+        image_urls = extract_academic_rule_reply_image_urls_from_html(
+            html,
+            'https://edu.ssafy.com/edu/board/rule/list.do',
+        )
+
+        self.assertEqual(
+            image_urls,
+            [
+                'https://edu.ssafy.com/rules/attendance-lazy.png',
+                'https://edu.ssafy.com/edu/board/rule/relative/life.png',
+                'https://edu.ssafy.com/rules/security.png',
+                'https://edu.ssafy.com/rules/security@2x.png',
+            ],
+        )
 
     def test_academic_toggle_opener_skips_already_open_buttons(self):
         page = _AcademicTogglePage(
@@ -4730,6 +4890,32 @@ class _StaticPage:
 
     def locator(self, selector):
         return _StaticLocator(1 if 'userId' in self.html or 'userPwd' in self.html else 0)
+
+
+class _ClickPaginatedPage(_StaticPage):
+    def __init__(self, pages, url='https://example.com/list', title=''):
+        self.pages = pages
+        self.current_page = 1
+        self.goto_calls = []
+        self.clicked_pages = []
+        super().__init__(pages[1], url=url, title=title)
+
+    def goto(self, url, *args, **kwargs):
+        self.goto_calls.append(url)
+        self.current_page = 1
+        self.html = self.pages[self.current_page]
+        self.url = url
+
+    def evaluate(self, script, page_number):
+        self.clicked_pages.append(page_number)
+        if page_number not in self.pages:
+            return False
+        self.current_page = page_number
+        self.html = self.pages[page_number]
+        return True
+
+    def wait_for_load_state(self, *args, **kwargs):
+        return None
 
 
 class _StaticLocator:
