@@ -14,6 +14,7 @@ class CommunityPost(models.Model):
     board_type = models.CharField(max_length=20, choices=BOARD_TYPE_CHOICES)
     title = models.CharField(max_length=150)
     content = models.TextField()
+    edited_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
