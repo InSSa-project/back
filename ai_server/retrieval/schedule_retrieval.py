@@ -90,6 +90,8 @@ class ScheduleRetrievalService:
                 'end_at': end_at.isoformat(),
                 'event_type': event.event_type,
                 'source_type': source_type,
+                'source_title': raw_data.title if raw_data else metadata.get('source_title', ''),
+                'source_url': raw_data.source_url if raw_data else metadata.get('source_url', ''),
                 'visibility': visibility,
                 'owner_id': event.owner_id,
                 'is_personal': is_personal,

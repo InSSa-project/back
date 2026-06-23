@@ -691,7 +691,7 @@ class ChatPipeline:
                     intent=intent,
                     query_type=query_type,
                     answer_policy='SCHEDULE_DB_FALLBACK',
-                    references=[],
+                    references=self._schedule_references(fallback_chunks),
                     usage={
                         'mode': 'schedule_db_direct',
                         'retrieved_count': 0,
@@ -742,7 +742,7 @@ class ChatPipeline:
             intent=intent,
             query_type=query_type,
             answer_policy='SCHEDULE_DB_DIRECT',
-            references=[],
+            references=self._schedule_references(self._schedule_chunks_from_format_result(format_result)),
             usage={
                 'mode': 'schedule_db_direct',
                 'retrieved_count': len(chunks),
@@ -756,6 +756,14 @@ class ChatPipeline:
                 **memory_payload,
             },
         )
+
+    def _schedule_chunks_from_format_result(self, format_result):
+        events = list(format_result.regular_events) + list(format_result.long_events)
+        return [event.chunk for event in events]
+
+    def _schedule_references(self, chunks):
+        references = self.rag_service.reference_tracker.from_chunks(chunks)
+        return [reference for reference in references if reference.source_url]
 
 
     def _schedule_memory_payload(self, parsed_query, format_result) -> dict:

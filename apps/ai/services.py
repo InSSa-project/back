@@ -130,7 +130,11 @@ class AIService:
         references = payload.get('references') or []
         route_stage = self._route_stage(answer_policy, mode, references)
         used_llm_intent = answer_policy.startswith('LLM_INTENT_') or answer_policy.startswith('SERVER_VERIFIED_') or bool(usage.get('llm_intent'))
-        used_rag = bool(references) or route_stage in {'rag', 'rag_llm'} or answer_policy in {'RAG_GROUNDED'}
+        used_rag = (
+            route_stage in {'rag', 'rag_llm'}
+            or answer_policy in {'RAG_GROUNDED'}
+            or (bool(references) and route_stage not in {'db', 'llm_intent_db', 'personal_db', 'personal_db_llm'})
+        )
         used_db = route_stage in {'db', 'llm_intent_db', 'personal_db', 'personal_db_llm'}
         used_llm = (
             used_llm_intent
