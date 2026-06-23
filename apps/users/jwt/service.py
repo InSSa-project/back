@@ -4,8 +4,12 @@ import hmac
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 
 from django.conf import settings
+from django.db import transaction
+
+from apps.users.models import JwtSession
 
 
 class JwtService:
@@ -19,7 +23,7 @@ class JwtService:
 
     def issue_token(self, user, token_type):
         now = int(time.time())
-        lifetime = self._get_lifetime(token_type)
+        lifetime = self._get_token_lifetime(token_type)
         payload = {
             'token_type': token_type,
             'user_id': user.id,
@@ -28,6 +32,8 @@ class JwtService:
             'exp': now + lifetime,
             'jti': str(uuid.uuid4()),
         }
+        if token_type == 'access' and self._sliding_access_enabled():
+            self._create_access_session(user, payload)
         return self._encode(payload)
 
     def verify(self, token, expected_type='access'):
@@ -36,12 +42,89 @@ class JwtService:
             raise ValueError('Invalid token type.')
         if int(payload.get('exp', 0)) < int(time.time()):
             raise ValueError('Token expired.')
+        if expected_type == 'access' and self._sliding_access_enabled():
+            self._verify_access_session(payload)
         return payload
 
     def _get_lifetime(self, token_type):
         if token_type == 'refresh':
             return int(getattr(settings, 'JWT_REFRESH_LIFETIME_SECONDS', 60 * 60 * 24 * 14))
         return int(getattr(settings, 'JWT_ACCESS_LIFETIME_SECONDS', 60 * 15))
+
+    def _get_token_lifetime(self, token_type):
+        if token_type == 'access' and self._sliding_access_enabled():
+            return int(getattr(settings, 'JWT_ACCESS_MAX_LIFETIME_SECONDS', self._get_lifetime('refresh')))
+        return self._get_lifetime(token_type)
+
+    def _sliding_access_enabled(self):
+        return bool(getattr(settings, 'JWT_ACCESS_SLIDING_EXPIRATION', False))
+
+    def _create_access_session(self, user, payload):
+        issued_at = self._datetime_from_timestamp(payload['iat'])
+        max_expires_at = self._datetime_from_timestamp(payload['exp'])
+        idle_expires_at = min(
+            self._datetime_from_timestamp(payload['iat'] + self._get_lifetime('access')),
+            max_expires_at,
+        )
+        JwtSession.objects.create(
+            user=user,
+            jti=payload['jti'],
+            token_type='access',
+            issued_at=issued_at,
+            last_seen_at=issued_at,
+            idle_expires_at=idle_expires_at,
+            max_expires_at=max_expires_at,
+        )
+
+    def _verify_access_session(self, payload):
+        now = int(time.time())
+        now_dt = self._datetime_from_timestamp(now)
+
+        with transaction.atomic():
+            session = (
+                JwtSession.objects
+                .select_for_update()
+                .filter(
+                    jti=payload.get('jti'),
+                    user_id=payload.get('user_id'),
+                    token_type='access',
+                )
+                .first()
+            )
+            if session is None:
+                session = self._create_legacy_access_session(payload, now_dt)
+            if session.revoked_at:
+                raise ValueError('Token revoked.')
+            if session.max_expires_at < now_dt:
+                raise ValueError('Token expired.')
+            if session.idle_expires_at < now_dt:
+                raise ValueError('Token expired by inactivity.')
+
+            session.last_seen_at = now_dt
+            session.idle_expires_at = min(
+                self._datetime_from_timestamp(now + self._get_lifetime('access')),
+                session.max_expires_at,
+            )
+            session.save(update_fields=['last_seen_at', 'idle_expires_at', 'updated_at'])
+
+    def _create_legacy_access_session(self, payload, now_dt):
+        max_expires_at = self._datetime_from_timestamp(int(payload.get('exp', 0)))
+        session = JwtSession.objects.create(
+            user_id=payload['user_id'],
+            jti=payload['jti'],
+            token_type='access',
+            issued_at=self._datetime_from_timestamp(int(payload.get('iat', time.time()))),
+            last_seen_at=now_dt,
+            idle_expires_at=min(
+                self._datetime_from_timestamp(int(time.time()) + self._get_lifetime('access')),
+                max_expires_at,
+            ),
+            max_expires_at=max_expires_at,
+        )
+        return session
+
+    def _datetime_from_timestamp(self, value):
+        return datetime.fromtimestamp(int(value), tz=timezone.utc)
 
     def _encode(self, payload):
         header = {'typ': 'JWT', 'alg': self.algorithm}

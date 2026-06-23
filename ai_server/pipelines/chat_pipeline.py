@@ -480,11 +480,22 @@ class ChatPipeline:
         )
 
     def _build_filters(self, request: ChatRequest) -> dict:
-        return {
+        filters = {
             'user_id': request.user_context.user_id,
             'campus': request.user_context.campus,
             'generation': request.user_context.generation,
         }
+        return self._official_doc_filters(request.message, filters)
+
+    def _official_doc_filters(self, question: str, filters: dict, data_sources: list[str] | None = None) -> dict:
+        text = re.sub(r'\s+', ' ', (question or '').lower()).strip()
+        academic_terms = (
+            '학사규정', '규정', '과락', '퇴소', '중도퇴소', '수료', '재시험', '월말평가',
+            '과목평가', '출결', '결석', '지각', '통과 기준', '불합격',
+        )
+        if 'official_docs' in (data_sources or []) or any(term in text for term in academic_terms):
+            filters['source_type'] = 'academic_rule'
+        return filters
 
     def _intent_from_query_type(self, query_type: str) -> str:
         return query_type.lower()
@@ -515,10 +526,13 @@ class ChatPipeline:
         if not verified_plan.allowed or verified_plan.route not in {'rag', 'hybrid'}:
             return None
 
-        if 'notice' in verified_plan.data_sources or 'official_docs' in verified_plan.data_sources:
+        if 'notice' in verified_plan.data_sources and 'official_docs' not in verified_plan.data_sources:
             retry_result = self.rag_service.search_notices(request.message, parsed_query=parsed_query)
         else:
-            retry_result = self.rag_service.search_public(request.message, filters=filters)
+            retry_result = self.rag_service.search_public(
+                request.message,
+                filters=self._official_doc_filters(request.message, dict(filters), verified_plan.data_sources),
+            )
 
         retry_evaluation = retry_result.evaluation
         retry_validation = self.result_validator.validate_rag(retry_evaluation)
@@ -635,10 +649,13 @@ class ChatPipeline:
 
     def _dispatch_llm_rag_route(self, request: ChatRequest, parsed_query, filters: dict, intent_result, verified_plan):
         question = request.message
-        if 'notice' in verified_plan.data_sources or 'official_docs' in verified_plan.data_sources:
+        if 'notice' in verified_plan.data_sources and 'official_docs' not in verified_plan.data_sources:
             rag_result = self.rag_service.search_notices(question, parsed_query=parsed_query)
         else:
-            rag_result = self.rag_service.search_public(question, filters=filters)
+            rag_result = self.rag_service.search_public(
+                question,
+                filters=self._official_doc_filters(question, dict(filters), verified_plan.data_sources),
+            )
         retrieval_evaluation = rag_result.evaluation
         rag_validation = self.result_validator.validate_rag(retrieval_evaluation)
         policy = self.answer_policy_router.decide('SSAFY_OFFICIAL', retrieval_evaluation)
