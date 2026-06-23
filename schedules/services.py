@@ -126,7 +126,12 @@ def validate_generated_schedule(raw_data, schedule):
 
 
 def is_blocking_generated_schedule_warning(warning):
-    return warning in {'timetable_title_equals_source_title', 'non_positive_duration', 'source_title_period_mismatch'}
+    return warning in {
+        'timetable_title_equals_source_title',
+        'non_positive_duration',
+        'source_title_period_mismatch',
+        'generated_class_on_korean_holiday',
+    }
 
 
 def _is_generated_class_on_korean_holiday(schedule, parser):

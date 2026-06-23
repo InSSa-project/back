@@ -390,7 +390,7 @@ def _event_occurs_in_range(event, range_start, range_end):
     event_end = event.end_at
     if event_start and event_end:
         starts_before_range_end = range_end is None or event_start <= range_end
-        ends_after_range_start = range_start is None or event_end >= range_start
+        ends_after_range_start = range_start is None or event_end > range_start
         if starts_before_range_end and ends_after_range_start:
             return True
 
