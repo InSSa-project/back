@@ -35,6 +35,7 @@ from sync.services.ssafy_crawler import (
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
+    _extract_mentoring_qna_links,
     _extract_pagination_totals,
     _filter_controls_debug,
     _pagination_controls_debug,
@@ -2851,6 +2852,48 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertTrue(any('pagination_failed source_type=notice' in message for message in get_last_collection_debug()))
 
+    def test_mentoring_qna_pagination_clicks_page_controls_instead_of_direct_url(self):
+        page = _ClickPaginatedPage(
+            {
+                1: '''
+                <table><tbody>
+                  <tr><td><a href="/edu/board/mentoQna/list.do?brdItmSeq=101">QNA 1</a></td></tr>
+                </tbody></table>
+                <nav class="pagination"><a href="#;" onclick="fnPage('2')">2</a></nav>
+                ''',
+                2: '''
+                <table><tbody>
+                  <tr><td><a href="/edu/board/mentoQna/list.do?brdItmSeq=102">QNA 2</a></td></tr>
+                </tbody></table>
+                ''',
+            },
+            url='https://edu.ssafy.com/edu/board/mentoQna/list.do',
+        )
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_MAX_PAGES': '2'}):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                side_effect=lambda _page, detail_url, **kwargs: _source_item(
+                    'mentoring_qna',
+                    detail_url,
+                    kwargs.get('list_title') or detail_url,
+                    detail_url.rsplit('=', 1)[-1],
+                ),
+            ):
+                details = _collect_authenticated_list(
+                    page,
+                    'https://edu.ssafy.com/edu/board/mentoQna/list.do',
+                    'mentoring_qna',
+                    _extract_mentoring_qna_links,
+                )
+
+        self.assertEqual(page.goto_calls, ['https://edu.ssafy.com/edu/board/mentoQna/list.do'])
+        self.assertEqual(page.clicked_pages, [2])
+        self.assertEqual([detail['source_url'] for detail in details], [
+            'https://edu.ssafy.com/edu/board/mentoQna/list.do?brdItmSeq=101',
+            'https://edu.ssafy.com/edu/board/mentoQna/list.do?brdItmSeq=102',
+        ])
+
     def test_pagination_debug_reports_hidden_inputs_and_functions(self):
         soup = BeautifulSoup(
             '''
@@ -4847,6 +4890,32 @@ class _StaticPage:
 
     def locator(self, selector):
         return _StaticLocator(1 if 'userId' in self.html or 'userPwd' in self.html else 0)
+
+
+class _ClickPaginatedPage(_StaticPage):
+    def __init__(self, pages, url='https://example.com/list', title=''):
+        self.pages = pages
+        self.current_page = 1
+        self.goto_calls = []
+        self.clicked_pages = []
+        super().__init__(pages[1], url=url, title=title)
+
+    def goto(self, url, *args, **kwargs):
+        self.goto_calls.append(url)
+        self.current_page = 1
+        self.html = self.pages[self.current_page]
+        self.url = url
+
+    def evaluate(self, script, page_number):
+        self.clicked_pages.append(page_number)
+        if page_number not in self.pages:
+            return False
+        self.current_page = page_number
+        self.html = self.pages[page_number]
+        return True
+
+    def wait_for_load_state(self, *args, **kwargs):
+        return None
 
 
 class _StaticLocator:

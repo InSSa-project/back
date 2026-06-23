@@ -36,8 +36,9 @@ jobs:
       SSAFY_RULE_LIST_URL: ${{ secrets.SSAFY_RULE_LIST_URL }}
       SSAFY_MENTORING_DATA_LIST_URL: ${{ secrets.SSAFY_MENTORING_DATA_LIST_URL }}
       SSAFY_MENTORING_NOTICE_LIST_URL: ${{ secrets.SSAFY_MENTORING_NOTICE_LIST_URL }}
+      SSAFY_MENTORING_QNA_LIST_URL: ${{ secrets.SSAFY_MENTORING_QNA_LIST_URL }}
       SSAFY_CRAWLER_MODE: ssafy_notice
-      SSAFY_CRAWLER_SOURCES: notice,academic_rule,mentoring,mentoring_notice
+      SSAFY_CRAWLER_SOURCES: notice,academic_rule,mentoring,mentoring_notice,mentoring_qna
       SSAFY_NOTICE_MAX_PAGES: '2'
       SSAFY_CRAWLER_RECENT_LIMIT: '30'
       SSAFY_DETAIL_TIMEOUT: ${{ secrets.SSAFY_DETAIL_TIMEOUT }}
