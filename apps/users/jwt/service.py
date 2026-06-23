@@ -7,8 +7,6 @@ import uuid
 from datetime import datetime, timezone
 
 from django.conf import settings
-from django.db import transaction
-
 from apps.users.models import JwtSession
 
 
@@ -80,46 +78,49 @@ class JwtService:
         now = int(time.time())
         now_dt = self._datetime_from_timestamp(now)
 
-        with transaction.atomic():
-            session = (
-                JwtSession.objects
-                .select_for_update()
-                .filter(
-                    jti=payload.get('jti'),
-                    user_id=payload.get('user_id'),
-                    token_type='access',
-                )
-                .first()
+        session = (
+            JwtSession.objects
+            .filter(
+                jti=payload.get('jti'),
+                user_id=payload.get('user_id'),
+                token_type='access',
             )
-            if session is None:
-                session = self._create_legacy_access_session(payload, now_dt)
-            if session.revoked_at:
-                raise ValueError('Token revoked.')
-            if session.max_expires_at < now_dt:
-                raise ValueError('Token expired.')
-            if session.idle_expires_at < now_dt:
-                raise ValueError('Token expired by inactivity.')
+            .first()
+        )
+        if session is None:
+            session = self._create_legacy_access_session(payload, now_dt)
+        if session.revoked_at:
+            raise ValueError('Token revoked.')
+        if session.max_expires_at < now_dt:
+            raise ValueError('Token expired.')
+        if session.idle_expires_at < now_dt:
+            raise ValueError('Token expired by inactivity.')
 
-            session.last_seen_at = now_dt
-            session.idle_expires_at = min(
-                self._datetime_from_timestamp(now + self._get_lifetime('access')),
-                session.max_expires_at,
-            )
-            session.save(update_fields=['last_seen_at', 'idle_expires_at', 'updated_at'])
+        new_idle_expires_at = min(
+            self._datetime_from_timestamp(now + self._get_lifetime('access')),
+            session.max_expires_at,
+        )
+        JwtSession.objects.filter(pk=session.pk).update(
+            last_seen_at=now_dt,
+            idle_expires_at=new_idle_expires_at,
+            updated_at=now_dt,
+        )
 
     def _create_legacy_access_session(self, payload, now_dt):
         max_expires_at = self._datetime_from_timestamp(int(payload.get('exp', 0)))
-        session = JwtSession.objects.create(
-            user_id=payload['user_id'],
+        session, _ = JwtSession.objects.get_or_create(
             jti=payload['jti'],
-            token_type='access',
-            issued_at=self._datetime_from_timestamp(int(payload.get('iat', time.time()))),
-            last_seen_at=now_dt,
-            idle_expires_at=min(
-                self._datetime_from_timestamp(int(time.time()) + self._get_lifetime('access')),
-                max_expires_at,
-            ),
-            max_expires_at=max_expires_at,
+            user_id=payload['user_id'],
+            defaults={
+                'token_type': 'access',
+                'issued_at': self._datetime_from_timestamp(int(payload.get('iat', time.time()))),
+                'last_seen_at': now_dt,
+                'idle_expires_at': min(
+                    self._datetime_from_timestamp(int(time.time()) + self._get_lifetime('access')),
+                    max_expires_at,
+                ),
+                'max_expires_at': max_expires_at,
+            },
         )
         return session
 
