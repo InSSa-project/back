@@ -304,7 +304,9 @@ POST /api/v1/ai/chat
     "references": [
       {
         "title": "5월 공지",
-        "score": 0.92
+        "score": 0.92,
+        "source_url": "https://edu.ssafy.com/...",
+        "external_url": "https://edu.ssafy.com/..."
       }
     ]
   }

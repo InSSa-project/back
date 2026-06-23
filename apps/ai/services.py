@@ -69,15 +69,33 @@ class FastAPIAIClient:
 
     def _normalize_reference(self, reference):
         metadata = reference.get('metadata') or {}
+        source_url = self._reference_source_url(reference, metadata)
         return {
             'document_id': reference.get('ai_document_id'),
             'title': reference.get('title', ''),
             'source_type': reference.get('source_type') or metadata.get('source_type', ''),
+            'source_url': source_url,
+            'external_url': source_url,
             'score': reference.get('score', 0),
             'snippet': reference.get('snippet', ''),
             'chunk_id': reference.get('chunk_id', ''),
             'raw_data_id': reference.get('raw_data_id'),
         }
+
+    def _reference_source_url(self, reference, metadata):
+        for source in (reference, metadata):
+            for key in ('source_url', 'external_url', 'detail_url', 'url'):
+                value = source.get(key)
+                if value:
+                    return str(value)
+
+        raw_json = metadata.get('raw_json')
+        if isinstance(raw_json, dict):
+            for key in ('source_url', 'external_url', 'detail_url', 'url'):
+                value = raw_json.get(key)
+                if value:
+                    return str(value)
+        return ''
 
 
 class AIService:

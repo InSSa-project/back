@@ -728,7 +728,10 @@ class AIServiceRefactorContractTests(SimpleTestCase):
             title='SSAFY 공지',
             content='확인된 공지 내용',
             document_type='NOTICE',
-            metadata={'source_type': 'notice'},
+            metadata={
+                'source_type': 'notice',
+                'source_url': 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7',
+            },
             score=1.0,
         )
 
@@ -744,6 +747,8 @@ class AIServiceRefactorContractTests(SimpleTestCase):
 
         self.assertEqual(response.answer, 'mock 모델 답변')
         self.assertEqual(response.references[0].ai_document_id, 7)
+        self.assertEqual(response.references[0].source_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
+        self.assertEqual(response.references[0].external_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
         self.assertEqual(response.references[0].title, 'SSAFY 공지')
 
     def test_rag_failure_returns_safe_fallback_without_server_crash(self):
@@ -857,3 +862,24 @@ class DjangoAIAPICompatibilityTests(TestCase):
         self.assertEqual(result['usage']['mode'], 'ai_server_timeout')
         self.assertNotIn('secret-internal-host', result['answer'])
         self.assertNotIn('secret internal detail', result['answer'])
+
+    def test_fastapi_client_normalizes_reference_source_url(self):
+        from apps.ai.services import FastAPIAIClient
+
+        result = FastAPIAIClient(base_url='http://ai-server')._normalize_reference(
+            {
+                'ai_document_id': 7,
+                'title': 'SSAFY notice',
+                'source_type': 'notice',
+                'score': 0.92,
+                'snippet': 'notice body',
+                'chunk_id': 'doc:1',
+                'raw_data_id': 3,
+                'metadata': {
+                    'source_url': 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7',
+                },
+            }
+        )
+
+        self.assertEqual(result['source_url'], 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
+        self.assertEqual(result['external_url'], 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
