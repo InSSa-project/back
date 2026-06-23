@@ -36,7 +36,9 @@
 
 ## 공휴일/주말 처리
 
-- 공휴일 seed는 `holiday` event_type으로 관리한다.
+- 공휴일 seed는 `holiday` event_type, `national_holiday` source_type으로 관리한다.
+- 국가 공휴일은 별도 provider 데이터로 간주하며 `description`/`memo`/`note` 성격의 자동 설명을 저장하지 않는다.
+- 같은 날짜와 정규화 제목의 SSAFY 기반 `holiday` 일정이 있으면 `national_holiday` 일정을 우선하고 SSAFY 기반 중복 일정만 정리한다. 같은 날짜의 일반 SSAFY 일정은 중복으로 보지 않는다.
 - generated 수업/평가 일정이 공휴일 또는 주말에 생성되면 삭제보다 먼저 debug report에 suspicious로 노출한다.
 - `fallback_week` 기반 후보가 공휴일에 생성되면 날짜 매핑 오류 가능성이 높으므로 우선 점검한다.
 - 개인 일정은 공휴일/주말이어도 차단하지 않는다.

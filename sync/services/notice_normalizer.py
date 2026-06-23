@@ -4,6 +4,7 @@ import json
 SOURCE_TYPES = {
     'notice',
     'academic_rule',
+    'mentoring',
     'mentoring_notice',
     'curriculum',
     'learning_material',
@@ -15,6 +16,7 @@ TRACKS = {'python', 'java', 'embedded', 'mobile', 'common'}
 
 SOURCE_CATEGORY_MAP = {
     'academic_rule': 'etc',
+    'mentoring': 'mentoring',
     'mentoring_notice': 'mentoring',
     'curriculum': 'study',
     'learning_material': 'study',
@@ -88,7 +90,7 @@ def infer_notice_category(raw):
 
 def infer_notice_track(raw):
     source_type = str(getattr(raw, 'source_type', '') or '').strip().lower()
-    if source_type in {'mentoring_notice', 'academic_rule', 'faq'}:
+    if source_type in {'mentoring', 'mentoring_notice', 'academic_rule', 'faq'}:
         return 'common'
 
     metadata_value = _metadata_value(raw, 'track')
