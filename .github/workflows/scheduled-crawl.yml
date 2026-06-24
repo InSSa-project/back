@@ -47,7 +47,6 @@ jobs:
       CLOVA_OCR_INVOKE_URL: ${{ secrets.CLOVA_OCR_INVOKE_URL }}
       CLOVA_OCR_SECRET_KEY: ${{ secrets.CLOVA_OCR_SECRET_KEY }}
       GOOGLE_VISION_ENABLED: ${{ secrets.GOOGLE_VISION_ENABLED }}
-      GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
 
     steps:
       - name: Checkout repository
@@ -67,6 +66,84 @@ jobs:
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
+
+      - name: Set up Google Vision credentials
+        if: env.OCR_PROVIDER == 'google_vision'
+        env:
+          _GOOGLE_VISION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_VISION_CREDENTIALS_JSON }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get("_GOOGLE_VISION_CREDENTIALS_JSON", "").strip()
+          if not raw:
+              raise SystemExit(
+                  "GOOGLE_VISION_CREDENTIALS_JSON secret is not set or empty. "
+                  "Add the service account JSON content as a GitHub Repository Secret named GOOGLE_VISION_CREDENTIALS_JSON."
+              )
+
+          try:
+              payload = json.loads(raw)
+          except json.JSONDecodeError as exc:
+              raise SystemExit(f"GOOGLE_VISION_CREDENTIALS_JSON is not valid JSON: {exc}")
+
+          required = {"type", "project_id", "private_key", "client_email"}
+          missing = required - payload.keys()
+          if missing:
+              raise SystemExit(f"GOOGLE_VISION_CREDENTIALS_JSON is missing required fields: {sorted(missing)}")
+
+          target = Path(os.environ["RUNNER_TEMP"]) / "google-vision-credentials.json"
+          target.write_text(json.dumps(payload), encoding="utf-8")
+          target.chmod(0o600)
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"GOOGLE_APPLICATION_CREDENTIALS={target}\n")
+
+          print("ocr_runtime credentials_file_created=true")
+          print(f"ocr_runtime credentials_type={payload.get('type', '-')}")
+          print(f"ocr_runtime credentials_project_id_present={bool(payload.get('project_id'))}")
+          print(f"ocr_runtime credentials_client_email_present={bool(payload.get('client_email'))}")
+          PY
+
+      - name: Diagnose OCR environment
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          provider = os.getenv("OCR_PROVIDER", "")
+          enabled = os.getenv("GOOGLE_VISION_ENABLED", "")
+          credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+
+          print(f"ocr_runtime provider_present={bool(provider.strip())}")
+          print(f"ocr_runtime provider_normalized={provider.strip().lower() or '-'}")
+          print(f"ocr_runtime provider_supported={provider.strip().lower() in ('google_vision', 'clova', 'mock')}")
+          print(f"ocr_runtime google_vision_enabled_present={bool(enabled.strip())}")
+          print(f"ocr_runtime google_vision_enabled={enabled.strip().lower() in ('1', 'true', 'yes', 'on')}")
+          print(f"ocr_runtime credentials_path_present={bool(credentials.strip())}")
+
+          if credentials.strip():
+              p = Path(credentials.strip())
+              file_exists = p.is_file()
+              print(f"ocr_runtime credentials_file_exists={file_exists}")
+              if file_exists:
+                  readable = os.access(str(p), os.R_OK)
+                  print(f"ocr_runtime credentials_file_readable={readable}")
+                  if readable:
+                      try:
+                          import json
+                          data = json.loads(p.read_text(encoding="utf-8"))
+                          required = {"type", "project_id", "private_key", "client_email"}
+                          missing = required - data.keys()
+                          print(f"ocr_runtime credentials_json_valid=true")
+                          print(f"ocr_runtime credentials_required_fields_present={not missing}")
+                      except Exception:
+                          print(f"ocr_runtime credentials_json_valid=false")
+          else:
+              print(f"ocr_runtime credentials_file_exists=false")
+          PY
 
       - name: Check crawl environment
         run: python manage.py check_crawl_env

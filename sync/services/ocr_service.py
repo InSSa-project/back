@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 import uuid
@@ -7,6 +8,7 @@ from urllib.parse import urlparse
 import requests
 
 
+LOGGER = logging.getLogger(__name__)
 OCR_PROVIDER_MOCK = 'mock'
 OCR_PROVIDER_GOOGLE_VISION = 'google_vision'
 OCR_PROVIDER_CLOVA = 'clova'
@@ -32,8 +34,16 @@ def extract_text_from_image_urls(image_urls, image_downloader=None):
 
 
 def _get_ocr_provider():
-    provider = os.getenv('OCR_PROVIDER', OCR_PROVIDER_MOCK).strip().lower()
+    raw = os.getenv('OCR_PROVIDER', '')
+    provider = raw.strip().lower()
+    if not provider:
+        return OCR_PROVIDER_MOCK
     if provider not in SUPPORTED_OCR_PROVIDERS:
+        LOGGER.warning(
+            'ocr_runtime provider_invalid=%r falling back to mock. '
+            'Supported providers: %s',
+            provider, sorted(SUPPORTED_OCR_PROVIDERS),
+        )
         return OCR_PROVIDER_MOCK
     return provider
 

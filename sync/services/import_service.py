@@ -22,7 +22,7 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     generated_identity_key,
 )
-from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key, track_key_from_text
+from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key, track_key_from_text, classify_notice_track
 from sync.services.ssafy_crawler import (
     MODE_SAMPLE,
     SsafyCrawlerError,
@@ -605,6 +605,10 @@ def _normalize_import_item(item):
         if exclude_reason and not _should_preserve_hidden_reference_source(source_type, source_url):
             return None, _excluded_debug(source_type, prepared, title, raw_text, raw_html, metadata, exclude_reason)
         metadata['category'] = _normalize_notice_category(source_type, title, raw_text, metadata)
+    # Classify track at import time so API queries never need to re-derive it
+    # from the title.  Only fills in missing fields; explicit values are kept.
+    _apply_notice_track_metadata(metadata, title, source_type)
+
     prepared.update(
         {
             'source_type': source_type,
@@ -764,6 +768,26 @@ def _increment_detail_quality_counts(summary, metadata):
         summary.image_found_count += 1
     if metadata.get('content_quality') == 'menu_only_content':
         summary.menu_only_content_count += 1
+
+
+def _apply_notice_track_metadata(metadata, title, source_type='notice'):
+    """Store canonical track_key and is_common in metadata during import.
+
+    Only fills missing fields so that explicitly structured crawler data
+    (e.g. metadata['track'] set by the crawler) is always respected.
+    If the stored track_key conflicts with what the title implies, the stored
+    value wins (no logging needed here; callers should log before this point).
+    """
+    # Skip if already fully classified
+    if 'track_key' in metadata:
+        return
+    # Mentoring / FAQ notices are always common – no per-track filtering needed
+    if source_type in {'mentoring', 'mentoring_notice', 'mentoring_qna', 'academic_rule', 'faq'}:
+        metadata.setdefault('is_common', True)
+        return
+    result = classify_notice_track(title, metadata)
+    metadata['track_key'] = result['track_key']
+    metadata['is_common'] = result['is_common']
 
 
 def _normalize_notice_category(source_type, title, raw_text, metadata):

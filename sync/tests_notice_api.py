@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.ai.models import AiDocument
 from apps.ai.sync_ingestion import SyncRawDataRagIngestionService
+from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData, UserNoticeReadStatus
 
@@ -37,6 +38,8 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn('count', payload)
+        self.assertIn('next', payload)
+        self.assertIn('previous', payload)
         self.assertIn('results', payload)
         item = payload['results'][0]
         self.assertIn('summary', item)
@@ -298,11 +301,77 @@ class NoticeApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['track_key'], 'python')
+        self.assertEqual(response.json()['results'][0]['title'], 'Python extra study')
+
+    def test_notice_search_limited_to_title_only(self):
+        # 본문에만 검색어가 있는 공지는 결과에 포함되지 않아야 함
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java live session',
+            raw_text='python material is here',
+        )
+
+        response = self.client.get(reverse('notice-list'), {'search': 'python'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 0)
+
+    def test_notice_scope_all_shows_only_common_notices(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'scope': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('Common notice', titles)
+        self.assertNotIn('Python notice', titles)
+
+    def test_notice_track_all_returns_all_tracks(self):
+        # track=all (explicit) 은 모든 트랙 공지를 반환해야 함 (scope=all과 다름)
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'track': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('Common notice', titles)
+        self.assertIn('Python notice', titles)
 
     def test_notice_list_filters_by_track_key_with_common_and_count(self):
-        RawSsafyData.objects.create(source_type='notice', title='Java major notice', raw_text='java body')
-        RawSsafyData.objects.create(source_type='notice', title='Python notice', raw_text='python body')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java major notice',
+            raw_text='java body',
+            metadata_json={'track_key': 'java_major'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='python body',
+            metadata_json={'track_key': 'python'},
+        )
         RawSsafyData.objects.create(
             source_type='notice',
             title='Common notice',
@@ -321,9 +390,24 @@ class NoticeApiTests(TestCase):
         self.assertEqual({item['track_key'] for item in payload['results']}, {'java_major', 'all'})
 
     def test_notice_list_filters_by_legacy_track_with_common(self):
-        RawSsafyData.objects.create(source_type='notice', title='Python extra study', raw_text='python')
-        RawSsafyData.objects.create(source_type='notice', title='Common notice', raw_text='common all')
-        RawSsafyData.objects.create(source_type='notice', title='Java notice', raw_text='java')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python extra study',
+            raw_text='python',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='common all',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java notice',
+            raw_text='java',
+            metadata_json={'track_key': 'java_major'},
+        )
 
         response = self.client.get(reverse('notice-list'), {'track': 'python'})
 
@@ -333,15 +417,133 @@ class NoticeApiTests(TestCase):
         self.assertEqual({item['is_common'] for item in response.json()['results']}, {False, True})
 
     def test_notice_list_filters_study_category_by_track(self):
-        RawSsafyData.objects.create(source_type='notice', title='Python extra study', raw_text='python')
-        RawSsafyData.objects.create(source_type='notice', title='Java extra study', raw_text='java')
-        RawSsafyData.objects.create(source_type='notice', title='Common extra study', raw_text='common all')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python extra study',
+            raw_text='python',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java extra study',
+            raw_text='java',
+            metadata_json={'track_key': 'java_major'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common extra study',
+            raw_text='common all',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
 
         response = self.client.get(reverse('notice-list'), {'category': 'learning', 'track_key': 'python'})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['count'], 2)
         self.assertEqual({item['track_key'] for item in response.json()['results']}, {'python', 'all'})
+
+    def test_notice_list_defaults_to_authenticated_user_profile_track(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='meister', email='meister@example.com', password='password')
+        UserProfile.objects.create(user=user, track='Meister')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Meister notice',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertEqual(titles, {'Meister notice', 'Common notice'})
+
+    def test_notice_list_missing_profile_track_returns_common_only_for_authenticated_user(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='no-profile', email='no-profile@example.com', password='password')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(source_type='notice', title='Unknown track notice', raw_text='Python in title only')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        # Explicitly-common notices + notices whose title implies no specific track
+        # (inferred is_common=True) are both shown.  Track-specific notices are excluded.
+        self.assertIn('Common notice', titles)
+        self.assertIn('Unknown track notice', titles)
+        self.assertNotIn('Python notice', titles)
+        track_keys = {item['track_key'] for item in response.json()['results']}
+        self.assertNotIn('python', track_keys)
+
+    def test_notice_list_explicit_track_all_returns_all_tracks(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='track-all', email='track-all@example.com', password='password')
+        UserProfile.objects.create(user=user, track='Meister')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Meister notice',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'), {'track': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item['title'] for item in response.json()['results']}, {'Meister notice', 'Python notice'})
+
+    def test_notice_list_explicit_common_track_returns_common_only(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'track': 'common'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['title'], 'Common notice')
 
     def test_notice_list_ignores_track_for_mentoring_category(self):
         RawSsafyData.objects.create(
@@ -366,14 +568,23 @@ class NoticeApiTests(TestCase):
             metadata_json={'source_id': 'n1'},
         )
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
-        ScheduleEvent.objects.create(
+        later_event = ScheduleEvent.objects.create(
             raw_data=raw_data,
             title='Evaluation',
             start_at=start_at,
             end_at=start_at + timedelta(hours=1),
             event_type='exam',
             source_type='notice',
-            metadata_json={'audience': {'track': 'python'}},
+            metadata_json={'audience': {'track': 'python'}, 'raw_data_id': raw_data.id},
+        )
+        earlier_event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Briefing',
+            start_at=start_at - timedelta(hours=1),
+            end_at=start_at,
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
         )
 
         response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
@@ -382,8 +593,39 @@ class NoticeApiTests(TestCase):
         payload = response.json()
         self.assertEqual(payload['id'], raw_data.id)
         self.assertEqual(payload['ocr_text'], 'OCR text')
-        self.assertEqual(payload['schedule_events'][0]['event_type'], 'exam')
-        self.assertEqual(payload['schedule_events'][0]['source_url'], raw_data.source_url)
+        self.assertEqual([item['id'] for item in payload['linked_events']], [earlier_event.id, later_event.id])
+        self.assertEqual([item['id'] for item in payload['schedule_events']], [earlier_event.id, later_event.id])
+        self.assertEqual(payload['linked_events'][1]['event_type'], 'exam')
+        self.assertEqual(payload['linked_events'][1]['source_url'], raw_data.source_url)
+        self.assertEqual(payload['linked_events'][1]['track_key'], 'python')
+
+    def test_notice_detail_returns_images_from_saved_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/notices/1',
+            title='Image notice',
+            raw_text='OCR text',
+            metadata_json={
+                'image_urls': ['/media/notices/1.png', 'https://cdn.example.com/notices/2.png'],
+            },
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        # /media/notices/1.png: local file does not exist → excluded from response
+        # https://cdn.example.com/notices/2.png: external URL → included
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]['url'], 'https://cdn.example.com/notices/2.png')
+
+    def test_notice_detail_returns_empty_images_array_when_missing(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='No image notice', raw_text='body')
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['images'], [])
 
     def test_notice_list_filters_curriculum_source_type(self):
         RawSsafyData.objects.create(source_type='curriculum', title='Weekly curriculum', raw_text='Python')
@@ -461,3 +703,860 @@ class NoticeApiTests(TestCase):
 
         self.assertEqual(document.sync_raw_data_id, raw_data.id)
         self.assertEqual(AiDocument.objects.filter(sync_raw_data=raw_data).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Track classification tests
+# ---------------------------------------------------------------------------
+
+class TrackKeyFromTextTests(TestCase):
+    """Unit tests for sync.services.tracks.track_key_from_text."""
+
+    def _call(self, text):
+        from sync.services.tracks import track_key_from_text
+        return track_key_from_text(text)
+
+    def test_python_title(self):
+        self.assertEqual(self._call('[학습] 6월 4주차 Python 트랙 시간표'), 'python')
+
+    def test_java_major_title_with_space(self):
+        self.assertEqual(self._call('[학습] 6월 4주차 Java 전공 트랙 시간표'), 'java_major')
+
+    def test_java_non_major_title_with_space(self):
+        self.assertEqual(self._call('[학습] 6월 4주차 Java 비전공 트랙 시간표'), 'java_non_major')
+
+    def test_java_non_major_not_classified_as_java_major(self):
+        # "Java 비전공" must never resolve to java_major
+        self.assertNotEqual(self._call('[학습] Java 비전공 트랙 시간표'), 'java_major')
+
+    def test_embedded_robot_title(self):
+        result = self._call('[학습] 6월 Embedded Robot 트랙 시간표')
+        self.assertEqual(result, 'embedded_robot')
+
+    def test_embedded_title(self):
+        self.assertEqual(self._call('[학습] 6월 Embedded 트랙 시간표'), 'embedded')
+
+    def test_mobile_title(self):
+        self.assertEqual(self._call('[학습] 6월 Mobile 트랙 시간표'), 'mobile')
+
+    def test_data_title(self):
+        self.assertEqual(self._call('[학습] 6월 Data 트랙 시간표'), 'data')
+
+    def test_meister_title(self):
+        self.assertEqual(self._call('[학습] 6월 Meister 트랙 시간표'), 'meister')
+
+    def test_meister_korean_title(self):
+        self.assertEqual(self._call('[학습] 마이스터고 시간표'), 'meister')
+
+    def test_general_notice_returns_empty(self):
+        self.assertEqual(self._call('[공지] SSAFY 6기 행사 안내'), '')
+
+    def test_empty_title_returns_empty(self):
+        self.assertEqual(self._call(''), '')
+
+    def test_none_returns_empty(self):
+        self.assertEqual(self._call(None), '')
+
+
+class ClassifyNoticeTrackTests(TestCase):
+    """Unit tests for sync.services.tracks.classify_notice_track."""
+
+    def _call(self, title, metadata=None):
+        from sync.services.tracks import classify_notice_track
+        return classify_notice_track(title, metadata)
+
+    def test_explicit_is_common_wins(self):
+        result = self._call('[학습] Python 시간표', {'is_common': True})
+        self.assertEqual(result['track_key'], 'all')
+        self.assertTrue(result['is_common'])
+
+    def test_explicit_track_key_wins_over_title(self):
+        result = self._call('[학습] Python 시간표', {'track_key': 'meister'})
+        self.assertEqual(result['track_key'], 'meister')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_python(self):
+        result = self._call('[학습] 6월 4주차 Python 트랙 시간표')
+        self.assertEqual(result['track_key'], 'python')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_java_non_major(self):
+        result = self._call('[학습] Java 비전공 트랙 시간표')
+        self.assertEqual(result['track_key'], 'java_non_major')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_java_major(self):
+        result = self._call('[학습] Java 전공 트랙 시간표')
+        self.assertEqual(result['track_key'], 'java_major')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_meister(self):
+        result = self._call('[학습] Meister 트랙 시간표')
+        self.assertEqual(result['track_key'], 'meister')
+        self.assertFalse(result['is_common'])
+
+    def test_general_notice_becomes_common(self):
+        result = self._call('[공지] 수료식 안내')
+        self.assertEqual(result['track_key'], 'all')
+        self.assertTrue(result['is_common'])
+
+    def test_empty_title_and_no_metadata_becomes_common(self):
+        result = self._call('')
+        self.assertTrue(result['is_common'])
+
+    def test_audience_track_respected(self):
+        result = self._call('[공지] 안내', {'audience': {'track': 'data'}})
+        self.assertEqual(result['track_key'], 'data')
+        self.assertFalse(result['is_common'])
+
+
+# ---------------------------------------------------------------------------
+# Track filtering tests (via the notice list API)
+# ---------------------------------------------------------------------------
+
+class NoticeTrackFilterTests(TestCase):
+    """Integration tests for track-aware notice list filtering."""
+
+    def setUp(self):
+        self.python_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        self.java_major_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java 전공 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'java_major'},
+        )
+        self.meister_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='마이스터고 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        self.common_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='전체 공지',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+
+    def test_meister_user_sees_meister_and_common_only(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='m1', email='m1@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='Meister')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('마이스터고 시간표', titles)
+        self.assertIn('전체 공지', titles)
+        self.assertNotIn('Python 시간표', titles)
+        self.assertNotIn('Java 전공 시간표', titles)
+
+    def test_python_user_sees_python_and_common_only(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='p1', email='p1@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='python')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('Python 시간표', titles)
+        self.assertIn('전체 공지', titles)
+        self.assertNotIn('마이스터고 시간표', titles)
+        self.assertNotIn('Java 전공 시간표', titles)
+
+    def test_meister_user_does_not_see_python_timetable(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='m2', email='m2@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='Meister')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        python_ids = [item['id'] for item in response.json()['results'] if item['track_key'] == 'python']
+        self.assertEqual(python_ids, [])
+
+    def test_explicit_track_all_returns_all_tracks(self):
+        response = self.client.get(reverse('notice-list'), {'track': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        track_keys = {item['track_key'] for item in response.json()['results']}
+        self.assertIn('python', track_keys)
+        self.assertIn('meister', track_keys)
+        self.assertIn('java_major', track_keys)
+        self.assertIn('all', track_keys)
+
+    def test_unauthenticated_user_sees_all_notices(self):
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        # Anonymous users have no track filter applied
+        self.assertGreaterEqual(response.json()['count'], 4)
+
+    def test_notice_infers_track_from_title_when_no_metadata(self):
+        # No track_key in metadata — should be inferred from title
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] 6월 4주차 Java 비전공 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        response = self.client.get(reverse('notice-list'), {'track': 'java_basic'})
+
+        self.assertEqual(response.status_code, 200)
+        inferred = [item for item in response.json()['results'] if '비전공' in item['title']]
+        self.assertEqual(len(inferred), 1)
+        self.assertEqual(inferred[0]['track_key'], 'java_non_major')
+        self.assertFalse(inferred[0]['is_common'])
+
+    def test_notice_infers_meister_from_title_for_meister_user(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Meister 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        User = get_user_model()
+        user = User.objects.create_user(username='m3', email='m3@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='Meister')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        meister_items = [item for item in response.json()['results'] if 'Meister 트랙' in item['title']]
+        self.assertEqual(len(meister_items), 1)
+        self.assertEqual(meister_items[0]['track_key'], 'meister')
+
+    def test_general_notice_without_metadata_shown_as_common(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[공지] 일반 운영 안내',
+            raw_text='body',
+            metadata_json={},
+        )
+        User = get_user_model()
+        user = User.objects.create_user(username='p2', email='p2@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='python')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        general_items = [item for item in response.json()['results'] if '일반 운영 안내' in item['title']]
+        self.assertEqual(len(general_items), 1, 'General notice must be visible to all users')
+        self.assertTrue(general_items[0]['is_common'])
+
+
+# ---------------------------------------------------------------------------
+# Image serialisation tests
+# ---------------------------------------------------------------------------
+
+class NoticeImageSerializerTests(TestCase):
+    """Verify that the notice API never embeds image binaries or triggers HTTP requests."""
+
+    def test_images_field_contains_only_urls_and_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Image notice',
+            raw_text='body',
+            metadata_json={
+                'image_urls': [
+                    'https://cdn.example.com/notice-1.png',
+                    'https://cdn.example.com/notice-2.webp',
+                ],
+            },
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(len(images), 2)
+        for image in images:
+            self.assertIn('url', image)
+            self.assertIn('sort_order', image)
+            # No base64 or binary data
+            self.assertFalse(str(image.get('url', '')).startswith('data:'))
+
+    def test_list_api_does_not_include_image_binaries(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='List image notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://cdn.example.com/big.png']},
+        )
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()['results'][0]
+        for image in item.get('images', []):
+            self.assertFalse(str(image.get('url', '')).startswith('data:'))
+
+    def test_no_images_returns_empty_array(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='No image notice',
+            raw_text='body',
+            metadata_json={},
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['images'], [])
+
+    def test_local_media_url_without_file_is_excluded(self):
+        # If the local media file does not exist (e.g. after Oracle Cloud redeploy),
+        # the URL must NOT be returned to the client.
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Local image notice (file gone)',
+            raw_text='body',
+            metadata_json={'image_urls': ['/media/notices/nonexistent_opt.webp']},
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(images, [])
+
+    def test_local_media_url_with_existing_file_is_absolute(self):
+        from pathlib import Path
+        from django.conf import settings
+        notices_dir = Path(settings.MEDIA_ROOT) / 'notices'
+        notices_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file = notices_dir / 'test-notice-exists.webp'
+        tmp_file.write_bytes(b'RIFF\x00\x00\x00\x00WEBPVP8 ')
+
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Local image notice (file exists)',
+            raw_text='body',
+            metadata_json={'image_urls': ['/media/notices/test-notice-exists.webp']},
+        )
+
+        try:
+            response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+            self.assertEqual(response.status_code, 200)
+            images = response.json()['images']
+            self.assertEqual(len(images), 1)
+            self.assertTrue(images[0]['url'].startswith('http'))
+            self.assertIn('/media/notices/test-notice-exists.webp', images[0]['url'])
+        finally:
+            tmp_file.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Backfill command tests
+# ---------------------------------------------------------------------------
+
+class BackfillNoticeTracksCommandTests(TestCase):
+    """Verify the backfill_notice_tracks management command behaviour."""
+
+    def _run_command(self, **kwargs):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('backfill_notice_tracks', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_dry_run_does_not_modify_db(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command(dry_run=True)
+        notice.refresh_from_db()
+        self.assertNotIn('track_key', notice.metadata_json)
+
+    def test_fills_missing_track_key(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command()
+        notice.refresh_from_db()
+        self.assertEqual(notice.metadata_json.get('track_key'), 'python')
+        self.assertFalse(notice.metadata_json.get('is_common'))
+
+    def test_preserves_existing_track_key_without_force(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        self._run_command()
+        notice.refresh_from_db()
+        # Existing value must be preserved
+        self.assertEqual(notice.metadata_json.get('track_key'), 'meister')
+
+    def test_force_overwrites_existing_track_key(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        self._run_command(force=True)
+        notice.refresh_from_db()
+        self.assertEqual(notice.metadata_json.get('track_key'), 'python')
+
+    def test_general_notice_classified_as_common(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[공지] 일반 운영 안내',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command()
+        notice.refresh_from_db()
+        self.assertEqual(notice.metadata_json.get('track_key'), 'all')
+        self.assertTrue(notice.metadata_json.get('is_common'))
+
+    def test_idempotent_reruns(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command()
+        self._run_command()
+        # Should not raise and DB should still have correct value
+        count = RawSsafyData.objects.filter(metadata_json__track_key='python').count()
+        self.assertEqual(count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Supabase Storage adapter unit tests (no real network)
+# ---------------------------------------------------------------------------
+
+class NoticeStorageTests(TestCase):
+    """Unit tests for SupabaseNoticeStorage with mocked HTTP calls."""
+
+    def _make_storage(self, configured=True):
+        from sync.services.notice_storage import SupabaseNoticeStorage
+        storage = SupabaseNoticeStorage()
+        if configured:
+            storage._base_url = 'https://testproject.supabase.co'
+            storage._service_key = 'test-service-role-key'
+            storage._bucket = 'notices'
+            storage._timeout = 5
+        else:
+            storage._base_url = ''
+            storage._service_key = ''
+        return storage
+
+    def test_is_configured_true_when_url_and_key_set(self):
+        self.assertTrue(self._make_storage(configured=True).is_configured())
+
+    def test_is_configured_false_when_missing(self):
+        self.assertFalse(self._make_storage(configured=False).is_configured())
+
+    def test_assert_configured_raises_when_missing(self):
+        from sync.services.notice_storage import NoticeStorageUnconfigured
+        with self.assertRaises(NoticeStorageUnconfigured):
+            self._make_storage(configured=False).assert_configured()
+
+    def test_object_key_format(self):
+        key = self._make_storage().object_key(123, 0, 'abcd1234')
+        self.assertEqual(key, 'notices/123/0-abcd1234.webp')
+
+    def test_public_url_contains_key(self):
+        storage = self._make_storage()
+        url = storage.public_url('notices/123/0-abcd1234.webp')
+        self.assertIn('notices/123/0-abcd1234.webp', url)
+        self.assertIn('supabase.co', url)
+
+    def test_is_storage_url_matches_project(self):
+        storage = self._make_storage()
+        self.assertTrue(storage.is_storage_url('https://testproject.supabase.co/storage/v1/object/public/notices/1.webp'))
+        self.assertFalse(storage.is_storage_url('https://cdn.example.com/image.png'))
+
+    def test_upload_skips_if_object_exists(self):
+        from unittest.mock import patch, MagicMock
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 200
+        with patch('requests.head', mock_head):
+            url = storage.upload('notices/1/0-abc.webp', b'data')
+        self.assertIn('notices/1/0-abc.webp', url)
+        mock_head.assert_called_once()
+
+    def test_upload_posts_when_object_missing(self):
+        from unittest.mock import patch, MagicMock
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 404
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+        with patch('requests.head', mock_head), patch('requests.post', mock_post):
+            url = storage.upload('notices/1/0-abc.webp', b'webp-data')
+        self.assertIn('notices/1/0-abc.webp', url)
+        mock_post.assert_called_once()
+        _args, kwargs = mock_post.call_args
+        headers = kwargs.get('headers', {})
+        self.assertEqual(headers.get('Content-Type'), 'image/webp')
+        self.assertIn('immutable', headers.get('Cache-Control', ''))
+
+    def test_upload_raises_on_http_error(self):
+        from unittest.mock import patch, MagicMock
+        from sync.services.notice_storage import NoticeStorageError
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 404
+        mock_post = MagicMock()
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 500
+        mock_post.return_value.text = 'Internal Server Error'
+        with patch('requests.head', mock_head), patch('requests.post', mock_post):
+            with self.assertRaises(NoticeStorageError):
+                storage.upload('notices/1/0-abc.webp', b'data')
+
+    def test_upload_handles_supabase_duplicate_400(self):
+        from unittest.mock import patch, MagicMock
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 404
+        mock_post = MagicMock()
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 400
+        mock_post.return_value.text = 'The resource already exists'
+        with patch('requests.head', mock_head), patch('requests.post', mock_post):
+            url = storage.upload('notices/1/0-abc.webp', b'data')
+        self.assertIn('notices/1/0-abc.webp', url)
+
+    def test_service_key_not_in_public_url(self):
+        storage = self._make_storage()
+        url = storage.public_url('notices/1/0-abc.webp')
+        self.assertNotIn('test-service-role-key', url)
+
+    def test_content_hash_produces_16_char_hex(self):
+        from sync.services.notice_storage import content_hash
+        h = content_hash(b'hello world')
+        self.assertEqual(len(h), 16)
+        self.assertTrue(all(c in '0123456789abcdef' for c in h))
+
+    def test_is_local_media_url(self):
+        from sync.services.notice_storage import is_local_media_url
+        self.assertTrue(is_local_media_url('/media/notices/file.webp'))
+        self.assertFalse(is_local_media_url('https://cdn.example.com/file.webp'))
+
+    def test_is_supabase_storage_url(self):
+        from sync.services.notice_storage import is_supabase_storage_url
+        self.assertTrue(is_supabase_storage_url('https://abcd.supabase.co/storage/v1/object/public/notices/1.webp'))
+        self.assertFalse(is_supabase_storage_url('https://cdn.example.com/1.webp'))
+
+
+# ---------------------------------------------------------------------------
+# notice_images structured metadata → API response tests
+# ---------------------------------------------------------------------------
+
+class NoticeStorageImageApiTests(TestCase):
+    """Verify the API uses notice_images structured entries correctly."""
+
+    def test_storage_url_returned_from_notice_images(self):
+        storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/1/0-abc.webp'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Storage image notice',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {
+                        'source_url': 'https://edu.ssafy.com/original.png',
+                        'storage_key': 'notices/1/0-abc.webp',
+                        'storage_url': storage_url,
+                        'format': 'webp',
+                        'size_bytes': 102400,
+                        'sort_order': 0,
+                        'width': 1600,
+                        'height': 2200,
+                    }
+                ]
+            },
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]['url'], storage_url)
+        self.assertEqual(images[0]['sort_order'], 0)
+        self.assertEqual(images[0]['width'], 1600)
+        self.assertEqual(images[0]['height'], 2200)
+        self.assertEqual(images[0]['size_bytes'], 102400)
+
+    def test_notice_images_takes_priority_over_legacy_image_urls(self):
+        storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/2/0-def.webp'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Priority test',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {'source_url': 'https://edu.ssafy.com/original.png', 'storage_url': storage_url, 'sort_order': 0}
+                ],
+                'image_urls': ['/media/notices/old.webp'],
+            },
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]['url'], storage_url)
+
+    def test_source_url_fallback_when_no_storage_url(self):
+        source_url = 'https://edu.ssafy.com/original.png'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Fallback test',
+            raw_text='body',
+            metadata_json={'notice_images': [{'source_url': source_url, 'sort_order': 0}]},
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual(images[0]['url'], source_url)
+
+    def test_no_relative_media_url_in_response_when_storage_url_exists(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='No relative URL',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {'source_url': 'https://edu.ssafy.com/image.png',
+                     'storage_url': 'https://proj.supabase.co/storage/v1/object/public/notices/notices/3/0-ghi.webp',
+                     'sort_order': 0}
+                ]
+            },
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        url = images[0]['url']
+        self.assertFalse(url.startswith('/media/'))
+        self.assertFalse(url.startswith('/static/'))
+
+    def test_relative_media_url_without_file_excluded_in_legacy_path(self):
+        # /media/ URL is excluded when the file does not exist on disk
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Relative URL notice (no file)',
+            raw_text='body',
+            metadata_json={'image_urls': ['/media/notices/notice-1_opt.webp']},
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual(images, [])
+
+    def test_image_order_preserved(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Multi-image notice',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {'storage_url': 'https://proj.supabase.co/img/1.webp', 'sort_order': 0},
+                    {'storage_url': 'https://proj.supabase.co/img/2.webp', 'sort_order': 1},
+                    {'storage_url': 'https://proj.supabase.co/img/3.webp', 'sort_order': 2},
+                ]
+            },
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual([img['sort_order'] for img in images], [0, 1, 2])
+
+    def test_no_data_uri_in_response(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='No data URI',
+            raw_text='body',
+            metadata_json={'notice_images': [{'storage_url': 'https://proj.supabase.co/img/x.webp', 'sort_order': 0}]},
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        for image in images:
+            self.assertFalse(str(image.get('url', '')).startswith('data:'))
+
+    def test_legacy_metadata_notice_returns_no_server_error(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Legacy notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/legacy.png']},
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(images[0]['url'], 'https://edu.ssafy.com/legacy.png')
+
+    def test_empty_images_for_notice_without_metadata(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='No images', raw_text='body')
+        self.assertEqual(self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images'], [])
+
+
+# ---------------------------------------------------------------------------
+# Backfill command — dry-run and option tests (no real storage)
+# ---------------------------------------------------------------------------
+
+class BackfillNoticeImagesCommandTests(TestCase):
+
+    def _run_command(self, **kwargs):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('backfill_notice_images', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_dry_run_makes_no_db_changes(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Dry run notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/image.png']},
+        )
+        self._run_command(dry_run=True)
+        notice.refresh_from_db()
+        self.assertNotIn('notice_images', notice.metadata_json)
+
+    def test_dry_run_output_mentions_dry_run(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Notice with image',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/image.png']},
+        )
+        output = self._run_command(dry_run=True)
+        self.assertIn('dry-run', output.lower())
+
+    def test_blocked_origin_skipped_in_dry_run(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Blocked origin',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://evil.example.com/image.png']},
+        )
+        output = self._run_command(dry_run=True)
+        self.assertIn('전체 notice', output)
+
+    def test_notice_id_option_restricts_to_single_notice(self):
+        target = RawSsafyData.objects.create(
+            source_type='notice', title='Target', raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/img.png']},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice', title='Other', raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/img2.png']},
+        )
+        output = self._run_command(dry_run=True, notice_id=target.id)
+        self.assertIn('전체 notice', output)
+
+    def test_limit_option_output_contains_stats(self):
+        for i in range(5):
+            RawSsafyData.objects.create(
+                source_type='notice', title=f'Notice {i}', raw_text='body',
+                metadata_json={'image_urls': ['https://edu.ssafy.com/img.png']},
+            )
+        output = self._run_command(dry_run=True, limit=2)
+        self.assertIn('전체 notice', output)
+
+    def test_already_supabase_url_dry_run_shows_already_storage(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Already uploaded',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {
+                        'source_url': 'https://edu.ssafy.com/img.png',
+                        'storage_key': 'notices/1/0-abc.webp',
+                        'storage_url': 'https://proj.supabase.co/storage/v1/object/public/notices/notices/1/0-abc.webp',
+                        'sort_order': 0,
+                    }
+                ]
+            },
+        )
+        # dry-run should not try to re-download or re-upload
+        output = self._run_command(dry_run=True)
+        self.assertIn('전체 notice', output)
+
+
+# ---------------------------------------------------------------------------
+# Security / SSRF tests
+# ---------------------------------------------------------------------------
+
+class NoticeImageSSRFGuardTests(TestCase):
+
+    def _is_allowed(self, url):
+        from sync.management.commands.backfill_notice_images import _is_allowed_origin
+        return _is_allowed_origin(url)
+
+    def test_ssafy_cdn_allowed(self):
+        self.assertTrue(self._is_allowed('https://edu.ssafy.com/image.png'))
+
+    def test_ssafy_subdomain_allowed(self):
+        self.assertTrue(self._is_allowed('https://cdn.edu.ssafy.com/image.png'))
+
+    def test_arbitrary_host_blocked(self):
+        self.assertFalse(self._is_allowed('https://evil.example.com/image.png'))
+
+    def test_localhost_blocked(self):
+        self.assertFalse(self._is_allowed('http://localhost/image.png'))
+        self.assertFalse(self._is_allowed('http://127.0.0.1/image.png'))
+
+    def test_internal_ip_blocked(self):
+        self.assertFalse(self._is_allowed('http://192.168.1.1/image.png'))
+        self.assertFalse(self._is_allowed('http://10.0.0.1/image.png'))
+
+    def test_collect_source_urls_deduplicates(self):
+        from sync.management.commands.backfill_notice_images import _collect_source_urls
+        metadata = {
+            'image_urls': [
+                'https://edu.ssafy.com/img1.png',
+                'https://edu.ssafy.com/img1.png',
+                'https://edu.ssafy.com/img2.png',
+            ]
+        }
+        urls = _collect_source_urls(metadata)
+        self.assertEqual(len(urls), 2)
+
+    def test_collect_source_urls_prefers_notice_images_source_url(self):
+        from sync.management.commands.backfill_notice_images import _collect_source_urls
+        metadata = {
+            'notice_images': [
+                {'source_url': 'https://edu.ssafy.com/original.png',
+                 'storage_url': 'https://proj.supabase.co/img.webp'},
+            ],
+            'image_urls': ['https://edu.ssafy.com/other.png'],
+        }
+        urls = _collect_source_urls(metadata)
+        self.assertEqual(urls, ['https://edu.ssafy.com/original.png'])
+
+    def test_service_key_not_exposed_in_api_response(self):
+        from django.test import override_settings
+        storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/99/0-x.webp'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Key exposure test',
+            raw_text='body',
+            metadata_json={'notice_images': [{'storage_url': storage_url, 'sort_order': 0}]},
+        )
+        with override_settings(SUPABASE_SERVICE_ROLE_KEY='super-secret-key-do-not-expose'):
+            response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertNotIn(b'super-secret-key-do-not-expose', response.content)
