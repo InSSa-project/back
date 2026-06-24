@@ -2,18 +2,11 @@
 Management command: backfill_notice_images
 
 Downloads external notice images (e.g. SSAFY CDN URLs), converts them to
-optimised WebP, uploads them to Supabase Storage, and updates metadata_json
-with a structured ``notice_images`` entry.
+optimised WebP, saves them under ``MEDIA_ROOT/notices/``, and updates
+metadata_json with a structured ``notice_images`` entry.
 
-This replaces the previous local-disk approach where images were stored in
-``media/notices/``.  Local disk storage on Oracle Cloud (and most PaaS) is
-ephemeral: files vanish on every redeploy, causing intermittent 404s and
-image-loading failures.
-
-Required environment variables:
-    SUPABASE_URL              — e.g. https://abcdefgh.supabase.co
-    SUPABASE_SERVICE_ROLE_KEY — service-role JWT (backend-only)
-    SUPABASE_STORAGE_BUCKET   — default "notices"
+On Oracle Cloud, configure MEDIA_ROOT to point at a persistent disk mount so
+files survive redeploys.
 
 Safety guarantees:
   - Only downloads from known SSAFY CDN origins (SSRF guard).
@@ -45,11 +38,7 @@ from django.core.management.base import BaseCommand
 
 from sync.models import RawSsafyData
 from sync.services.notice_storage import (
-    NoticeStorageError,
-    NoticeStorageUnconfigured,
-    SupabaseNoticeStorage,
     content_hash,
-    get_notice_storage,
     is_local_media_url,
     is_supabase_storage_url,
 )
@@ -83,8 +72,8 @@ MAX_RETRY_PER_IMAGE = 2
 
 class Command(BaseCommand):
     help = (
-        'Download, optimise, and upload external notice images to Supabase Storage. '
-        'Updates metadata_json["notice_images"] with stable storage URLs.'
+        'Download, optimise, and save external notice images under MEDIA_ROOT/notices. '
+        'Updates metadata_json["notice_images"] with stable backend image endpoints.'
     )
 
     def add_arguments(self, parser):
@@ -116,15 +105,6 @@ class Command(BaseCommand):
             self.stderr.write(f'Missing dependency: {exc}. Run: pip install pillow requests')
             return
 
-        storage = get_notice_storage()
-
-        if not dry_run and not storage.is_configured():
-            self.stderr.write(
-                'ERROR: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set.\n'
-                'Run with --dry-run to preview without storage access.'
-            )
-            return
-
         qs = RawSsafyData.objects.filter(source_type='notice').order_by('id')
         if notice_id:
             qs = qs.filter(pk=notice_id)
@@ -136,7 +116,7 @@ class Command(BaseCommand):
 
         for notice in qs:
             try:
-                _process_notice(notice, storage, dry_run, timeout, Image, req, stats)
+                _process_notice(notice, dry_run, timeout, Image, req, stats)
             except Exception as exc:
                 LOGGER.warning('backfill_notice_images: id=%s unexpected error: %s', notice.id, exc)
                 stats['failed'] += 1
@@ -153,8 +133,7 @@ class Command(BaseCommand):
 # Per-notice processing
 # ---------------------------------------------------------------------------
 
-def _process_notice(notice, storage: SupabaseNoticeStorage, dry_run: bool,
-                    timeout: int, Image, requests, stats: dict):
+def _process_notice(notice, dry_run: bool, timeout: int, Image, requests, stats: dict):
     metadata = dict(notice.metadata_json or {})
 
     # Build a lookup of existing notice_images entries by sort_order / index
@@ -180,7 +159,6 @@ def _process_notice(notice, storage: SupabaseNoticeStorage, dry_run: bool,
             idx=idx,
             notice_id=notice.id,
             existing=existing_by_source.get(source_url),
-            storage=storage,
             dry_run=dry_run,
             timeout=timeout,
             Image=Image,
@@ -195,7 +173,7 @@ def _process_notice(notice, storage: SupabaseNoticeStorage, dry_run: bool,
         metadata['notice_images'] = new_images
         # Keep legacy image_urls updated for backward-compat readers
         metadata['image_urls'] = [
-            img.get('storage_url') or img.get('source_url') or ''
+            img.get('url') or img.get('storage_url') or img.get('source_url') or ''
             for img in new_images
         ]
         notice.metadata_json = metadata
@@ -203,12 +181,11 @@ def _process_notice(notice, storage: SupabaseNoticeStorage, dry_run: bool,
 
 
 def _process_single_image(*, source_url: str, idx: int, notice_id: int,
-                           existing: dict | None, storage: SupabaseNoticeStorage,
-                           dry_run: bool, timeout: int,
+                           existing: dict | None, dry_run: bool, timeout: int,
                            Image, requests, stats: dict) -> dict:
     source_url = str(source_url or '').strip()
 
-    # Already uploaded to Supabase Storage
+    # Existing external storage URL: keep it unless a source URL is available.
     if is_supabase_storage_url(source_url):
         stats['already_storage'] += 1
         return existing or {'source_url': source_url, 'storage_url': source_url, 'sort_order': idx}
@@ -216,7 +193,7 @@ def _process_single_image(*, source_url: str, idx: int, notice_id: int,
     # Already has a storage_key — check object still exists
     if existing and existing.get('storage_key'):
         key = existing['storage_key']
-        if dry_run or storage.object_exists(key):
+        if dry_run or _storage_path(key).is_file():
             stats['already_storage'] += 1
             return existing
         # Object gone — re-upload below
@@ -231,7 +208,6 @@ def _process_single_image(*, source_url: str, idx: int, notice_id: int,
                 source_url=original_source,
                 idx=idx,
                 notice_id=notice_id,
-                storage=storage,
                 dry_run=dry_run,
                 Image=Image,
                 stats=stats,
@@ -264,7 +240,6 @@ def _process_single_image(*, source_url: str, idx: int, notice_id: int,
         source_url=source_url,
         idx=idx,
         notice_id=notice_id,
-        storage=storage,
         dry_run=dry_run,
         Image=Image,
         stats=stats,
@@ -272,35 +247,39 @@ def _process_single_image(*, source_url: str, idx: int, notice_id: int,
 
 
 def _optimise_and_upload(*, raw_bytes: bytes, source_url: str, idx: int,
-                          notice_id: int, storage: SupabaseNoticeStorage,
-                          dry_run: bool, Image, stats: dict) -> dict:
+                          notice_id: int, dry_run: bool, Image, stats: dict) -> dict:
     chash = content_hash(raw_bytes)
-    object_key = storage.object_key(notice_id, idx, chash)
+    file_name = f'{idx}-{chash}.webp'
+    object_key = f'notices/{notice_id}/{file_name}'
 
     if dry_run:
         stats['would_upload'] += 1
-        return {'source_url': source_url, 'storage_key': object_key, 'sort_order': idx}
+        return {'source_url': source_url, 'storage_key': object_key, 'file_name': file_name, 'sort_order': idx}
 
     webp_bytes, width, height = _convert_to_webp(raw_bytes, Image, notice_id, stats)
     if webp_bytes is None:
         # Conversion failed — try uploading the original bytes
         webp_bytes = raw_bytes
         width = height = 0
-        object_key = storage.object_key(notice_id, idx, chash)
 
     try:
-        storage_url = storage.upload(object_key, webp_bytes)
-    except NoticeStorageError as exc:
-        LOGGER.warning('backfill_notice_images: upload failed id=%s error=%s', notice_id, exc)
+        path = _storage_path(object_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(webp_bytes)
+    except OSError as exc:
+        LOGGER.warning('backfill_notice_images: save failed id=%s error=%s', notice_id, exc)
         stats['failed'] += 1
-        stats['failed_items'].append({'id': notice_id, 'url': source_url, 'error': f'upload:{exc}'})
+        stats['failed_items'].append({'id': notice_id, 'url': source_url, 'error': f'save:{exc}'})
         return {'source_url': source_url, 'sort_order': idx, 'error': str(exc)}
 
     stats['uploaded'] += 1
     entry = {
         'source_url': source_url,
         'storage_key': object_key,
-        'storage_url': storage_url,
+        'file_name': file_name,
+        'url': f'/api/v1/notices/{notice_id}/images/{idx}/',
+        'status': 'ready',
+        'content_hash': chash,
         'format': 'webp',
         'size_bytes': len(webp_bytes),
         'sort_order': idx,
@@ -404,6 +383,17 @@ def _read_local_media(url: str) -> bytes | None:
     return None
 
 
+def _storage_path(storage_key: str) -> Path:
+    rel = str(storage_key or '').replace('\\', '/').lstrip('/')
+    media_root = Path(settings.MEDIA_ROOT).resolve()
+    path = (media_root / rel).resolve()
+    try:
+        path.relative_to(media_root)
+    except ValueError as exc:
+        raise OSError(f'Unsafe storage_key: {storage_key}') from exc
+    return path
+
+
 # ---------------------------------------------------------------------------
 # URL / origin helpers
 # ---------------------------------------------------------------------------
@@ -485,10 +475,10 @@ def _print_results(stdout, stats: dict, dry_run: bool):
     stdout.write(f'{prefix}이미 storage:        {stats["already_storage"]}')
     if dry_run:
         stdout.write(f'{prefix}다운로드 예정:       {stats["would_download"]}')
-        stdout.write(f'{prefix}업로드 예정:         {stats["would_upload"]}')
+        stdout.write(f'{prefix}저장 예정:           {stats["would_upload"]}')
     else:
         stdout.write(f'{prefix}다운로드:            {stats["downloaded"]}')
-        stdout.write(f'{prefix}업로드:              {stats["uploaded"]}')
+        stdout.write(f'{prefix}저장:                {stats["uploaded"]}')
     stdout.write(f'{prefix}출처 차단:           {stats["skipped_origin"]}')
     stdout.write(f'{prefix}실패:                {stats["failed"]}')
 
@@ -501,6 +491,6 @@ def _print_results(stdout, stats: dict, dry_run: bool):
     if dry_run:
         stdout.write('')
         stdout.write(
-            '--dry-run 모드: 실제 다운로드/업로드/DB 변경이 없었습니다. '
+            '--dry-run 모드: 실제 다운로드/저장/DB 변경이 없었습니다. '
             '--dry-run 없이 재실행하면 이전이 적용됩니다.'
         )
