@@ -105,6 +105,38 @@ class HomeDashboardApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.json()['focus'])
 
+    def test_upcoming_schedules_ignore_many_past_events_before_limit(self):
+        for index in range(60):
+            ScheduleEvent.objects.create(
+                title=f'past event {index}',
+                start_at=self.now - timedelta(hours=5),
+                end_at=self.now - timedelta(hours=4),
+                event_type='notice',
+                source_type='notice',
+            )
+        future = self._event('visible future event', 1)
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.json()['upcoming_schedules']], [future.id])
+
+    def test_upcoming_schedules_include_ongoing_all_day_event(self):
+        start_at = self.now.replace(hour=0, minute=0, second=0, microsecond=0)
+        event = ScheduleEvent.objects.create(
+            title='ongoing all day event',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+        )
+
+        response = self._get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['focus']['source_event_id'], event.id)
+        self.assertEqual([item['id'] for item in response.json()['upcoming_schedules']], [event.id])
     def test_upcoming_schedules_are_limited_to_three(self):
         for index in range(5):
             self._event(f'다가오는 일정 {index}', index + 1)

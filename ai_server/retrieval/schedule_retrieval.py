@@ -33,7 +33,9 @@ class ScheduleRetrievalService:
 
     def _retrieve_from_db(self, parsed_query, filters: dict, query: str = ''):
         self._ensure_django_ready()
+        from django.contrib.auth import get_user_model
         from schedules.models import ScheduleEvent
+        from schedules.services import filter_calendar_visible_events, filter_events_for_user_profile
 
         queryset = ScheduleEvent.objects.select_related('raw_data', 'owner')
         user_id = filters.get('user_id')
@@ -52,10 +54,16 @@ class ScheduleRetrievalService:
         if event_type:
             queryset = queryset.filter(event_type=event_type)
 
-        events = list(queryset.order_by('start_at', 'id')[:100])
+        events = list(queryset.order_by('start_at', 'id')[:300])
+        events = filter_calendar_visible_events(events)
+        if user_id:
+            user = get_user_model().objects.filter(id=user_id).first()
+            profile = getattr(user, 'profile', None) or getattr(user, 'userprofile', None) or user
+            events = filter_events_for_user_profile(events, profile)
         tokens = self._query_tokens(query)
         if tokens:
             events = [event for event in events if self._event_match_count(event, tokens) > 0]
+        events = self._dedupe_events(events)
         if parsed_query.result_limit:
             events = events[: parsed_query.result_limit]
         return [self._chunk_from_event(event) for event in events]
@@ -129,6 +137,42 @@ class ScheduleRetrievalService:
     def _match_count(self, chunk, tokens: list[str]) -> int:
         text = f'{chunk.title} {chunk.content}'.lower()
         return sum(1 for token in tokens if token in text)
+
+    def _dedupe_events(self, events):
+        seen = set()
+        deduped = []
+        for event in events:
+            metadata = event.metadata_json or {}
+            audience = metadata.get('audience') or {}
+            key = (
+                self._event_dedupe_title(event.title),
+                timezone.localdate(event.start_at).isoformat() if event.start_at else '',
+                timezone.localdate(event.end_at).isoformat() if event.end_at else '',
+                event.event_type,
+                str(metadata.get('track_key') or audience.get('track_key') or metadata.get('track') or audience.get('track') or 'all'),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(event)
+        return deduped
+
+    def _event_dedupe_title(self, title: str) -> str:
+        compact = re.sub(r'[\s.()_\-/~:\[\]]+', '', str(title or '')).upper()
+        compact = compact.replace('PROJECT', 'PJT')
+        if '\uad00\ud1b5' in compact or 'PJT' in compact:
+            has_pjt = '\uad00\ud1b5' in compact and ('PJT' in compact or '\ud504\ub85c\uc81d\ud2b8' in compact)
+            if has_pjt:
+                if '\uacbd\uc9c4\ub300\ud68c' in compact:
+                    return 'PROJECT_PJT_CONTEST'
+                if 'OT' in compact:
+                    return 'PROJECT_PJT_OT'
+                if '\uc81c\ucd9c' in compact or '\ub9c8\uac10' in compact:
+                    return 'PROJECT_PJT_DEADLINE'
+                if '\ubc1c\ud45c' in compact:
+                    return 'PROJECT_PJT_PRESENTATION'
+                return 'PROJECT_PJT_GENERIC'
+        return compact
 
     def _event_match_count(self, event, tokens: list[str]) -> int:
         metadata = event.metadata_json or {}

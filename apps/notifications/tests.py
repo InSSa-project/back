@@ -79,6 +79,29 @@ class NotificationApiTests(TestCase):
             any(item['notification_type'] == Notification.TYPE_NOTICE for item in disabled_response.json()['data'])
         )
 
+    def test_list_orders_unread_notifications_before_read_notifications(self):
+        read_recent = Notification.objects.create(
+            user=self.user,
+            notification_type=Notification.TYPE_NOTICE,
+            title='Read recent notice',
+            content='already read',
+            is_read=True,
+        )
+        unread_older = Notification.objects.create(
+            user=self.user,
+            notification_type=Notification.TYPE_NOTICE,
+            title='Unread older notice',
+            content='must show first',
+            is_read=False,
+        )
+        Notification.objects.filter(id=read_recent.id).update(created_at=timezone.now())
+        Notification.objects.filter(id=unread_older.id).update(created_at=timezone.now() - timedelta(days=1))
+
+        response = self.client.get(reverse('notifications-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = [item['title'] for item in response.json()['data']]
+        self.assertLess(titles.index('Unread older notice'), titles.index('Read recent notice'))
     def test_mark_all_read(self):
         Notification.objects.create(
             user=self.user,
