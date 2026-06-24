@@ -1,0 +1,114 @@
+name: Manual OCR Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      raw_data_id:
+        description: RawSsafyData id to backfill.
+        required: true
+      force:
+        description: Re-run OCR even when successful OCR data already exists.
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: manual-ocr-backfill-${{ inputs.raw_data_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    name: Backfill one RawSsafyData OCR result
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_SSL_REQUIRE: ${{ secrets.DATABASE_SSL_REQUIRE }}
+      DB_ENGINE: ${{ secrets.DB_ENGINE }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_CONN_MAX_AGE: ${{ secrets.DB_CONN_MAX_AGE }}
+      SSAFY_ID: ${{ secrets.SSAFY_ID }}
+      SSAFY_PASSWORD: ${{ secrets.SSAFY_PASSWORD }}
+      SSAFY_LOGIN_URL: ${{ secrets.SSAFY_LOGIN_URL }}
+      OCR_PROVIDER: ${{ secrets.OCR_PROVIDER }}
+      GOOGLE_VISION_ENABLED: ${{ secrets.GOOGLE_VISION_ENABLED }}
+      RAW_DATA_ID: ${{ inputs.raw_data_id }}
+      FORCE: ${{ inputs.force }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Set up Google Vision credentials
+        env:
+          _GOOGLE_VISION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_VISION_CREDENTIALS_JSON }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get("_GOOGLE_VISION_CREDENTIALS_JSON", "").strip()
+          if not raw:
+              raise SystemExit(
+                  "GOOGLE_VISION_CREDENTIALS_JSON secret is not set or empty. "
+                  "Add the service account JSON content as a GitHub Repository Secret named GOOGLE_VISION_CREDENTIALS_JSON."
+              )
+
+          try:
+              payload = json.loads(raw)
+          except json.JSONDecodeError as exc:
+              raise SystemExit(f"GOOGLE_VISION_CREDENTIALS_JSON is not valid JSON: {exc}")
+
+          required = {"type", "project_id", "private_key", "client_email"}
+          missing = required - payload.keys()
+          if missing:
+              raise SystemExit(f"GOOGLE_VISION_CREDENTIALS_JSON is missing required fields: {sorted(missing)}")
+
+          target = Path(os.environ["RUNNER_TEMP"]) / "google-vision-credentials.json"
+          target.write_text(json.dumps(payload), encoding="utf-8")
+          target.chmod(0o600)
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"GOOGLE_APPLICATION_CREDENTIALS={target}\n")
+
+          print("ocr_runtime credentials_file_created=true")
+          print(f"ocr_runtime credentials_type={payload.get('type', '-')}")
+          print(f"ocr_runtime credentials_project_id_present={bool(payload.get('project_id'))}")
+          print(f"ocr_runtime credentials_client_email_present={bool(payload.get('client_email'))}")
+          PY
+
+      - name: Run migrations
+        run: python manage.py migrate --noinput
+
+      - name: Run manual OCR backfill
+        run: |
+          args=(--id "$RAW_DATA_ID" --authenticated-download --reparse)
+          if [ "$FORCE" = "true" ]; then
+            args+=(--force)
+          fi
+          python manage.py backfill_raw_ocr "${args[@]}"
