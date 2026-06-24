@@ -1,5 +1,6 @@
 import html
 import json
+import logging
 import re
 from datetime import date, datetime
 from urllib.parse import urlencode, urljoin
@@ -35,6 +36,8 @@ from sync.services.tracks import COMMON_TRACK_KEY, canonical_track_display, cano
 from sync.services.import_service import run_notice_import
 from sync.services.manual_ocr_service import apply_manual_ocr_text
 
+
+LOGGER = logging.getLogger(__name__)
 
 SUMMARY_MAX_LENGTH = 200
 DEBUG_SUMMARY_PATTERNS = (
@@ -469,6 +472,11 @@ def _serialize_notice_images(raw_data, request=None, title=''):
 
 
 def _notice_image_candidates(metadata):
+    # notice_images (structured, new format) takes priority
+    notice_images = metadata.get('notice_images') if isinstance(metadata, dict) else None
+    if isinstance(notice_images, list) and notice_images:
+        return list(notice_images)
+
     candidates = []
     for source in _notice_metadata_sources_for_images(metadata):
         for key in ('images', 'image_urls', 'image_url', 'attachments', 'files'):
@@ -505,16 +513,33 @@ def _normalize_notice_image(candidate, index, raw_data, request=None, title=''):
 
     sort_order = _non_negative_int(source.get('sort_order'), default=index)
     image_id = source.get('id')
-    return {
+    result = {
         'id': image_id if image_id is not None else index + 1,
         'url': url,
         'alt': str(source.get('alt') or source.get('title') or title or '').strip(),
         'sort_order': sort_order,
     }
+    # Include optimisation metadata when available (from notice_images structured entries)
+    for extra_key in ('width', 'height', 'size_bytes', 'format'):
+        val = source.get(extra_key) if isinstance(source, dict) else None
+        if val is not None:
+            result[extra_key] = val
+    return result
 
 
 def _notice_image_url(source, raw_data, request=None):
-    value = source.get('url') or source.get('image_url') or source.get('src') or source.get('href') or source.get('path')
+    # notice_images structured entry: prefer stable storage_url, fall back to source_url
+    if isinstance(source, dict):
+        storage_url = str(source.get('storage_url') or '').strip()
+        if storage_url.startswith(('http://', 'https://')):
+            return storage_url
+        # source_url is the original CDN URL — use as fallback when storage not yet uploaded
+        src_fallback = str(source.get('source_url') or '').strip()
+        if src_fallback.startswith(('http://', 'https://')):
+            LOGGER.debug('notice_image_url: using source_url fallback for notice id=%s', getattr(raw_data, 'id', '?'))
+            return src_fallback
+
+    value = source.get('url') or source.get('image_url') or source.get('src') or source.get('href') or source.get('path') if isinstance(source, dict) else None
     url = str(value or '').strip()
     if not url or url.startswith(('data:', 'javascript:', 'mailto:', '#')):
         return ''

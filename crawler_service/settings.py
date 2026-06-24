@@ -180,6 +180,13 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Supabase Storage — used by backfill_notice_images and notice image upload pipeline.
+# The service role key is backend-only and must never appear in API responses.
+SUPABASE_URL = env('SUPABASE_URL', default='')
+SUPABASE_SERVICE_ROLE_KEY = env('SUPABASE_SERVICE_ROLE_KEY', default='')
+SUPABASE_STORAGE_BUCKET = env('SUPABASE_STORAGE_BUCKET', default='notices')
+SUPABASE_STORAGE_TIMEOUT = int(env('SUPABASE_STORAGE_TIMEOUT', default='30'))
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOWED_ORIGINS = env_list(
