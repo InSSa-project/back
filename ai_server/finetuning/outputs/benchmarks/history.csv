@@ -1,0 +1,2 @@
+created_at,run_dir,total,pass_count,fail_count,score,avg_latency_ms
+2026-06-24T14:02:16,ai_server\finetuning\outputs\benchmarks\20260624_140216_parser_check,120,120,0,100.0,0

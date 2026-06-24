@@ -130,6 +130,27 @@ class CommunityApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()['data']['board_type'], 'suggestion')
 
+    def test_authenticated_user_can_create_qna_post_and_filter_it(self):
+        response = self.client.post(
+            reverse('community-post-list'),
+            data={'board_type': 'qna', 'title': 'How should I ask?', 'content': 'Can I ask about projects here?'},
+            content_type='application/json',
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['data']['board_type'], 'qna')
+
+        list_response = self.client.get(
+            reverse('community-post-list'),
+            {'board_type': 'qna', 'page': 1},
+            **self._auth(self.user),
+        )
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()['data']['count'], 1)
+        self.assertEqual(list_response.json()['data']['results'][0]['board_type'], 'qna')
+
     def test_unauthenticated_user_cannot_create_post(self):
         response = self.client.post(
             reverse('community-post-list'),
