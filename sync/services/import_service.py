@@ -14,7 +14,7 @@ from schedules.services import (
 )
 from schedules.utils import normalize_event_title_for_dedupe
 from sync.models import CrawlJobLog, RawSsafyData
-from sync.services.ocr_service import extract_text_from_image_urls
+from sync.services.ocr_service import OCR_PROVIDER_GOOGLE_VISION, extract_text_from_image_urls
 from sync.services.notice_policy import HIDDEN_USER_NOTICE_SOURCE_TYPES
 from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 from sync.services.schedule_identity import (
@@ -36,6 +36,7 @@ from sync.services.ssafy_crawler import (
 
 SUCCESS_MESSAGE = 'SSAFY notice collection and schedule import completed.'
 CRAWL_FAILED_MESSAGE = 'Failed to collect SSAFY notices.'
+OCR_SECTION_MARKER = '[OCR_TEXT]'
 LOGGER = logging.getLogger(__name__)
 
 
@@ -1060,11 +1061,19 @@ def _update_existing_raw_data_if_changed(raw_data, item, summary):
     if item.get('source_type') not in {'academic_rule', 'notice'} or raw_data.source_type != item.get('source_type'):
         return False
 
-    if not _raw_data_changed(raw_data, item):
+    raw_data_changed = _raw_data_changed(raw_data, item)
+    should_backfill_ocr = _should_backfill_duplicate_missing_google_vision_ocr(raw_data, item)
+    if not raw_data_changed and not should_backfill_ocr:
         return False
 
     images_changed = _raw_images_changed(raw_data, item)
-    updated_item = _apply_ocr_pipeline(item, summary) if images_changed else _prepare_update_item_without_ocr(raw_data, item)
+    if should_backfill_ocr:
+        item = _prepare_duplicate_ocr_backfill_item(raw_data, item)
+    updated_item = (
+        _apply_ocr_pipeline(item, summary)
+        if images_changed or should_backfill_ocr
+        else _prepare_update_item_without_ocr(raw_data, item)
+    )
     raw_data.source_url = updated_item.get('source_url', raw_data.source_url)
     raw_data.title = updated_item.get('title', raw_data.title)
     raw_data.raw_text = updated_item.get('raw_text', '')
@@ -1200,6 +1209,59 @@ def _raw_images_changed(raw_data, item):
     return incoming_image_urls != existing_image_urls
 
 
+def _should_backfill_duplicate_missing_google_vision_ocr(raw_data, item):
+    if raw_data.source_type != 'notice' or item.get('source_type', 'notice') != 'notice':
+        return False
+    if os.getenv('OCR_PROVIDER', '').strip().lower() != OCR_PROVIDER_GOOGLE_VISION:
+        return False
+    if not _duplicate_ocr_image_urls(raw_data, item):
+        return False
+
+    metadata = raw_data.metadata_json or {}
+    ocr_status = str(metadata.get('ocr_status') or '').strip().lower()
+    if ocr_status == 'failed':
+        return False
+    if _has_successful_ocr_text_and_boxes(raw_data):
+        return False
+
+    ocr_provider = str(metadata.get('ocr_provider') or '').strip().lower()
+    ocr_text_length = _metadata_int(metadata.get('ocr_text_length'))
+    return (
+        ocr_provider == 'mock'
+        or ocr_status == 'skipped'
+        or ocr_text_length == 0
+        or OCR_SECTION_MARKER not in str(raw_data.raw_text or '')
+    )
+
+
+def _prepare_duplicate_ocr_backfill_item(raw_data, item):
+    prepared = dict(item)
+    metadata = dict(prepared.get('metadata_json') or {})
+    metadata['image_urls'] = _duplicate_ocr_image_urls(raw_data, item)
+    prepared['metadata_json'] = metadata
+    return prepared
+
+
+def _duplicate_ocr_image_urls(raw_data, item):
+    return _item_image_urls(item) or list((raw_data.metadata_json or {}).get('image_urls') or [])
+
+
+def _has_successful_ocr_text_and_boxes(raw_data):
+    metadata = raw_data.metadata_json or {}
+    return (
+        str(metadata.get('ocr_status') or '').strip().lower() == 'success'
+        and bool(_existing_ocr_text(raw_data.raw_text))
+        and bool(raw_data.ocr_boxes)
+    )
+
+
+def _metadata_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _raw_data_changed(raw_data, item):
     if raw_data.source_type != item.get('source_type', 'notice'):
         return True
@@ -1217,13 +1279,13 @@ def _raw_data_changed(raw_data, item):
 
 
 def _raw_text_for_compare(raw_text):
-    return str(raw_text or '').split('[OCR_TEXT]', 1)[0].strip()
+    return str(raw_text or '').split(OCR_SECTION_MARKER, 1)[0].strip()
 
 
 def _existing_ocr_text(raw_text):
-    if '[OCR_TEXT]' not in str(raw_text or ''):
+    if OCR_SECTION_MARKER not in str(raw_text or ''):
         return ''
-    return str(raw_text or '').split('[OCR_TEXT]', 1)[1].strip()
+    return str(raw_text or '').split(OCR_SECTION_MARKER, 1)[1].strip()
 
 
 def _metadata_for_compare(metadata):
@@ -1274,9 +1336,13 @@ def _safe_extract_ocr_text(image_urls):
 def _merge_ocr_text(raw_text, ocr_text):
     if not ocr_text:
         return raw_text
-    if raw_text:
-        return f'{raw_text}\n\n[OCR_TEXT]\n{ocr_text}'
-    return f'[OCR_TEXT]\n{ocr_text}'
+    base_text = str(raw_text or '')
+    marker_index = base_text.find(OCR_SECTION_MARKER)
+    if marker_index >= 0:
+        base_text = base_text[:marker_index].rstrip()
+    if base_text:
+        return f'{base_text}\n\n{OCR_SECTION_MARKER}\n{ocr_text}'
+    return f'{OCR_SECTION_MARKER}\n{ocr_text}'
 
 
 def _create_raw_data(item):
