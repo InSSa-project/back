@@ -126,7 +126,12 @@ def validate_generated_schedule(raw_data, schedule):
 
 
 def is_blocking_generated_schedule_warning(warning):
-    return warning in {'timetable_title_equals_source_title', 'non_positive_duration', 'source_title_period_mismatch'}
+    return warning in {
+        'timetable_title_equals_source_title',
+        'non_positive_duration',
+        'source_title_period_mismatch',
+        'generated_class_on_korean_holiday',
+    }
 
 
 def _is_generated_class_on_korean_holiday(schedule, parser):
@@ -154,12 +159,13 @@ def _is_timetable_source_period_mismatch(source_title, schedule):
     if not start_at:
         return False
     source_text = str(source_title or '')
-    numbers = re.findall(r'\d{1,2}', source_text)
-    if len(numbers) < 2:
+    month_match = re.search(r'(\d{1,2})\s*월', source_text)
+    week_match = re.search(r'(\d{1,2})\s*주차', source_text)
+    if not month_match or not week_match:
         return False
     event_date = timezone.localdate(start_at)
-    source_month = int(numbers[0])
-    source_week = int(numbers[1])
+    source_month = int(month_match.group(1))
+    source_week = int(week_match.group(1))
     if event_date.month != source_month:
         return True
     expected_week = _month_week_index(event_date)
