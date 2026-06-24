@@ -2330,7 +2330,8 @@ class SampleNoticeImportTests(TestCase):
         }
 
         with patch.dict('os.environ', env, clear=True):
-            call_command('check_crawl_env', stdout=output)
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
@@ -2352,7 +2353,8 @@ class SampleNoticeImportTests(TestCase):
         }
 
         with patch.dict('os.environ', env, clear=True):
-            call_command('check_crawl_env', stdout=output)
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
@@ -2371,7 +2373,8 @@ class SampleNoticeImportTests(TestCase):
         }
 
         with patch.dict('os.environ', env, clear=True):
-            call_command('check_crawl_env', stdout=output)
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
@@ -2384,6 +2387,237 @@ class SampleNoticeImportTests(TestCase):
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/login', rendered)
         self.assertNotIn('https://example.com/quests', rendered)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # check_crawl_env OCR 환경변수 검증 테스트
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _base_crawl_env(self):
+        return {
+            'SECRET_KEY': 'test-key',
+            'DATABASE_URL': 'postgres://inssa:pass@example.com:5432/inssa',
+            'SSAFY_ID': 'test-admin',
+            'SSAFY_PASSWORD': 'test-password',
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
+        }
+
+    def test_check_crawl_env_ocr_provider_google_vision_normalised(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': '  Google_Vision  '}
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(
+                {'type': 'service_account', 'project_id': 'p', 'private_key': 'k', 'client_email': 'e@p.iam.gserviceaccount.com'},
+                f,
+            )
+            creds_path = f.name
+        try:
+            env.update({
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': creds_path,
+            })
+            with patch.dict('os.environ', env, clear=True):
+                with patch.dict('sys.modules', _google_vision_modules('any')):
+                    call_command('check_crawl_env', stdout=output)
+        finally:
+            Path(creds_path).unlink(missing_ok=True)
+        rendered = output.getvalue()
+        self.assertIn('provider_normalized=google_vision', rendered)
+        self.assertIn('SSAFY crawl environment check OK.', rendered)
+
+    def test_check_crawl_env_ocr_provider_whitespace_stripped(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': '  mock  '}
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+        self.assertIn('provider_normalized=mock', output.getvalue())
+
+    def test_check_crawl_env_ocr_provider_empty_with_vision_enabled_fails(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': '', 'GOOGLE_VISION_ENABLED': 'true'}
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        self.assertIn('OCR_PROVIDER is missing', output.getvalue())
+
+    def test_check_crawl_env_unsupported_ocr_provider_fails(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': 'aws_textract'}
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        rendered = output.getvalue()
+        self.assertIn('Unsupported OCR_PROVIDER', rendered)
+        self.assertIn('provider_supported=false', rendered)
+
+    def test_check_crawl_env_google_vision_not_enabled_fails(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': 'google_vision', 'GOOGLE_VISION_ENABLED': 'false'}
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        self.assertIn('Google Vision OCR is not enabled', output.getvalue())
+
+    def test_check_crawl_env_google_vision_enabled_missing_fails(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': 'google_vision'}
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        self.assertIn('Google Vision OCR is not enabled', output.getvalue())
+
+    def test_check_crawl_env_google_vision_credentials_path_missing_fails(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': 'google_vision', 'GOOGLE_VISION_ENABLED': 'true'}
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        self.assertIn('Google credentials path does not exist', output.getvalue())
+
+    def test_check_crawl_env_google_vision_credentials_file_not_exist_fails(self):
+        output = StringIO()
+        env = {
+            **self._base_crawl_env(),
+            'OCR_PROVIDER': 'google_vision',
+            'GOOGLE_VISION_ENABLED': 'true',
+            'GOOGLE_APPLICATION_CREDENTIALS': '/nonexistent/path/vision.json',
+        }
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        rendered = output.getvalue()
+        self.assertIn('Google credentials file does not exist', rendered)
+        self.assertNotIn('/nonexistent/path/vision.json', rendered)
+
+    def test_check_crawl_env_google_vision_json_string_as_path_fails(self):
+        output = StringIO()
+        json_content = json.dumps({
+            'type': 'service_account',
+            'project_id': 'p',
+            'private_key': 'super-secret-key',
+            'client_email': 'e@p.iam.gserviceaccount.com',
+        })
+        env = {
+            **self._base_crawl_env(),
+            'OCR_PROVIDER': 'google_vision',
+            'GOOGLE_VISION_ENABLED': 'true',
+            'GOOGLE_APPLICATION_CREDENTIALS': json_content,
+        }
+        with patch.dict('os.environ', env, clear=True):
+            with self.assertRaises(CommandError):
+                call_command('check_crawl_env', stdout=output)
+        rendered = output.getvalue()
+        self.assertIn('Google credentials file does not exist', rendered)
+        self.assertNotIn('super-secret-key', rendered)
+
+    def test_check_crawl_env_google_vision_invalid_json_file_fails(self):
+        output = StringIO()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write('not-valid-json{{{')
+            creds_path = f.name
+        try:
+            env = {
+                **self._base_crawl_env(),
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': creds_path,
+            }
+            with patch.dict('os.environ', env, clear=True):
+                with self.assertRaises(CommandError):
+                    call_command('check_crawl_env', stdout=output)
+        finally:
+            Path(creds_path).unlink(missing_ok=True)
+        self.assertIn('Google credentials file is invalid JSON', output.getvalue())
+
+    def test_check_crawl_env_google_vision_missing_fields_fails(self):
+        output = StringIO()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({'type': 'service_account'}, f)
+            creds_path = f.name
+        try:
+            env = {
+                **self._base_crawl_env(),
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': creds_path,
+            }
+            with patch.dict('os.environ', env, clear=True):
+                with self.assertRaises(CommandError):
+                    call_command('check_crawl_env', stdout=output)
+        finally:
+            Path(creds_path).unlink(missing_ok=True)
+        rendered = output.getvalue()
+        self.assertIn('missing required fields', rendered)
+        self.assertNotIn('super-secret', rendered)
+
+    def test_check_crawl_env_google_vision_valid_credentials_succeeds(self):
+        output = StringIO()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(
+                {'type': 'service_account', 'project_id': 'p', 'private_key': 'k', 'client_email': 'e@p.iam.gserviceaccount.com'},
+                f,
+            )
+            creds_path = f.name
+        try:
+            env = {
+                **self._base_crawl_env(),
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': creds_path,
+            }
+            with patch.dict('os.environ', env, clear=True):
+                with patch.dict('sys.modules', _google_vision_modules('any')):
+                    call_command('check_crawl_env', stdout=output)
+        finally:
+            Path(creds_path).unlink(missing_ok=True)
+        rendered = output.getvalue()
+        self.assertIn('SSAFY crawl environment check OK.', rendered)
+        self.assertIn('google_vision_client_ok=true', rendered)
+
+    def test_check_crawl_env_google_vision_client_auth_failure_not_logged_with_secret(self):
+        output = StringIO()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(
+                {'type': 'service_account', 'project_id': 'proj', 'private_key': 'SECRET-KEY-VALUE', 'client_email': 'e@p.iam.gserviceaccount.com'},
+                f,
+            )
+            creds_path = f.name
+        try:
+            env = {
+                **self._base_crawl_env(),
+                'OCR_PROVIDER': 'google_vision',
+                'GOOGLE_VISION_ENABLED': 'true',
+                'GOOGLE_APPLICATION_CREDENTIALS': creds_path,
+            }
+
+            class _BrokenVisionModule:
+                class ImageAnnotatorClient:
+                    def __init__(self):
+                        raise RuntimeError('auth failed: SECRET-KEY-VALUE leaked')
+
+            broken_modules = dict(_google_vision_modules(''))
+            broken_modules['google.cloud.vision'].ImageAnnotatorClient = _BrokenVisionModule.ImageAnnotatorClient
+
+            with patch.dict('os.environ', env, clear=True):
+                with patch.dict('sys.modules', broken_modules):
+                    with self.assertRaises(CommandError):
+                        call_command('check_crawl_env', stdout=output)
+        finally:
+            Path(creds_path).unlink(missing_ok=True)
+        rendered = output.getvalue()
+        self.assertIn('google_vision_client_ok=false', rendered)
+        self.assertIn('Google Vision client creation failed', rendered)
+
+    def test_check_crawl_env_mock_provider_succeeds_without_ocr_validation(self):
+        output = StringIO()
+        env = {**self._base_crawl_env(), 'OCR_PROVIDER': 'mock'}
+        with patch.dict('os.environ', env, clear=True):
+            call_command('check_crawl_env', stdout=output)
+        self.assertIn('SSAFY crawl environment check OK.', output.getvalue())
 
     def test_scheduled_crawl_dry_run_defaults_to_hourly_sources_and_limits(self):
         output = StringIO()

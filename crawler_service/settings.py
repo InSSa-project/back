@@ -121,7 +121,7 @@ WSGI_APPLICATION = 'crawler_service.wsgi.application'
 DATABASE_URL = env('DATABASE_URL', default='').strip()
 DB_ENGINE = env('DB_ENGINE', default='sqlite').strip().lower()
 
-# Render / Supabase 배포 환경
+# Oracle Cloud / Supabase 배포 환경
 if DATABASE_URL:
     DATABASES = {
         'default': dj_database_url.parse(
@@ -179,6 +179,13 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Supabase Storage — used by backfill_notice_images and notice image upload pipeline.
+# The service role key is backend-only and must never appear in API responses.
+SUPABASE_URL = env('SUPABASE_URL', default='')
+SUPABASE_SERVICE_ROLE_KEY = env('SUPABASE_SERVICE_ROLE_KEY', default='')
+SUPABASE_STORAGE_BUCKET = env('SUPABASE_STORAGE_BUCKET', default='notices')
+SUPABASE_STORAGE_TIMEOUT = int(env('SUPABASE_STORAGE_TIMEOUT', default='30'))
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
