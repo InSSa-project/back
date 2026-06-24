@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.ai.models import AiDocument
 from apps.ai.sync_ingestion import SyncRawDataRagIngestionService
+from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData, UserNoticeReadStatus
 
@@ -37,6 +38,8 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn('count', payload)
+        self.assertIn('next', payload)
+        self.assertIn('previous', payload)
         self.assertIn('results', payload)
         item = payload['results'][0]
         self.assertIn('summary', item)
@@ -298,11 +301,21 @@ class NoticeApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['track_key'], 'python')
+        self.assertEqual(response.json()['results'][0]['title'], 'Python extra study')
 
     def test_notice_list_filters_by_track_key_with_common_and_count(self):
-        RawSsafyData.objects.create(source_type='notice', title='Java major notice', raw_text='java body')
-        RawSsafyData.objects.create(source_type='notice', title='Python notice', raw_text='python body')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java major notice',
+            raw_text='java body',
+            metadata_json={'track_key': 'java_major'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='python body',
+            metadata_json={'track_key': 'python'},
+        )
         RawSsafyData.objects.create(
             source_type='notice',
             title='Common notice',
@@ -321,9 +334,24 @@ class NoticeApiTests(TestCase):
         self.assertEqual({item['track_key'] for item in payload['results']}, {'java_major', 'all'})
 
     def test_notice_list_filters_by_legacy_track_with_common(self):
-        RawSsafyData.objects.create(source_type='notice', title='Python extra study', raw_text='python')
-        RawSsafyData.objects.create(source_type='notice', title='Common notice', raw_text='common all')
-        RawSsafyData.objects.create(source_type='notice', title='Java notice', raw_text='java')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python extra study',
+            raw_text='python',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='common all',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java notice',
+            raw_text='java',
+            metadata_json={'track_key': 'java_major'},
+        )
 
         response = self.client.get(reverse('notice-list'), {'track': 'python'})
 
@@ -333,15 +361,127 @@ class NoticeApiTests(TestCase):
         self.assertEqual({item['is_common'] for item in response.json()['results']}, {False, True})
 
     def test_notice_list_filters_study_category_by_track(self):
-        RawSsafyData.objects.create(source_type='notice', title='Python extra study', raw_text='python')
-        RawSsafyData.objects.create(source_type='notice', title='Java extra study', raw_text='java')
-        RawSsafyData.objects.create(source_type='notice', title='Common extra study', raw_text='common all')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python extra study',
+            raw_text='python',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java extra study',
+            raw_text='java',
+            metadata_json={'track_key': 'java_major'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common extra study',
+            raw_text='common all',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
 
         response = self.client.get(reverse('notice-list'), {'category': 'learning', 'track_key': 'python'})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['count'], 2)
         self.assertEqual({item['track_key'] for item in response.json()['results']}, {'python', 'all'})
+
+    def test_notice_list_defaults_to_authenticated_user_profile_track(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='meister', email='meister@example.com', password='password')
+        UserProfile.objects.create(user=user, track='Meister')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Meister notice',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertEqual(titles, {'Meister notice', 'Common notice'})
+
+    def test_notice_list_missing_profile_track_returns_common_only_for_authenticated_user(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='no-profile', email='no-profile@example.com', password='password')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(source_type='notice', title='Unknown track notice', raw_text='Python in title only')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['title'], 'Common notice')
+
+    def test_notice_list_explicit_track_all_returns_all_tracks(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='track-all', email='track-all@example.com', password='password')
+        UserProfile.objects.create(user=user, track='Meister')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Meister notice',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'), {'track': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({item['title'] for item in response.json()['results']}, {'Meister notice', 'Python notice'})
+
+    def test_notice_list_explicit_common_track_returns_common_only(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'track': 'common'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 1)
+        self.assertEqual(response.json()['results'][0]['title'], 'Common notice')
 
     def test_notice_list_ignores_track_for_mentoring_category(self):
         RawSsafyData.objects.create(
@@ -366,14 +506,23 @@ class NoticeApiTests(TestCase):
             metadata_json={'source_id': 'n1'},
         )
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
-        ScheduleEvent.objects.create(
+        later_event = ScheduleEvent.objects.create(
             raw_data=raw_data,
             title='Evaluation',
             start_at=start_at,
             end_at=start_at + timedelta(hours=1),
             event_type='exam',
             source_type='notice',
-            metadata_json={'audience': {'track': 'python'}},
+            metadata_json={'audience': {'track': 'python'}, 'raw_data_id': raw_data.id},
+        )
+        earlier_event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='Briefing',
+            start_at=start_at - timedelta(hours=1),
+            end_at=start_at,
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
         )
 
         response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
@@ -382,8 +531,40 @@ class NoticeApiTests(TestCase):
         payload = response.json()
         self.assertEqual(payload['id'], raw_data.id)
         self.assertEqual(payload['ocr_text'], 'OCR text')
-        self.assertEqual(payload['schedule_events'][0]['event_type'], 'exam')
-        self.assertEqual(payload['schedule_events'][0]['source_url'], raw_data.source_url)
+        self.assertEqual([item['id'] for item in payload['linked_events']], [earlier_event.id, later_event.id])
+        self.assertEqual([item['id'] for item in payload['schedule_events']], [earlier_event.id, later_event.id])
+        self.assertEqual(payload['linked_events'][1]['event_type'], 'exam')
+        self.assertEqual(payload['linked_events'][1]['source_url'], raw_data.source_url)
+        self.assertEqual(payload['linked_events'][1]['track_key'], 'python')
+
+    def test_notice_detail_returns_images_from_saved_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/notices/1',
+            title='Image notice',
+            raw_text='OCR text',
+            metadata_json={
+                'image_urls': ['/media/notices/1.png', 'https://cdn.example.com/notices/2.png'],
+            },
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0]['url'], 'http://testserver/media/notices/1.png')
+        self.assertEqual(images[0]['alt'], 'Image notice')
+        self.assertEqual(images[0]['sort_order'], 0)
+        self.assertEqual(images[1]['url'], 'https://cdn.example.com/notices/2.png')
+
+    def test_notice_detail_returns_empty_images_array_when_missing(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='No image notice', raw_text='body')
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['images'], [])
 
     def test_notice_list_filters_curriculum_source_type(self):
         RawSsafyData.objects.create(source_type='curriculum', title='Weekly curriculum', raw_text='Python')
