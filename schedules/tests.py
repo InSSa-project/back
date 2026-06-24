@@ -1272,3 +1272,307 @@ class ScheduleEventApiTests(TestCase):
         self.assertIn('PATCH', response['Access-Control-Allow-Methods'])
         self.assertIn('PUT', response['Access-Control-Allow-Methods'])
         self.assertIn('DELETE', response['Access-Control-Allow-Methods'])
+
+
+
+# ---------------------------------------------------------------------------
+# _is_timetable_source_period_mismatch 버그 수정 테스트 (Fix 2)
+# ---------------------------------------------------------------------------
+from datetime import date as _date, datetime as _datetime, time as _time
+from schedules.services import _is_timetable_source_period_mismatch as _mismatch_fn
+
+
+class _MockSchedule:
+    """_is_timetable_source_period_mismatch 테스트용 경량 목 오브젝트."""
+    def __init__(self, event_date):
+        from django.utils import timezone
+        naive = _datetime.combine(event_date, _time.min)
+        self.start_at = timezone.make_aware(naive, timezone.get_current_timezone())
+        self.metadata_json = {'parser_type': 'timetable_grid'}
+
+
+class TimetablePeriodMismatchTests(TestCase):
+    """'15기 2월 1주차 시간표' 같은 제목에서 첫 숫자 '15'를 월로 잘못 읽는 버그 수정."""
+
+    def _check(self, source_title, event_date, expect_mismatch):
+        result = _mismatch_fn(source_title, _MockSchedule(event_date))
+        label = 'mismatch' if expect_mismatch else 'no mismatch'
+        self.assertEqual(result, expect_mismatch,
+                         f"source={repr(source_title)}, date={event_date} → "
+                         f"기대={label}, 실제={result}")
+
+    def test_기수_prefix_포함_제목_2월1주차_2일(self):
+        """'[학습] 15기 2월 1주차 시간표' + Feb 2 → no mismatch."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 2, 2), expect_mismatch=False)
+
+    def test_기수_prefix_포함_제목_2월1주차_3일(self):
+        """'[학습] 15기 2월 1주차 시간표' + Feb 3 → no mismatch."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 2, 3), expect_mismatch=False)
+
+    def test_기수_prefix_포함_제목_2월2주차_9일(self):
+        """'[학습] 15기 2월 1주차 시간표' + Feb 9 (2주차) → mismatch."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 2, 9), expect_mismatch=True)
+
+    def test_기수_없는_제목_2월1주차_4일(self):
+        """'마이스터고 2월 1주차 시간표' + Feb 4 → no mismatch."""
+        self._check('마이스터고 2월 1주차 시간표', _date(2026, 2, 4), expect_mismatch=False)
+
+    def test_다른_달_이벤트_mismatch(self):
+        """'[학습] 15기 2월 1주차 시간표' + Mar 2 → mismatch (월 다름)."""
+        self._check('[학습] 15기 2월 1주차 시간표', _date(2026, 3, 2), expect_mismatch=True)
+
+    def test_주차_없는_제목은_검사_안함(self):
+        """제목에 주차가 없으면 False (mismatch 판단 불가)."""
+        self._check('2월 시간표', _date(2026, 2, 2), expect_mismatch=False)
+
+    def test_월_없는_제목은_검사_안함(self):
+        """제목에 월이 없으면 False."""
+        self._check('1주차 시간표', _date(2026, 2, 2), expect_mismatch=False)
+
+    def test_timetable_grid가_아닌_parser는_검사_안함(self):
+        """parser_type이 timetable_grid가 아니면 항상 False."""
+        mock = _MockSchedule(_date(2026, 3, 2))
+        mock.metadata_json = {'parser_type': 'text_date'}
+        result = _mismatch_fn('[학습] 15기 2월 1주차 시간표', mock)
+        self.assertFalse(result)
+
+# ---------------------------------------------------------------------------
+# MVP QA 수정 테스트 (토요일 이벤트 범위 / 공휴일 blocking / 커뮤니티 API)
+# ---------------------------------------------------------------------------
+import json
+from datetime import timedelta, date as _date, datetime as _datetime, time as _time
+
+from django.test import TestCase, override_settings
+from django.utils import timezone
+from django.urls import reverse, NoReverseMatch
+from django.contrib.auth import get_user_model
+
+from schedules.models import ScheduleEvent
+from schedules.views import _event_occurs_in_range
+from schedules.services import is_blocking_generated_schedule_warning
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. _event_occurs_in_range 수정 테스트 (>= → >)
+# ──────────────────────────────────────────────────────────────────────────────
+def _make_event(start_date, end_date):
+    """날짜만 있는 종일 이벤트 스텁 (exclusive-end 규칙)."""
+    tz = timezone.get_current_timezone()
+
+    class _Event:
+        start_at = timezone.make_aware(_datetime.combine(start_date, _time.min), tz)
+        end_at   = timezone.make_aware(_datetime.combine(end_date,   _time.min), tz)
+        metadata_json = {}
+
+    return _Event()
+
+
+def _range_boundary(date_val, is_end=False):
+    """날짜 경계값을 aware datetime으로 변환."""
+    tz = timezone.get_current_timezone()
+    t = _time.max if is_end else _time.min
+    return timezone.make_aware(_datetime.combine(date_val, t), tz)
+
+
+class EventOccursInRangeExclusiveEndTests(TestCase):
+    """end_at이 정확히 다음 날 00:00인 종일 이벤트가 다음 날 쿼리에 포함되지 않는지 검증."""
+
+    def test_friday_event_does_not_appear_on_saturday(self):
+        """금요일 종일 이벤트(exclusive end=토요일 00:00)는 토요일 쿼리에서 제외."""
+        friday = _date(2026, 2, 6)    # 금요일
+        saturday = _date(2026, 2, 7)  # 토요일
+
+        event = _make_event(friday, saturday)  # exclusive end = Sat 00:00
+        sat_start = _range_boundary(saturday, is_end=False)
+        sat_end   = _range_boundary(saturday, is_end=True)
+
+        # 토요일 쿼리에서 금요일 이벤트가 나타나서는 안 됨
+        result = _event_occurs_in_range(event, sat_start, sat_end)
+        self.assertFalse(result, '금요일 종일 이벤트가 토요일에 표시되면 안 됩니다.')
+
+    def test_friday_event_appears_on_friday(self):
+        """금요일 종일 이벤트는 금요일 쿼리에서 반드시 포함."""
+        friday   = _date(2026, 2, 6)
+        saturday = _date(2026, 2, 7)
+
+        event = _make_event(friday, saturday)
+        fri_start = _range_boundary(friday, is_end=False)
+        fri_end   = _range_boundary(friday, is_end=True)
+
+        result = _event_occurs_in_range(event, fri_start, fri_end)
+        self.assertTrue(result, '금요일 종일 이벤트가 금요일에 표시되어야 합니다.')
+
+    def test_multi_day_event_appears_across_range(self):
+        """실제 다일 이벤트는 기간 전체에 표시."""
+        mon = _date(2026, 6, 1)   # 월
+        fri = _date(2026, 6, 5)   # 금
+
+        event = _make_event(mon, fri)  # 월~금 5일
+        # 수요일 쿼리
+        wed_start = _range_boundary(_date(2026, 6, 3), is_end=False)
+        wed_end   = _range_boundary(_date(2026, 6, 3), is_end=True)
+
+        result = _event_occurs_in_range(event, wed_start, wed_end)
+        self.assertTrue(result, '다일 이벤트가 중간 날짜에도 표시되어야 합니다.')
+
+    def test_all_day_event_end_equals_next_day_not_shown_next_day(self):
+        """종일 이벤트 end_at=D+1 00:00 일 때 D+1에 표시되지 않음."""
+        d     = _date(2026, 3, 5)
+        d_p1  = _date(2026, 3, 6)
+
+        event = _make_event(d, d_p1)
+        d_p1_start = _range_boundary(d_p1, is_end=False)
+        d_p1_end   = _range_boundary(d_p1, is_end=True)
+
+        self.assertFalse(_event_occurs_in_range(event, d_p1_start, d_p1_end),
+                         '종일 이벤트가 다음 날에 표시되면 안 됩니다.')
+
+    def test_saturday_national_holiday_appears_on_saturday(self):
+        """토요일 공식 공휴일(start=토, end=일 00:00)은 토요일 쿼리에 포함."""
+        saturday = _date(2026, 6, 6)   # 현충일 (토요일)
+        sunday   = _date(2026, 6, 7)
+
+        event = _make_event(saturday, sunday)
+        sat_start = _range_boundary(saturday, is_end=False)
+        sat_end   = _range_boundary(saturday, is_end=True)
+
+        self.assertTrue(_event_occurs_in_range(event, sat_start, sat_end),
+                        '토요일 공휴일은 토요일에 표시되어야 합니다.')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. generated_class_on_korean_holiday → blocking 경고 테스트
+# ──────────────────────────────────────────────────────────────────────────────
+class HolidayBlockingWarningTests(TestCase):
+    """generated_class_on_korean_holiday 경고가 이제 blocking임을 검증."""
+
+    def test_generated_class_on_korean_holiday_is_blocking(self):
+        self.assertTrue(
+            is_blocking_generated_schedule_warning('generated_class_on_korean_holiday'),
+            'generated_class_on_korean_holiday은 blocking 경고여야 합니다.',
+        )
+
+    def test_existing_blocking_warnings_unchanged(self):
+        for w in ('timetable_title_equals_source_title', 'non_positive_duration', 'source_title_period_mismatch'):
+            with self.subTest(warning=w):
+                self.assertTrue(is_blocking_generated_schedule_warning(w))
+
+    def test_non_blocking_warning_unchanged(self):
+        self.assertFalse(is_blocking_generated_schedule_warning('unknown_warning'))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. 캘린더 API 토요일 누출 통합 테스트
+# ──────────────────────────────────────────────────────────────────────────────
+@override_settings(SECURE_SSL_REDIRECT=False)
+class SaturdayLeakIntegrationTests(TestCase):
+    """금요일 종일 이벤트가 토요일 쿼리에서 반환되지 않는지 API 레벨에서 검증."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username='sat-test', email='sat@example.com', password='pw'
+        )
+        self.client.force_login(self.user)
+
+        tz = timezone.get_current_timezone()
+        friday   = _date(2026, 2, 6)
+        saturday = _date(2026, 2, 7)
+
+        self.fri_event = ScheduleEvent.objects.create(
+            title='금요일 수업',
+            start_at=timezone.make_aware(_datetime.combine(friday, _time.min), tz),
+            end_at=timezone.make_aware(_datetime.combine(saturday, _time.min), tz),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'is_timetable': True},
+        )
+
+    def test_friday_event_not_in_saturday_api_response(self):
+        """API GET ?start=2026-02-07&end=2026-02-07 에서 금요일 이벤트 미포함."""
+        resp = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-02-07', 'end': '2026-02-07'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        ids = [e['id'] for e in resp.json()]
+        self.assertNotIn(self.fri_event.id, ids,
+                         '금요일 이벤트가 토요일 API 응답에 포함되면 안 됩니다.')
+
+    def test_friday_event_in_friday_api_response(self):
+        """API GET ?start=2026-02-06&end=2026-02-06 에서 금요일 이벤트 포함."""
+        resp = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-02-06', 'end': '2026-02-06'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        ids = [e['id'] for e in resp.json()]
+        self.assertIn(self.fri_event.id, ids,
+                      '금요일 이벤트가 금요일 API 응답에 포함되어야 합니다.')
+
+    def test_saturday_national_holiday_still_in_saturday_api_response(self):
+        """토요일 공식 공휴일은 토요일 API에서 반환."""
+        tz = timezone.get_current_timezone()
+        saturday = _date(2026, 6, 6)
+        sunday   = _date(2026, 6, 7)
+        hol = ScheduleEvent.objects.create(
+            title='현충일',
+            start_at=timezone.make_aware(_datetime.combine(saturday, _time.min), tz),
+            end_at=timezone.make_aware(_datetime.combine(sunday, _time.min), tz),
+            is_all_day=True,
+            event_type='holiday',
+            source_type='national_holiday',
+        )
+        resp = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-06-06', 'end': '2026-06-06'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        ids = [e['id'] for e in resp.json()]
+        self.assertIn(hol.id, ids, '토요일 공휴일은 토요일 API에 포함되어야 합니다.')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. 커뮤니티 URL 등록 확인 (fix/mvp-qa에서 community가 등록됐는지)
+# ──────────────────────────────────────────────────────────────────────────────
+class CommunityUrlRegistrationTests(TestCase):
+    """fix/mvp-qa 브랜치에서 커뮤니티 URL이 등록됐는지 확인."""
+
+    COMMUNITY_LIST_URL = '/api/v1/community/posts/'
+    COMMUNITY_DETAIL_URL = '/api/v1/community/posts/999999/'
+
+    def test_community_list_url_resolves(self):
+        """커뮤니티 게시글 목록 URL이 URL-conf에 등록돼 있는지 resolve로 확인."""
+        from django.urls import resolve, Resolver404
+        try:
+            resolve(self.COMMUNITY_LIST_URL)
+        except Resolver404:
+            self.fail(f'{self.COMMUNITY_LIST_URL} 가 URL conf에 등록되지 않았습니다.')
+
+    def test_community_list_http_not_404_from_urlconf(self):
+        """GET /api/v1/community/posts/ 가 URL 미등록 404가 아님 (401/403/200 중 하나)."""
+        resp = self.client.get(self.COMMUNITY_LIST_URL)
+        self.assertIn(
+            resp.status_code, [200, 401, 403],
+            f'커뮤니티 목록 URL 이 예상치 못한 상태 코드 반환: {resp.status_code}',
+        )
+
+    def test_community_named_urls_exist(self):
+        """named URL reverse가 가능한지 확인."""
+        from django.urls import reverse as _r, NoReverseMatch
+        for name in ('community-post-list', 'community-comment-list'):
+            try:
+                if 'comment' in name:
+                    _r(name, kwargs={'post_id': 1})
+                else:
+                    _r(name)
+            except NoReverseMatch:
+                self.fail(f'named URL {name!r} 가 등록되지 않았습니다.')
+
+    def test_community_url_not_a_registration_404(self):
+        """/api/v1/community/posts/ 는 등록된 URL이므로 URLconf 404가 아님."""
+        from django.urls import resolve, Resolver404
+        try:
+            resolve(self.COMMUNITY_LIST_URL)
+        except Resolver404:
+            self.fail(f'{self.COMMUNITY_LIST_URL} 가 URL conf에 등록되지 않았습니다.')
