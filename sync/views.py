@@ -754,6 +754,9 @@ def _is_common_notice_track(track_key, source_value, metadata):
         return True
     if track_key == COMMON_TRACK_KEY:
         return True
+    # Notices with no track information are visible to everyone.
+    if not source_value and not track_key:
+        return True
     return str(source_value or '').strip().lower() in {'common', 'all', 'global', '공통', '전체'}
 
 
