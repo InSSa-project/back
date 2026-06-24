@@ -6,7 +6,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.calendar.models import HiddenCalendarEvent, UserScheduleEvent
+from apps.calendar.models import UserScheduleEvent
 from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
@@ -149,15 +149,18 @@ class CalendarApiTests(TestCase):
             'is_common',
             'is_global',
             'source_url',
-            'user_friendly_description',
-            'display_memo',
+            'can_edit',
+            'can_delete',
+            'is_user_override',
         ]:
             self.assertIn(field, item)
         self.assertEqual(item['display_title'], 'SSAFY real schedule')
         self.assertEqual(item['track_key'], 'python')
         self.assertEqual(item['source_url'], 'https://edu.ssafy.com/notices/real')
         self.assertEqual(item['description'], 'parsed schedule')
-        self.assertEqual(item['display_memo'], '')
+        self.assertTrue(item['can_edit'])
+        self.assertTrue(item['can_delete'])
+        self.assertFalse(item['is_user_override'])
         self.assertTrue(item['is_global'])
         self.assertFalse(item['is_common'])
 
@@ -307,8 +310,9 @@ class CalendarApiTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertTrue(ScheduleEvent.objects.filter(pk=event.id).exists())
 
-    def test_user_memo_does_not_change_shared_event_description(self):
+    def test_shared_event_patch_creates_user_override_without_changing_original(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        new_start_at = timezone.make_aware(timezone.datetime(2026, 6, 12, 13, 0))
         event = ScheduleEvent.objects.create(
             title='Shared SSAFY schedule',
             description='Shared description',
@@ -319,28 +323,71 @@ class CalendarApiTests(TestCase):
             metadata_json={'track_key': 'all', 'is_common': True},
         )
         other_user = get_user_model().objects.create_user(
-            username='memo-other-user',
-            email='memo-other-user@example.com',
+            username='override-other-user',
+            email='override-other-user@example.com',
             password='password',
         )
         UserProfile.objects.create(user=other_user, track='Python')
 
         response = self.client.patch(
             reverse('calendar-event-detail', args=[event.id]),
-            data=json.dumps({'memo': 'My private note'}),
+            data=json.dumps(
+                {
+                    'title': 'My edited schedule',
+                    'description': 'My edited description',
+                    'event_type': 'project',
+                    'start_at': new_start_at.isoformat(),
+                    'end_at': (new_start_at + timedelta(hours=2)).isoformat(),
+                    'is_all_day': False,
+                }
+            ),
             content_type='application/json',
         )
 
         event.refresh_from_db()
         self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertEqual(payload['title'], 'My edited schedule')
+        self.assertEqual(payload['description'], 'My edited description')
+        self.assertEqual(payload['event_type'], 'project')
+        self.assertFalse(payload['is_all_day'])
+        self.assertTrue(payload['is_user_override'])
+        self.assertNotIn('memo', payload)
+        self.assertNotIn('display_memo', payload)
+        self.assertNotIn('user_friendly_description', payload)
+        self.assertEqual(event.title, 'Shared SSAFY schedule')
         self.assertEqual(event.description, 'Shared description')
-        self.assertEqual(response.json()['data']['display_memo'], 'My private note')
-        self.assertEqual(UserScheduleEvent.objects.get(user=self.user, schedule_event=event).memo, 'My private note')
+        link = UserScheduleEvent.objects.get(user=self.user, schedule_event=event)
+        self.assertEqual(link.override_title, 'My edited schedule')
+        self.assertEqual(link.override_description, 'My edited description')
 
         self.client.force_login(other_user)
         other_response = self.client.get(reverse('calendar-event-detail', args=[event.id]))
         self.assertEqual(other_response.status_code, 200)
-        self.assertEqual(other_response.json()['data']['display_memo'], '')
+        self.assertEqual(other_response.json()['data']['title'], 'Shared SSAFY schedule')
+        self.assertEqual(other_response.json()['data']['description'], 'Shared description')
+        self.assertFalse(other_response.json()['data']['is_user_override'])
+
+    def test_memo_only_patch_is_not_supported(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Shared SSAFY schedule',
+            description='Shared description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+
+        response = self.client.patch(
+            reverse('calendar-event-detail', args=[event.id]),
+            data=json.dumps({'memo': 'Not a supported field'}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(UserScheduleEvent.objects.filter(user=self.user, schedule_event=event).exists())
 
     def test_delete_calendar_event_hides_public_event_for_user(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
@@ -356,7 +403,11 @@ class CalendarApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(ScheduleEvent.objects.filter(pk=event.id).exists())
-        self.assertTrue(HiddenCalendarEvent.objects.filter(user=self.user, schedule_event=event).exists())
+        self.assertTrue(UserScheduleEvent.objects.get(user=self.user, schedule_event=event).is_hidden)
+
+        second_response = self.client.delete(reverse('calendar-event-detail', args=[event.id]))
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(UserScheduleEvent.objects.filter(user=self.user, schedule_event=event).count(), 1)
 
         list_response = self.client.get(reverse('calendar-events'))
         self.assertEqual(list_response.status_code, 200)
@@ -377,10 +428,60 @@ class CalendarApiTests(TestCase):
             event_type='notice',
             source_type='notice',
         )
-        HiddenCalendarEvent.objects.create(user=self.user, schedule_event=event)
+        UserScheduleEvent.objects.create(user=self.user, schedule_event=event, is_hidden=True)
 
         self.client.force_login(other_user)
         response = self.client.get(reverse('calendar-events'))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item['id'] for item in response.json()['data']], [event.id])
+
+    def test_personal_event_patch_updates_owned_event(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            owner=self.user,
+            title='Personal schedule',
+            description='old',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+
+        response = self.client.patch(
+            reverse('calendar-event-detail', args=[event.id]),
+            data=json.dumps({'title': 'Updated personal schedule', 'description': 'new'}),
+            content_type='application/json',
+        )
+
+        event.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(event.title, 'Updated personal schedule')
+        self.assertEqual(event.description, 'new')
+        self.assertFalse(UserScheduleEvent.objects.filter(user=self.user, schedule_event=event).exists())
+
+    def test_holiday_patch_and_delete_are_read_only(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 6, 0, 0))
+        event = ScheduleEvent.objects.create(
+            title='현충일',
+            description='',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='holiday',
+            source_type='national_holiday',
+            metadata_json={'is_public_holiday': True, 'track_key': 'all', 'is_common': True},
+        )
+
+        patch_response = self.client.patch(
+            reverse('calendar-event-detail', args=[event.id]),
+            data=json.dumps({'title': 'Edited holiday'}),
+            content_type='application/json',
+        )
+        delete_response = self.client.delete(reverse('calendar-event-detail', args=[event.id]))
+
+        self.assertEqual(patch_response.status_code, 403)
+        self.assertEqual(patch_response.json()['code'], 'HOLIDAY_READ_ONLY')
+        self.assertEqual(delete_response.status_code, 403)
+        self.assertEqual(delete_response.json()['code'], 'HOLIDAY_READ_ONLY')
+        self.assertTrue(ScheduleEvent.objects.filter(pk=event.id).exists())

@@ -12,12 +12,13 @@ DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
 DATE_HEADER_PATTERN = re.compile(r'^(?:(?P<month>[1-9]|1[0-2])\s*월\s*)?(?P<day>\d{1,2})\s*일(?:\s*\([^)]*\))?$')
 INLINE_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
 TIME_TOKEN_PATTERN = r'\d{1,2}\s*:\s*\d{2}'
+OCR_TIME_FRAGMENT_PATTERN = r'\d{1,2}\s*(?:~|-)\s*\d{1,2}'
 TIME_ONLY_PATTERN = re.compile(
-    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*$',
+    rf'^\s*(?:{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?|{OCR_TIME_FRAGMENT_PATTERN})\s*$',
     re.IGNORECASE,
 )
 LEADING_TIME_RANGE_PATTERN = re.compile(
-    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*',
+    rf'^\s*(?:{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?|{OCR_TIME_FRAGMENT_PATTERN})\s*:?\s*',
     re.IGNORECASE,
 )
 EVENT_KEYWORDS = [
@@ -318,8 +319,11 @@ def _has_il_following(box, boxes):
 def _looks_like_timetable_day_header(box, boxes):
     weekday_boxes = [
         other for other in boxes
-        if str(other.get('text') or '').strip().upper() in WEEKDAY_HEADERS
-        or str(other.get('text') or '').strip() in KOREAN_WEEKDAY_HEADERS
+        if (
+            str(other.get('text') or '').strip().upper() in WEEKDAY_HEADERS
+            or str(other.get('text') or '').strip() in KOREAN_WEEKDAY_HEADERS
+        )
+        and not _is_date_token_fragment(other, boxes)
     ]
     if not weekday_boxes:
         return False
@@ -327,6 +331,25 @@ def _looks_like_timetable_day_header(box, boxes):
     horizontally_aligned = abs(nearest_weekday['cx'] - box['cx']) <= 55
     below_weekday = 0 <= box['y1'] - nearest_weekday['y2'] <= 80
     return horizontally_aligned and below_weekday
+
+
+def _is_date_token_fragment(box, boxes):
+    text = str(box.get('text') or '').strip()
+    if text.upper() in WEEKDAY_HEADERS:
+        return False
+    if text not in KOREAN_WEEKDAY_HEADERS and text not in {'월', '일'}:
+        return False
+    for other in boxes:
+        if other is box:
+            continue
+        other_text = str(other.get('text') or '').strip()
+        same_line = abs(other['cy'] - box['cy']) <= max(18, box['y2'] - box['y1'])
+        if not same_line:
+            continue
+        nearby = -35 <= other['x1'] - box['x2'] <= 35 or -35 <= box['x1'] - other['x2'] <= 35
+        if nearby and (DAY_PATTERN.match(other_text) or other_text in {'월', '일'}):
+            return True
+    return False
 
 
 def _dedupe_month_headers(month_headers):
@@ -581,9 +604,11 @@ def _continues_timetable_item(previous_text, next_text):
     next_value = str(next_text or '').strip()
     if not next_value:
         return False
-    if previous.endswith((':', '(', '[', '/', '&')):
+    if previous.endswith((':', '(', '[', '/', '&', '-', '"')):
         return True
-    if next_value.startswith(('&', '/', ')', ']')):
+    if next_value.startswith(('&', '/', ')', ']', '"')):
+        return True
+    if previous.count('"') % 2 == 1:
         return True
     if re.match(r'^[a-z]', next_value):
         return True
@@ -732,6 +757,7 @@ def _clean_timetable_title(text, source_title=''):
     text = _remove_leading_time_range(text)
     text = _remove_timetable_noise_prefixes(text)
     text = _normalize_timetable_spacing(text)
+    text = _normalize_timetable_special_title(text)
     if not text:
         return ''
     compact = _compact_text(text)
@@ -750,7 +776,19 @@ def _clean_timetable_title(text, source_title=''):
     return _prefix_timetable_title(text)[:255]
 
 
+def _normalize_timetable_special_title(text):
+    normalized = str(text or '').strip(' :-|()~')
+    normalized = re.sub(r'^[\s:;\-|]+', '', normalized)
+    normalized = normalized.strip('[]')
+    compact = _compact_text(normalized)
+    if '실습' in compact and 'Q&A' in compact:
+        return '실습 및 Q&A'
+    return normalized
+
+
 def _remove_timetable_noise_prefixes(text):
+    text = re.sub(r'^\s*\[\s*LIVE\b[^\]]*\]\s*', '', str(text or ''), flags=re.IGNORECASE)
+    text = re.sub(r'^\s*\[?\s*LIVE\b\s+\S+\s*\]?\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'^\s*\[\s*LIVE\s*방송\s*\]\s*', '', str(text or ''), flags=re.IGNORECASE)
     text = re.sub(r'^\s*\[?\s*LIVE\s*방송\s*\]?\s*', '', text, flags=re.IGNORECASE)
     return text.strip(' :-|()~')
@@ -758,11 +796,14 @@ def _remove_timetable_noise_prefixes(text):
 
 def _normalize_timetable_spacing(text):
     text = re.sub(r'\s+', ' ', str(text or '').replace('\n', ' ')).strip()
+    text = re.sub(r'\s*"\s*', ' ', text)
     text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
     text = re.sub(r'\s*:\s*', ': ', text)
+    text = re.sub(r':\s*[-~]+\s*', ': ', text)
     text = re.sub(r'\s*/\s*', ' / ', text)
     text = re.sub(r'\[\s*', '[', text)
     text = re.sub(r'\s*\]', ']', text)
+    text = re.sub(r'(?<=[A-Za-z0-9가-힣])\s*-\s+(?=[A-Za-z가-힣])', ' ', text)
     text = re.sub(r'\s*&\s*', ' & ', text)
     text = re.sub(r'\bQ\s*&\s*A\b', 'Q&A', text, flags=re.IGNORECASE)
     text = re.sub(r'\b(JS|Django)\s+(?=[A-Za-z])', r'\1: ', text)
@@ -772,11 +813,7 @@ def _normalize_timetable_spacing(text):
 
 
 def _prefix_timetable_title(text):
-    if _has_timetable_non_learning_marker(text):
-        return text
-    if text.startswith('[학습]'):
-        return text
-    return f'[학습] {text}'
+    return str(text or '').strip()
 
 
 def _has_timetable_non_learning_marker(text):

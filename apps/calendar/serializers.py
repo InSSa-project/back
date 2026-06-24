@@ -8,12 +8,19 @@ from sync.models import RawSsafyData
 from sync.services.tracks import COMMON_TRACK_KEY, normalize_track_key
 
 from .models import UserScheduleEvent
+from .services import effective_event_value, has_user_override, is_holiday_event
 
 
 COMMON_TRACK_VALUES = {'', COMMON_TRACK_KEY, 'common', 'all', 'global', '공통', '전체'}
 
 
 class ScheduleEventSerializer(serializers.ModelSerializer):
+    title = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    start_at = serializers.SerializerMethodField()
+    end_at = serializers.SerializerMethodField()
+    is_all_day = serializers.SerializerMethodField()
+    event_type = serializers.SerializerMethodField()
     metadata = serializers.JSONField(source='metadata_json', read_only=True)
     raw_data_id = serializers.SerializerMethodField()
     source_url = serializers.SerializerMethodField()
@@ -25,10 +32,11 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
     is_generated = serializers.SerializerMethodField()
     display_title = serializers.SerializerMethodField()
     deadline_at = serializers.SerializerMethodField()
-    display_memo = serializers.SerializerMethodField()
-    user_friendly_description = serializers.SerializerMethodField()
     track = serializers.SerializerMethodField()
     track_key = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
+    is_user_override = serializers.SerializerMethodField()
 
     class Meta:
         model = ScheduleEvent
@@ -37,8 +45,6 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
             'title',
             'display_title',
             'description',
-            'display_memo',
-            'user_friendly_description',
             'start_at',
             'end_at',
             'deadline_at',
@@ -56,6 +62,9 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
             'is_common',
             'is_global',
             'is_generated',
+            'can_edit',
+            'can_delete',
+            'is_user_override',
             'owner_id',
             'created_by_id',
             'created_at',
@@ -67,6 +76,24 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
         if event.raw_data_id:
             return event.raw_data_id
         return (event.metadata_json or {}).get('raw_data_id')
+
+    def get_title(self, event):
+        return effective_event_value(event, self._request_user(), 'title')
+
+    def get_description(self, event):
+        return effective_event_value(event, self._request_user(), 'description') or ''
+
+    def get_start_at(self, event):
+        return self._datetime_value(effective_event_value(event, self._request_user(), 'start_at'))
+
+    def get_end_at(self, event):
+        return self._datetime_value(effective_event_value(event, self._request_user(), 'end_at'))
+
+    def get_is_all_day(self, event):
+        return bool(effective_event_value(event, self._request_user(), 'is_all_day'))
+
+    def get_event_type(self, event):
+        return effective_event_value(event, self._request_user(), 'event_type')
 
     def get_source_url(self, event):
         raw_data = self._raw_data(event)
@@ -107,6 +134,9 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
         )
 
     def get_display_title(self, event):
+        user_title = effective_event_value(event, self._request_user(), 'title')
+        if user_title != event.title:
+            return normalize_schedule_display_title(user_title) or user_title
         metadata = event.metadata_json or {}
         display_title = str(metadata.get('display_title') or '').strip()
         if display_title:
@@ -123,15 +153,6 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
         )
         return timezone.localtime(deadline_at).isoformat() if deadline_at else None
 
-    def get_display_memo(self, event):
-        user_memo = self._user_memo(event)
-        if user_memo:
-            return user_memo
-        return ''
-
-    def get_user_friendly_description(self, event):
-        return self.get_display_memo(event)
-
     def get_track(self, event):
         return self.get_track_key(event)
 
@@ -140,6 +161,15 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
         if self.get_is_common(event):
             return COMMON_TRACK_KEY
         return track_key
+
+    def get_can_edit(self, event):
+        return not is_holiday_event(event)
+
+    def get_can_delete(self, event):
+        return not is_holiday_event(event)
+
+    def get_is_user_override(self, event):
+        return has_user_override(event, self._request_user())
 
     def _raw_track_key(self, event):
         metadata = event.metadata_json or {}
@@ -163,13 +193,14 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
         except (TypeError, ValueError):
             return None
 
-    def _user_memo(self, event):
+    def _request_user(self):
         request = self.context.get('request')
-        user = getattr(request, 'user', None) if request is not None else None
-        if user is None or not getattr(user, 'is_authenticated', False):
-            return ''
-        link = UserScheduleEvent.objects.filter(user=user, schedule_event=event).only('memo').first()
-        return str(link.memo or '').strip() if link else ''
+        return getattr(request, 'user', None) if request is not None else None
+
+    def _datetime_value(self, value):
+        if value is None:
+            return None
+        return timezone.localtime(value).isoformat()
 
     def _parse_metadata_datetime(self, value):
         if not value:
