@@ -113,10 +113,7 @@ def _build_report():
         'media_root': str(media_root),
         'media_root_exists': media_root.exists(),
         'debug_mode': bool(getattr(settings, 'DEBUG', False)),
-        'supabase_configured': bool(
-            getattr(settings, 'SUPABASE_URL', '') and getattr(settings, 'SUPABASE_SERVICE_ROLE_KEY', '')
-        ),
-        'supabase_bucket': getattr(settings, 'SUPABASE_STORAGE_BUCKET', '(not set)'),
+        'media_root_configured': bool(getattr(settings, 'MEDIA_ROOT', '')),
     }
 
 
@@ -202,8 +199,7 @@ def _print_report(stdout, r):
     stdout.write(f'  MEDIA_ROOT:       {r["media_root"]}')
     stdout.write(f'  MEDIA_ROOT 존재:  {r["media_root_exists"]}')
     stdout.write(f'  DEBUG:            {r["debug_mode"]}')
-    stdout.write(f'  Supabase 설정:    {r["supabase_configured"]}')
-    stdout.write(f'  Supabase 버킷:    {r["supabase_bucket"]}')
+    stdout.write(f'  MEDIA_ROOT 설정:  {r["media_root_configured"]}')
 
     if r['local_file_missing'] > 0:
         stdout.write('')
@@ -218,12 +214,10 @@ def _print_report(stdout, r):
             stdout.write(f'  id={item["notice_id"]} host={item["host"]} url={item["url"]}')
 
     stdout.write('')
-    if r['local_file_missing'] > 0 and not r['supabase_configured']:
-        stdout.write('[경고] 로컬 파일이 없는 URL이 있고 Supabase도 미설정 상태입니다.')
-        stdout.write('       SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY 설정 후 backfill_notice_images 실행 필요.')
-    elif r['ssafy_cdn_urls'] > 0 and not r['supabase_configured']:
-        stdout.write('[경고] SSAFY CDN URL이 아직 남아있습니다. Supabase 설정 후 backfill 실행 필요.')
-    elif r['supabase_configured'] and r['ssafy_cdn_urls'] > 0:
-        stdout.write('[권장] Supabase 설정됨. backfill_notice_images --dry-run 으로 이전 대상 확인 후 실행.')
+    if r['local_file_missing'] > 0:
+        stdout.write('[경고] 로컬 파일이 없는 URL이 있습니다.')
+        stdout.write('       Oracle Cloud에서는 MEDIA_ROOT를 영속 디스크로 설정한 뒤 backfill_notice_images 실행이 필요합니다.')
+    elif r['ssafy_cdn_urls'] > 0:
+        stdout.write('[경고] SSAFY CDN URL이 아직 남아있습니다. backfill_notice_images --dry-run 후 실행이 필요합니다.')
     else:
         stdout.write('[정상] 모든 이미지가 영속 storage URL을 사용 중입니다.')

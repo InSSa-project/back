@@ -1,17 +1,21 @@
 import html
 import json
 import logging
+import mimetypes
 import re
 from datetime import date, datetime
+from pathlib import Path
 from urllib.parse import urlencode, urljoin
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
-from django.http import JsonResponse
+from django.http import FileResponse, JsonResponse
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.html import strip_tags
+from django.utils.http import http_date
 from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
@@ -131,9 +135,8 @@ def notice_list(request):
         queryset = _apply_notice_search_queryset(queryset, search)
 
     category = normalize_notice_category(category)
-    if not track_filter and _explicit_all_scope(scope):
-        track_filter = COMMON_TRACK_KEY
-    if not track_filter and getattr(user, 'is_authenticated', False):
+    all_scope_requested = _explicit_all_scope(scope) or _explicit_all_track(explicit_track_filter)
+    if not track_filter and getattr(user, 'is_authenticated', False) and not all_scope_requested:
         track_filter = _user_notice_track(user)
 
     rows = list(queryset)
@@ -145,7 +148,7 @@ def notice_list(request):
         track_key = _normalize_notice_track_key(track_filter)
         if track_key not in _supported_notice_track_keys():
             return JsonResponse({'detail': 'Unsupported track.'}, status=400)
-        if track_key == COMMON_TRACK_KEY and _explicit_all_track(explicit_track_filter):
+        if track_key == COMMON_TRACK_KEY and all_scope_requested:
             pass  # track=all 명시 요청 → 트랙 필터 없이 전체 반환
         elif track_key != COMMON_TRACK_KEY and category != 'mentoring':
             rows = [row for row in rows if _notice_matches_track(row, track_key)]
@@ -181,6 +184,27 @@ def notice_detail(request, raw_data_id):
     if raw_data is None:
         return JsonResponse({'detail': 'Notice not found.'}, status=404)
     return JsonResponse(_serialize_notice(raw_data, include_detail=True, request=request))
+
+
+@require_GET
+def notice_image(request, raw_data_id, image_index):
+    raw_data = user_visible_notice_queryset(RawSsafyData.objects.filter(pk=raw_data_id)).first()
+    if raw_data is None:
+        return JsonResponse({'detail': 'Notice image not found.'}, status=404)
+
+    image_entry = _notice_image_entry_for_index(raw_data, image_index)
+    image_path = _notice_image_local_path(image_entry, raw_data, image_index)
+    if not image_path or not image_path.is_file():
+        return JsonResponse({'detail': 'Notice image not found.'}, status=404)
+
+    stat = image_path.stat()
+    content_type = mimetypes.guess_type(str(image_path))[0] or 'application/octet-stream'
+    response = FileResponse(image_path.open('rb'), content_type=content_type)
+    response['Content-Length'] = str(stat.st_size)
+    response['Last-Modified'] = http_date(stat.st_mtime)
+    response['ETag'] = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+    response['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return response
 
 
 @require_GET
@@ -504,7 +528,7 @@ def _normalize_notice_image(candidate, index, raw_data, request=None, title=''):
     else:
         return None
 
-    url = _notice_image_url(source, raw_data, request=request)
+    url = _notice_image_url(source, raw_data, image_index=index, request=request)
     if not url:
         return None
 
@@ -524,9 +548,13 @@ def _normalize_notice_image(candidate, index, raw_data, request=None, title=''):
     return result
 
 
-def _notice_image_url(source, raw_data, request=None):
+def _notice_image_url(source, raw_data, image_index=0, request=None):
     # notice_images structured entry: prefer stable storage_url, fall back to source_url
     if isinstance(source, dict):
+        local_path = _notice_image_local_path(source, raw_data, image_index)
+        if local_path and local_path.is_file():
+            endpoint = reverse('notice-image', args=[raw_data.id, image_index])
+            return request.build_absolute_uri(endpoint) if request is not None else endpoint
         storage_url = str(source.get('storage_url') or '').strip()
         if storage_url.startswith(('http://', 'https://')):
             return storage_url
@@ -561,6 +589,65 @@ def _notice_image_url(source, raw_data, request=None):
     if source_url:
         return urljoin(source_url, url)
     return ''
+
+
+def _notice_image_entry_for_index(raw_data, image_index):
+    if image_index < 0:
+        return None
+    candidates = _notice_image_candidates(raw_data.metadata_json or {})
+    if image_index >= len(candidates):
+        return None
+    candidate = candidates[image_index]
+    if isinstance(candidate, str):
+        return {'url': candidate}
+    if isinstance(candidate, dict):
+        return candidate
+    return None
+
+
+def _notice_image_local_path(source, raw_data, image_index=0):
+    if not isinstance(source, dict):
+        return None
+    for key in ('storage_key', 'file_name', 'path', 'url', 'image_url', 'src'):
+        value = str(source.get(key) or '').strip()
+        if not value:
+            continue
+        path = _safe_notice_image_path(value, raw_data)
+        if path:
+            return path
+    return None
+
+
+def _safe_notice_image_path(value, raw_data):
+    if value.startswith(('http://', 'https://', '//', 'data:', 'javascript:', 'mailto:')):
+        return None
+    rel = value.split('?', 1)[0].split('#', 1)[0].replace('\\', '/').strip()
+    if rel.startswith('/media/'):
+        rel = rel[len('/media/'):]
+    elif rel.startswith('media/'):
+        rel = rel[len('media/'):]
+    elif rel.startswith('/static/') or rel.startswith('static/'):
+        return None
+    elif '/' not in rel:
+        rel = f'notices/{raw_data.id}/{rel}'
+
+    try:
+        media_root = Path(settings.MEDIA_ROOT).resolve()
+        path = (media_root / rel).resolve()
+        path.relative_to(media_root)
+    except (OSError, ValueError):
+        return None
+
+    notice_dir = (media_root / 'notices' / str(raw_data.id)).resolve()
+    try:
+        path.relative_to(notice_dir)
+        return path
+    except ValueError:
+        pass
+
+    if value.startswith(('/media/', 'media/')):
+        return path
+    return None
 
 
 def _notice_schedule_events(raw_data, include_metadata_links=False):
