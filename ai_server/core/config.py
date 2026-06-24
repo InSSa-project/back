@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     max_schedule_answer_items: int = Field(default=8, alias='MAX_SCHEDULE_ANSWER_ITEMS')
     max_context_chunks: int = Field(default=4, alias='MAX_CONTEXT_CHUNKS')
     max_few_shots: int = Field(default=2, alias='MAX_FEW_SHOTS')
+    lora_reasoner_enabled: bool = Field(default=False, alias='LORA_REASONER_ENABLED')
+    lora_base_model: str = Field(default='Qwen/Qwen2.5-3B-Instruct', alias='LORA_BASE_MODEL')
+    lora_adapter_path: str = Field(
+        default='ai_server/finetuning/outputs/inssa_qwen2_5_3b_mvp',
+        alias='LORA_ADAPTER_PATH',
+    )
+    lora_max_new_tokens: int = Field(default=180, alias='LORA_MAX_NEW_TOKENS')
+    lora_temperature: float = Field(default=0.2, alias='LORA_TEMPERATURE')
+    lora_top_p: float = Field(default=0.85, alias='LORA_TOP_P')
+    lora_repetition_penalty: float = Field(default=1.2, alias='LORA_REPETITION_PENALTY')
 
     class Config:
         env_file = '.env'

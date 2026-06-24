@@ -24,6 +24,7 @@ class FastAPIAIClient:
                 json={
                     'session_id': session_id,
                     'message': message,
+                    'conversation_context': self._conversation_context(user, session_id),
                     'user_context': {
                         'user_id': user.id,
                         'campus': getattr(user, 'campus', ''),
@@ -54,6 +55,33 @@ class FastAPIAIClient:
 
         payload['references'] = [self._normalize_reference(ref) for ref in payload.get('references', [])]
         return payload
+
+    def _conversation_context(self, user, session_id, limit=8):
+        if not session_id:
+            return []
+        try:
+            session = ChatSession.objects.filter(id=session_id, user=user).first()
+            if not session:
+                return []
+            messages = list(
+                session.messages.order_by('-created_at', '-id')
+                .values('role', 'content', 'created_at')[:limit]
+            )
+        except Exception:
+            return []
+        result = []
+        for message in reversed(messages):
+            content = str(message.get('content') or '').strip()
+            if not content:
+                continue
+            result.append(
+                {
+                    'role': str(message.get('role') or '').lower(),
+                    'content': content[:700],
+                    'created_at': message.get('created_at').isoformat() if message.get('created_at') else '',
+                }
+            )
+        return result
 
     def _error_payload(self, answer, mode, exc=None):
         usage = {'mode': mode}

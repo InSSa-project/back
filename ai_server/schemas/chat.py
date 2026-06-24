@@ -13,6 +13,7 @@ class ChatRequest(BaseModel):
     session_id: int | None = None
     message: str
     user_context: UserContext
+    conversation_context: list[dict] = Field(default_factory=list)
     stream: bool = False
 
 

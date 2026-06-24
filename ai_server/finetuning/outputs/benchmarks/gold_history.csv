@@ -1,0 +1,10 @@
+created_at,run_dir,total,avg_score,pass_rate,avg_latency_ms
+2026-06-24T14:10:29,ai_server\finetuning\outputs\benchmarks\20260624_141003_gold_lora_smoke,3,11.5,0.0,8697.7
+2026-06-24T14:11:57,ai_server\finetuning\outputs\benchmarks\20260624_141143_gold_lora_smoke_fixed,3,11.5,0.0,4606.7
+2026-06-24T14:13:13,ai_server\finetuning\outputs\benchmarks\20260624_141232_gold_lora_smoke_ok,3,12.5,0.0,13930.0
+2026-06-24T14:15:48,ai_server\finetuning\outputs\benchmarks\20260624_141415_gold_lora_direct_smoke,3,7.4,0.0,31244.3
+2026-06-24T14:25:29,ai_server\finetuning\outputs\benchmarks\20260624_142422_readable_lora_report_check,2,15.8,0.0,33608.5
+2026-06-24T14:38:55,ai_server\finetuning\outputs\benchmarks\20260624_143109_lora_gold_full_before_retrain,100,2.1,0.0,4660.2
+2026-06-24T14:45:30,ai_server\finetuning\outputs\benchmarks\20260624_144303_lora_gold_force_smoke,5,12.2,0.0,29364.6
+2026-06-24T14:57:07,ai_server\finetuning\outputs\benchmarks\20260624_145559_rubric_lora_smoke,2,80.1,100.0,34119.0
+2026-06-24T16:07:36,ai_server\finetuning\outputs\benchmarks\20260624_152813_rubric_lora_full_fast,100,57.3,61.0,13840.2
