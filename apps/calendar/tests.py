@@ -40,8 +40,13 @@ class CalendarApiTests(TestCase):
         self.assertIsNone(payload[0]['raw_data_id'])
         self.assertIsNone(payload[0]['source_url'])
 
-    def test_calendar_events_do_not_apply_user_visible_notice_source_policy(self):
-        hidden_raw = RawSsafyData.objects.create(source_type='geeknews', title='Hidden reference', raw_text='body')
+    def test_calendar_events_exclude_hidden_reference_sources(self):
+        hidden_raw = RawSsafyData.objects.create(
+            source_type='mentoring_qna',
+            source_url='https://edu.ssafy.com/edu/board/mentoQna/detail.do?id=1',
+            title='Hidden reference',
+            raw_text='body',
+        )
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
         rawless_event = ScheduleEvent.objects.create(
             title='Rawless notice schedule',
@@ -52,20 +57,49 @@ class CalendarApiTests(TestCase):
         )
         hidden_source_event = ScheduleEvent.objects.create(
             raw_data=hidden_raw,
-            title='Hidden source schedule still visible on calendar',
+            title='Hidden source schedule',
             start_at=start_at + timedelta(hours=1),
             end_at=start_at + timedelta(hours=2),
             event_type='notice',
-            source_type='geeknews',
+            source_type='notice',
+        )
+        metadata_only_hidden_event = ScheduleEvent.objects.create(
+            title='Metadata-only mentor schedule',
+            start_at=start_at + timedelta(hours=2),
+            end_at=start_at + timedelta(hours=3),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={
+                'raw_data_id': hidden_raw.id,
+                'source_url': hidden_raw.source_url,
+            },
         )
 
         response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
 
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(metadata_only_hidden_event.id)
         self.assertEqual(
             {item['id'] for item in response.json()['data']},
-            {rawless_event.id, hidden_source_event.id},
+            {rawless_event.id},
         )
+
+    def test_calendar_events_do_not_hide_public_notice_for_user_profile(self):
+        UserProfile.objects.create(user=self.user, track='Python')
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Java public notice schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track_key': 'java_major', 'is_common': False},
+        )
+
+        response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.json()['data']], [event.id])
 
     def test_calendar_events_include_generated_ssafy_event_with_required_fields(self):
         UserProfile.objects.create(user=self.user, track='Python')

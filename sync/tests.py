@@ -35,6 +35,7 @@ from sync.services.ssafy_crawler import (
     get_last_collection_debug,
     load_ssafy_authenticated_documents,
     _extract_detail_url_from_onclick,
+    _extract_mentoring_qna_links,
     _extract_pagination_totals,
     _filter_controls_debug,
     _pagination_controls_debug,
@@ -244,6 +245,28 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(second_log.skipped_count, 1)
         self.assertEqual(RawSsafyData.objects.count(), 1)
         self.assertEqual(ScheduleEvent.objects.count(), 1)
+
+    def test_duplicate_notice_without_schedule_event_is_reparsed(self):
+        item = _notice_item('https://example.com/notices/missing-event', 'notice-missing-event')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=item['source_url'],
+            title=item['title'],
+            raw_text=item['raw_text'],
+            raw_html=item['raw_html'],
+            metadata_json=item['metadata_json'],
+            status=RawSsafyData.STATUS_PARSED,
+        )
+
+        with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+            job_log = run_notice_import(mode='ssafy_notice')
+
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.event_count, 1)
+        self.assertEqual(job_log.skipped_count, 1)
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.get().raw_data.source_url, item['source_url'])
 
     def test_schedule_event_api_handles_existing_duplicate_rows(self):
         run_sample_notice_import()
@@ -1380,7 +1403,9 @@ class SampleNoticeImportTests(TestCase):
         holiday = ScheduleEvent.objects.get(title='어린이날')
         self.assertEqual(timezone.localdate(holiday.start_at).isoformat(), '2026-05-05')
         self.assertEqual(holiday.event_type, 'holiday')
-        self.assertEqual(holiday.source_type, 'seed')
+        self.assertEqual(holiday.source_type, 'national_holiday')
+        self.assertEqual(holiday.description, '')
+        self.assertEqual(holiday.metadata_json['source'], 'korean_public_holiday_provider')
         self.assertIn('created_count=', output.getvalue())
 
     def test_seed_korean_holidays_uses_requested_year_fixture(self):
@@ -1393,6 +1418,45 @@ class SampleNoticeImportTests(TestCase):
     def test_seed_korean_holidays_rejects_unsupported_year(self):
         with self.assertRaisesMessage(CommandError, 'Unsupported Korean holiday year: 2028'):
             call_command('seed_korean_holidays', '--year', '2028')
+
+    def test_seed_korean_holidays_is_idempotent(self):
+        call_command('seed_korean_holidays', '--year', '2026')
+        first_count = ScheduleEvent.objects.filter(source_type='national_holiday').count()
+
+        call_command('seed_korean_holidays', '--year', '2026')
+
+        self.assertEqual(ScheduleEvent.objects.filter(source_type='national_holiday').count(), first_count)
+
+    def test_seed_korean_holidays_prefers_national_holiday_over_ssafy_holiday_duplicate(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='holiday notice', raw_text='holiday')
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 5))
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='어린이날 공휴일',
+            description='SSAFY duplicated holiday',
+            start_at=start_at,
+            end_at=start_at + timedelta(days=1),
+            is_all_day=True,
+            event_type='holiday',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='SSAFY 특강',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            is_all_day=False,
+            event_type='notice',
+            source_type='notice',
+        )
+
+        call_command('seed_korean_holidays', '--year', '2026')
+
+        self.assertFalse(ScheduleEvent.objects.filter(title='어린이날 공휴일', source_type='notice').exists())
+        self.assertTrue(ScheduleEvent.objects.filter(title='SSAFY 특강', source_type='notice').exists())
+        national = ScheduleEvent.objects.get(title='어린이날')
+        self.assertEqual(national.source_type, 'national_holiday')
+        self.assertEqual(national.description, '')
 
     def test_academic_rule_is_saved_without_schedule_event(self):
         items = [
@@ -1727,6 +1791,40 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual([item['source_type'] for item in items], ['notice', 'mentoring_notice'])
         self.assertEqual(collect.call_args_list[1].kwargs['list_url'], 'https://example.com/list/mentoring')
 
+    def test_authenticated_documents_collects_mentoring_and_mentoring_notice_separately(self):
+        fake_env = {
+            'SSAFY_LOGIN_URL': 'https://example.com/login',
+            'SSAFY_ID': 'tester',
+            'SSAFY_PASSWORD': 'secret',
+            'SSAFY_NOTICE_LIST_URL': 'https://example.com/list/notice',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/list/mentoring-data',
+            'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/list/mentoring-notice',
+            'SSAFY_CRAWLER_SOURCES': 'notice,mentoring,mentoring_notice',
+        }
+
+        with patch.dict('os.environ', fake_env, clear=True):
+            with patch.dict('sys.modules', _fake_playwright_modules()):
+                with patch(
+                    'sync.services.ssafy_crawler._collect_authenticated_list',
+                    side_effect=[
+                        [_source_item('notice', 'https://example.com/notice/1', 'Notice 1', 'notice-1')],
+                        [_source_item('mentoring', 'https://example.com/mentoring/1', 'Mentoring', 'mentoring-1')],
+                        [
+                            _source_item(
+                                'mentoring_notice',
+                                'https://example.com/mentoring-notice/1',
+                                'Mentoring notice',
+                                'mentoring-notice-1',
+                            )
+                        ],
+                    ],
+                ) as collect:
+                    items = load_ssafy_authenticated_documents()
+
+        self.assertEqual([item['source_type'] for item in items], ['notice', 'mentoring', 'mentoring_notice'])
+        self.assertEqual(collect.call_args_list[1].kwargs['list_url'], 'https://example.com/list/mentoring-data')
+        self.assertEqual(collect.call_args_list[2].kwargs['list_url'], 'https://example.com/list/mentoring-notice')
+
     def test_authenticated_documents_closes_playwright_resources_when_collection_fails(self):
         fake_env = {
             'SSAFY_LOGIN_URL': 'https://example.com/login',
@@ -2055,11 +2153,11 @@ class SampleNoticeImportTests(TestCase):
 
     def test_source_filter_and_skip_source_env(self):
         with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,academic_rule'}, clear=False):
-            specs = _source_collection_specs('notice-url', 'rule-url', 'faq-url', '', '', '', '', '')
+            specs = _source_collection_specs('notice-url', 'rule-url', '', 'faq-url', '', '', '', '', '')
         self.assertEqual([source for source, _, _ in specs], ['notice', 'academic_rule'])
 
         with patch.dict('os.environ', {'SSAFY_CRAWLER_SKIP_SOURCES': 'mentoring_notice'}, clear=False):
-            specs = _source_collection_specs('notice-url', 'rule-url', '', '', 'mentor-url', '', '', '')
+            specs = _source_collection_specs('notice-url', 'rule-url', '', '', '', 'mentor-url', '', '', '')
         self.assertNotIn('mentoring_notice', [source for source, _, _ in specs])
 
     def test_crawl_command_sets_source_options(self):
@@ -2150,7 +2248,10 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2158,7 +2259,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=7', rendered)
+        self.assertIn('checked_count=10', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
         self.assertNotIn('https://example.com/mentoring', rendered)
@@ -2177,7 +2278,10 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2185,7 +2289,7 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('SSAFY crawl environment check OK.', rendered)
-        self.assertIn('checked_count=7', rendered)
+        self.assertIn('checked_count=10', rendered)
         self.assertNotIn('db-secret-password', rendered)
         self.assertNotIn('db.example.com', rendered)
         self.assertNotIn('render-admin', rendered)
@@ -2200,7 +2304,10 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
+            'SSAFY_MENTORING_QNA_LIST_URL': 'https://example.com/mentoring-qna',
         }
 
         with patch.dict('os.environ', env, clear=True):
@@ -2217,6 +2324,8 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
+            'SSAFY_MENTORING_DATA_LIST_URL': 'https://example.com/mentoring-data',
             'SSAFY_MENTORING_NOTICE_LIST_URL': 'https://example.com/mentoring',
         }
 
@@ -2238,13 +2347,16 @@ class SampleNoticeImportTests(TestCase):
             'SSAFY_PASSWORD': 'super-secret-password',
             'SSAFY_LOGIN_URL': 'https://example.com/login',
             'SSAFY_NOTICE_LIST_URL': 'https://example.com/notices',
+            'SSAFY_RULE_LIST_URL': 'https://example.com/rules',
             'SSAFY_MENTORING_LIST_URL': 'https://example.com/mentoring',
         }
 
         with patch.dict('os.environ', env, clear=True):
             call_command('check_crawl_env', stdout=output)
 
-        self.assertIn('SSAFY crawl environment check OK.', output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- SSAFY_MENTORING_DATA_LIST_URL or SSAFY_MENTORING_DATA_URL', rendered)
 
     def test_check_crawl_env_prints_missing_keys_without_values(self):
         output = StringIO()
@@ -2263,7 +2375,10 @@ class SampleNoticeImportTests(TestCase):
 
         rendered = output.getvalue()
         self.assertIn('Missing required environment variables:', rendered)
+        self.assertIn('- SSAFY_RULE_LIST_URL', rendered)
+        self.assertIn('- SSAFY_MENTORING_DATA_LIST_URL or SSAFY_MENTORING_DATA_URL', rendered)
         self.assertIn('- SSAFY_MENTORING_NOTICE_LIST_URL or SSAFY_MENTORING_LIST_URL', rendered)
+        self.assertIn('- SSAFY_MENTORING_QNA_LIST_URL', rendered)
         self.assertNotIn('- SSAFY_QUEST_LIST_URL', rendered)
         self.assertNotIn('render-admin', rendered)
         self.assertNotIn('super-secret-password', rendered)
@@ -2288,16 +2403,37 @@ class SampleNoticeImportTests(TestCase):
             'sync.management.commands.scheduled_ssafy_crawl.preview_notice_import',
             side_effect=fake_preview_notice_import,
         ):
-            call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
+            with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': ''}, clear=False):
+                call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
 
         self.assertEqual(CrawlJobLog.objects.count(), 0)
         self.assertEqual(seen['mode'], 'sample')
-        self.assertEqual(seen['sources'], 'notice,mentoring_notice')
+        self.assertEqual(seen['sources'], 'notice,academic_rule,mentoring,mentoring_notice,mentoring_qna')
         self.assertEqual(seen['recent_limit'], '30')
         self.assertEqual(seen['max_pages'], '2')
-        self.assertIn('selected_sources=notice,mentoring_notice', output.getvalue())
+        self.assertIn('selected_sources=notice,academic_rule,mentoring,mentoring_notice,mentoring_qna', output.getvalue())
         self.assertIn('dry_run=true', output.getvalue())
         self.assertIn('no_changes=true', output.getvalue())
+
+    def test_scheduled_crawl_preserves_env_source_filter(self):
+        output = StringIO()
+        seen = {}
+        summary = ImportSummary(raw_count=0, updated_count=0, duplicate_count=0, event_count=0)
+
+        def fake_preview_notice_import(mode=None):
+            import os
+            seen['sources'] = os.environ.get('SSAFY_CRAWLER_SOURCES')
+            return {'mode': mode, 'summary': summary, 'crawler_debug': [], 'message': ''}
+
+        with patch.dict('os.environ', {'SSAFY_CRAWLER_SOURCES': 'notice,mentoring,mentoring_notice,mentoring_qna'}, clear=False):
+            with patch(
+                'sync.management.commands.scheduled_ssafy_crawl.preview_notice_import',
+                side_effect=fake_preview_notice_import,
+            ):
+                call_command('scheduled_ssafy_crawl', mode='sample', dry_run=True, stdout=output)
+
+        self.assertEqual(seen['sources'], 'notice,mentoring,mentoring_notice,mentoring_qna')
+        self.assertIn('selected_sources=notice,mentoring,mentoring_notice,mentoring_qna', output.getvalue())
 
     def test_scheduled_crawl_all_keeps_all_sources_without_hourly_limits(self):
         seen = {}
@@ -2763,6 +2899,48 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertTrue(any('pagination_failed source_type=notice' in message for message in get_last_collection_debug()))
 
+    def test_mentoring_qna_pagination_clicks_page_controls_instead_of_direct_url(self):
+        page = _ClickPaginatedPage(
+            {
+                1: '''
+                <table><tbody>
+                  <tr><td><a href="/edu/board/mentoQna/list.do?brdItmSeq=101">QNA 1</a></td></tr>
+                </tbody></table>
+                <nav class="pagination"><a href="#;" onclick="fnPage('2')">2</a></nav>
+                ''',
+                2: '''
+                <table><tbody>
+                  <tr><td><a href="/edu/board/mentoQna/list.do?brdItmSeq=102">QNA 2</a></td></tr>
+                </tbody></table>
+                ''',
+            },
+            url='https://edu.ssafy.com/edu/board/mentoQna/list.do',
+        )
+
+        with patch.dict('os.environ', {'SSAFY_NOTICE_MAX_PAGES': '2'}):
+            with patch(
+                'sync.services.ssafy_crawler.fetch_authenticated_detail',
+                side_effect=lambda _page, detail_url, **kwargs: _source_item(
+                    'mentoring_qna',
+                    detail_url,
+                    kwargs.get('list_title') or detail_url,
+                    detail_url.rsplit('=', 1)[-1],
+                ),
+            ):
+                details = _collect_authenticated_list(
+                    page,
+                    'https://edu.ssafy.com/edu/board/mentoQna/list.do',
+                    'mentoring_qna',
+                    _extract_mentoring_qna_links,
+                )
+
+        self.assertEqual(page.goto_calls, ['https://edu.ssafy.com/edu/board/mentoQna/list.do'])
+        self.assertEqual(page.clicked_pages, [2])
+        self.assertEqual([detail['source_url'] for detail in details], [
+            'https://edu.ssafy.com/edu/board/mentoQna/list.do?brdItmSeq=101',
+            'https://edu.ssafy.com/edu/board/mentoQna/list.do?brdItmSeq=102',
+        ])
+
     def test_pagination_debug_reports_hidden_inputs_and_functions(self):
         soup = BeautifulSoup(
             '''
@@ -3036,6 +3214,35 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(image_urls[-1], 'https://edu.ssafy.com/rules/welfare.png')
         self.assertNotIn('https://edu.ssafy.com/assets/profile-background.png', image_urls)
         self.assertNotIn('https://edu.ssafy.com/assets/header-logo.jpg', image_urls)
+
+    def test_academic_rule_reply_image_urls_collects_accordion_lazy_images(self):
+        html = '''
+        <main>
+          <img src="/assets/header-logo.jpg">
+          <div class="accordion-collapse">
+            <img data-src="/rules/attendance-lazy.png">
+            <img data-original="relative/life.png">
+          </div>
+          <div class="panel-body">
+            <img data-srcset="/rules/security.png 640w, /rules/security@2x.png 2x">
+          </div>
+        </main>
+        '''
+
+        image_urls = extract_academic_rule_reply_image_urls_from_html(
+            html,
+            'https://edu.ssafy.com/edu/board/rule/list.do',
+        )
+
+        self.assertEqual(
+            image_urls,
+            [
+                'https://edu.ssafy.com/rules/attendance-lazy.png',
+                'https://edu.ssafy.com/edu/board/rule/relative/life.png',
+                'https://edu.ssafy.com/rules/security.png',
+                'https://edu.ssafy.com/rules/security@2x.png',
+            ],
+        )
 
     def test_academic_toggle_opener_skips_already_open_buttons(self):
         page = _AcademicTogglePage(
@@ -4732,6 +4939,32 @@ class _StaticPage:
         return _StaticLocator(1 if 'userId' in self.html or 'userPwd' in self.html else 0)
 
 
+class _ClickPaginatedPage(_StaticPage):
+    def __init__(self, pages, url='https://example.com/list', title=''):
+        self.pages = pages
+        self.current_page = 1
+        self.goto_calls = []
+        self.clicked_pages = []
+        super().__init__(pages[1], url=url, title=title)
+
+    def goto(self, url, *args, **kwargs):
+        self.goto_calls.append(url)
+        self.current_page = 1
+        self.html = self.pages[self.current_page]
+        self.url = url
+
+    def evaluate(self, script, page_number):
+        self.clicked_pages.append(page_number)
+        if page_number not in self.pages:
+            return False
+        self.current_page = page_number
+        self.html = self.pages[page_number]
+        return True
+
+    def wait_for_load_state(self, *args, **kwargs):
+        return None
+
+
 class _StaticLocator:
     def __init__(self, count):
         self._count = count
@@ -4889,3 +5122,180 @@ def _fake_playwright_modules(state=None):
         'playwright': playwright_module,
         'playwright.sync_api': sync_api_module,
     }
+
+
+
+# ---------------------------------------------------------------------------
+# OCR Grid Parser 버그 수정 테스트
+# ---------------------------------------------------------------------------
+from datetime import date as _date
+from sync.services.ocr_grid_parser import (
+    normalize_ocr_boxes as _nob,
+    _month_from_split_boxes,
+    _has_il_following,
+    _build_date_cells,
+    parse_grid_schedule_candidates,
+)
+from sync.services.schedule_parser import (
+    GENERIC_TITLES as _GENERIC_TITLES,
+    EVENT_KEYWORDS as _EVENT_KEYWORDS,
+    ONLINE_WEEK_KEYWORDS as _ONLINE_WEEK_KEYWORDS,
+    _parse_event_type,
+)
+
+
+def _mk_box(text, x1, y1, x2, y2):
+    return {'text': text, 'x1': float(x1), 'y1': float(y1),
+            'x2': float(x2), 'y2': float(y2)}
+
+
+def _timetable_header_boxes():
+    """주간 시간표 헤더 '시간 | 2월 2일 | 2월 3일 | 2월 4일 | 2월 5일 | 2월 6일'
+    각 날짜를 ['2','월','N','일'] 4개의 박스로 분리해 표현 (실제 OCR 패턴)."""
+    boxes = []
+    col_centers = [250, 450, 650, 850, 1050]
+    for idx, day in enumerate([2, 3, 4, 5, 6]):
+        cx = col_centers[idx]
+        boxes.append(_mk_box('2',   cx - 50, 240, cx - 35, 260))  # month prefix
+        boxes.append(_mk_box('월',  cx - 35, 240, cx - 10, 260))
+        boxes.append(_mk_box(str(day), cx,   240, cx + 15, 260))  # day number
+        boxes.append(_mk_box('일',  cx + 15, 240, cx + 35, 260))
+    return boxes
+
+
+class OcrGridParserSplitDateTests(TestCase):
+    """Fix 1: '2월 4일' 같이 분리된 OCR 박스를 _build_date_cells 가 올바르게 처리."""
+
+    def test_month_prefix_digit_excluded_in_timetable_mode(self):
+        """'2월 4일'의 월-prefix '2' 박스는 timetable_mode에서 day=2로 잡히면 안 된다."""
+        boxes = _nob(_timetable_header_boxes())
+        cells = _build_date_cells(2, boxes, timetable_mode=True)
+        # day=2 셀이 0개이거나, 있다면 cx가 day-'2' 박스(cx=250)에 해당해야 함
+        day2_cells = [c for c in cells if c['day'] == 2]
+        # 각 col_index가 고유해야 함 (중복 col이 없어야 함)
+        col_indices = [c['col_index'] for c in cells]
+        self.assertEqual(len(col_indices), len(set(col_indices)),
+                         f"중복 col_index 발생 (month-prefix 제거 실패): {cells}")
+
+    def test_correct_five_weekday_cells_in_timetable_mode(self):
+        """분리된 OCR 박스에서 2~6일 5개 셀이 정확히 생성된다."""
+        boxes = _nob(_timetable_header_boxes())
+        cells = _build_date_cells(2, boxes, timetable_mode=True)
+        dates = sorted({c['date'] for c in cells})
+        expected = [_date(2026, 2, d) for d in range(2, 7)]
+        self.assertEqual(dates, expected,
+                         f"기대 날짜 {expected} != 실제 {dates}")
+
+    def test_content_area_bare_digit_no_il_excluded_in_timetable_mode(self):
+        """시간표 내용 영역 '1'(예: '10:00' 분리, '일' 없음)은 날짜 헤더가 아니다."""
+        boxes_raw = _timetable_header_boxes()
+        # 내용 영역: '1', '0', ':' (시간 슬롯, '일' 없음) → spurious row 만들면 안 됨
+        boxes_raw.append(_mk_box('1', 50, 320, 60, 335))
+        boxes_raw.append(_mk_box('0', 60, 320, 70, 335))
+        boxes_raw.append(_mk_box(':', 70, 320, 75, 335))
+        boxes = _nob(boxes_raw)
+        cells = _build_date_cells(2, boxes, timetable_mode=True)
+        row_indices = {c['row_index'] for c in cells}
+        self.assertEqual(len(row_indices), 1,
+                         f"내용 영역 bare digit이 spurious row split 생성: rows={row_indices}")
+
+    def test_calendar_mode_accepts_bare_digit_without_il(self):
+        """calendar mode (timetable_mode=False)에서는 '일' 없는 숫자도 날짜로 인식."""
+        boxes_raw = [
+            _mk_box('4', 650, 240, 665, 260),
+            _mk_box('5', 850, 240, 865, 260),
+        ]
+        boxes = _nob(boxes_raw)
+        cells = _build_date_cells(2, boxes, timetable_mode=False)
+        days = {c['day'] for c in cells}
+        self.assertIn(4, days)
+        self.assertIn(5, days)
+
+    def test_has_il_following_true_when_il_is_adjacent(self):
+        """_has_il_following: '일' 박스가 바로 우측에 있으면 True."""
+        boxes = _nob([
+            _mk_box('4', 650, 240, 665, 260),
+            _mk_box('일', 665, 240, 685, 260),
+        ])
+        self.assertTrue(_has_il_following(boxes[0], boxes))
+
+    def test_has_il_following_false_when_no_il(self):
+        """_has_il_following: '일'이 없으면 False."""
+        boxes = _nob([
+            _mk_box('1', 50, 320, 60, 335),
+            _mk_box('0', 60, 320, 70, 335),
+        ])
+        self.assertFalse(_has_il_following(boxes[0], boxes))
+
+    def test_timetable_parse_produces_events_on_distinct_weekdays(self):
+        """시간표 parse_grid_schedule_candidates: Mon-Fri 5일 각각 이벤트 생성."""
+        source_title = '마이스터고 2월 1주차 시간표'
+        # 월 섹션 헤더 '2월'
+        ocr_boxes = [
+            {'text': '2',  'x1': 50., 'y1': 50., 'x2': 65., 'y2': 70.},
+            {'text': '월', 'x1': 65., 'y1': 50., 'x2': 90., 'y2': 70.},
+        ]
+        # 날짜 헤더 + 각 열에 과목
+        col_centers = [250., 450., 650., 850., 1050.]
+        subjects = ['List', 'Matrix', 'Stack', 'Queue', 'Graph']
+        for idx, day in enumerate([2, 3, 4, 5, 6]):
+            cx = col_centers[idx]
+            ocr_boxes += [
+                {'text': '2',    'x1': cx-50, 'y1': 240., 'x2': cx-35, 'y2': 260.},
+                {'text': '월',   'x1': cx-35, 'y1': 240., 'x2': cx-10, 'y2': 260.},
+                {'text': str(day),'x1': cx,   'y1': 240., 'x2': cx+15, 'y2': 260.},
+                {'text': '일',   'x1': cx+15, 'y1': 240., 'x2': cx+35, 'y2': 260.},
+                {'text': subjects[idx],
+                               'x1': cx-10, 'y1': 350., 'x2': cx+60, 'y2': 370.},
+            ]
+
+        candidates, debug = parse_grid_schedule_candidates(
+            ocr_boxes, source_title=source_title
+        )
+        event_dates = sorted({c.event_date for c in candidates})
+        self.assertGreater(len(event_dates), 1,
+                           f"모든 이벤트가 단일 날짜: {event_dates} (분배 실패)")
+
+
+class ScheduleParserCleanupTests(TestCase):
+    """schedule_parser.py 깨진 상수 제거 및 정리 테스트."""
+
+    def _is_garbled(self, text):
+        return any(
+            (0x100 <= ord(c) <= 0xABFF) or (0xD7A4 <= ord(c) <= 0xF8FF)
+            for c in text
+        )
+
+    def test_generic_titles_no_garbled_strings(self):
+        """GENERIC_TITLES에 깨진 한글/CJK 문자열이 없어야 한다."""
+        for title in _GENERIC_TITLES:
+            self.assertFalse(self._is_garbled(title),
+                             f"GENERIC_TITLES 깨진 문자열: {repr(title)}")
+
+    def test_event_keywords_no_garbled_strings(self):
+        """EVENT_KEYWORDS에 깨진 문자열이 없어야 한다."""
+        for kw in _EVENT_KEYWORDS:
+            self.assertFalse(self._is_garbled(kw),
+                             f"EVENT_KEYWORDS 깨진 문자열: {repr(kw)}")
+
+    def test_online_week_keywords_contains_only_clean_entries(self):
+        """ONLINE_WEEK_KEYWORDS는 정상 한글/영어만 포함."""
+        self.assertIn('온라인 위크', _ONLINE_WEEK_KEYWORDS)
+        self.assertIn('online week', _ONLINE_WEEK_KEYWORDS)
+        for kw in _ONLINE_WEEK_KEYWORDS:
+            self.assertFalse(self._is_garbled(kw),
+                             f"ONLINE_WEEK_KEYWORDS 깨진 문자열: {repr(kw)}")
+
+    def test_parse_event_type_classifies_correctly(self):
+        """_parse_event_type이 한글 키워드로 올바르게 분류한다."""
+        cases = [
+            ('과목평가 결과', 'exam'),
+            ('마감 과제 제출', 'assignment'),
+            ('관통 프로젝트 일정', 'project'),
+            ('AI 특강 안내', 'lecture'),
+            ('15기 입학식', 'event'),
+            ('일반 공지사항', 'notice'),
+        ]
+        for line, expected in cases:
+            with self.subTest(line=line):
+                self.assertEqual(_parse_event_type(line), expected)
