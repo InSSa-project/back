@@ -8,6 +8,8 @@ class Notification(models.Model):
     TYPE_WARNING = 'WARNING'
     TYPE_PROJECT = 'PROJECT'
     TYPE_SYSTEM = 'SYSTEM'
+    TYPE_NOTICE = 'NOTICE'
+    TYPE_RISK = 'RISK'
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications')
     schedule_event = models.ForeignKey(
@@ -20,6 +22,7 @@ class Notification(models.Model):
     notification_type = models.CharField(max_length=50)
     title = models.CharField(max_length=255)
     content = models.TextField(blank=True)
+    link_url = models.CharField(max_length=500, blank=True)
     is_read = models.BooleanField(default=False)
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

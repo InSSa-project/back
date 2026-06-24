@@ -1,0 +1,85 @@
+{
+  "created_at": "2026-06-24T14:02:16",
+  "total": 120,
+  "pass_count": 120,
+  "fail_count": 0,
+  "score": 100.0,
+  "avg_latency_ms": 0,
+  "by_section": {
+    "A": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "B": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "C": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "D": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "E": {
+      "total": 6,
+      "pass": 6,
+      "score": 100.0
+    },
+    "F": {
+      "total": 10,
+      "pass": 10,
+      "score": 100.0
+    },
+    "G": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "H": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "I": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "J": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "K": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "L": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "M": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "N": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    },
+    "O": {
+      "total": 8,
+      "pass": 8,
+      "score": 100.0
+    }
+  }
+}

@@ -1,0 +1,2662 @@
+# INSSA Gold Answer Benchmark
+
+- Created: 2026-06-24T14:38:55
+- Accuracy: 0.0%
+- Success rate: 0.0%
+- Fail rate: 100.0%
+- Avg score: 2.1/100
+- Success/Fail: 0/100
+- Total: 100
+- Avg latency: 4660.2 ms
+
+## Category Summary
+
+| Category | Total | Avg Score | Success Rate | Pass |
+|---|---:|---:|---:|---:|
+| counseling | 10 | 1.6 | 0.0% | 0 |
+| culture | 4 | 0.0 | 0.0% | 0 |
+| emotion | 3 | 0.0 | 0.0% | 0 |
+| exam | 18 | 1.9 | 0.0% | 0 |
+| faq | 10 | 6.6 | 0.0% | 0 |
+| mentoring | 3 | 2.3 | 0.0% | 0 |
+| project | 42 | 2.0 | 0.0% | 0 |
+| safety | 10 | 0.0 | 0.0% | 0 |
+
+## Question Results
+
+### Q1 - FAIL / 11.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0222`
+- Keyword Recall: `0.0`
+
+**Question**
+
+과락이 두 개 있는데 프로젝트 발표도 일주일 남았습니다. 무엇부터 하시겠습니까?
+
+**Model Answer**
+
+```text
+프로젝트 준비는 시간 관리를 중요하게 생각하세요. 먼저 지금까지 완료했거나 진행 중인 부분의 우선순위를 잡고 시작하는 게 좋습니다. 현재 상태에 맞춰 "오늘" 하고 싶다면 이렇게 나누면 됩니다:
+
+1. 현재 진행되고 있는 작업이나 아직 끝나지 않은 과목부터 다시 한 번 체크합니다. 2. 다음 주에는 이어서 진행할 예정이라 판단되면, 이를 기준으로 계획을 세웁니다. 3. 가장 중요한 점들을 달력이나 스케줄러 등에 적어두세요. 답변을 참고하되, 실제로는 질문자의 경험과 상황 위주로 결정해야 합니다. 처음 답변보다 실제 환경에서는 더 구체적인 조언이 필요할 수도 있습니다.
+```
+
+**Gold Answer**
+
+```text
+시험공부를 먼저 하는 것을 추천합니다. 프로젝트는 필수 기능만 유지하면서 시험 대비에 집중하는 것이 좋습니다. 판단 이유: 프로젝트는 이후에도 진행할 기회가 있지만 시험 일정은 정해져 있어 일반적으로 시험의 우선순위가 더 높습니다.
+```
+
+---
+
+### Q2 - FAIL / 10.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트 기능은 많이 남았는데 시험도 다가옵니다. 어떻게 시간을 배분하시겠습니까?
+
+**Model Answer**
+
+```text
+프로젝트의 진행 상황과 면접 준비 일정이 겹치면 당장 결정하기 어렵습니다. 먼저 현재 상태를 이해하는 게 좋습니다. 지금까지 완료했거나 아직 남아있는 작업 목록을 만들어 보세요. 프로세스나 우선 순위에 대해 생각해보면서 시작할 때 참고하세요. 답변 만으로는 한계가 있으니 직접 경험하거나 질문하면서 학습하려고 합니다. 처음부터 끝까지 계획하다 보면 어지럽실 수도 있습니다. 잠시 쉬어서 다시 본인이 느끼기 좋은 방법으로 나누어 볼까요.
+```
+
+**Gold Answer**
+
+```text
+최종관통 프로젝트 기간이라면 프로젝트에 더 집중하는 것이 좋습니다. 시험 범위는 유지 수준으로만 복습하세요. 판단 이유: 이 시기에는 프로젝트 자체가 가장 큰 일정인 경우가 많습니다.
+```
+
+---
+
+### Q3 - FAIL / 4.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+팀원이 연락이 잘 안 됩니다. 어떻게 행동하시겠습니까?
+
+**Model Answer**
+
+```text
+선생님의 경험과 Perspective:
+
+프로젝트나 회사에서는 일일 기준으로 "연락이 잘 안 돼요"라는 문장보다 더 구체적인 상황에 대해 질문하는 게 좋습니다. 질문을 잘못 이해했다면 처음부터 다시 설명하거나 협업 도구를 통해 함께 작업해보세요. 현재 상태가 너무 어려워서 놓치고 싶다면 전략적으로 잠시 멈추거나 다른 사람에게 맡기면서도 진행상태를 알려주는 것도 방법입니다.
+```
+
+**Gold Answer**
+
+```text
+먼저 팀원과 직접 이야기해 보고, 계속 해결되지 않으면 프로님이나 담당 강사님께 상황을 공유하는 것이 좋습니다. 판단 이유: 프로젝트는 혼자 해결할 수 없기 때문에 빠른 대응이 중요합니다.
+```
+
+---
+
+### Q4 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트가 일정보다 많이 밀렸습니다. 기능을 줄일까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+일주일 이상 남았다면 끝까지 도전해 보세요. 시간이 부족하다면 기능을 줄이고 완성도를 높이는 것이 좋습니다. 판단 이유: 발표에서는 기능 개수보다 안정적인 시연과 완성도가 더 중요합니다.
+```
+
+---
+
+### Q5 - FAIL / 7.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표 이틀 전 큰 버그가 발견됐습니다. 어떻게 하시겠습니까?
+
+**Model Answer**
+
+```text
+설문 응답 기준으로 가장 좋고 현실적으로 가능한 방법은 다음과 같습니다. 질문이 가진 입장에서는 "버그 해결"과 함께 "시간 관리를 잡아야 합니다."라는 두 가지 주요 과제가 있습니다. 현재 질문의 상황에선 아직 발표 날짜까지 남았으니, 우선 현재 진행상태부터 보겠습니다. > 발표 이틀 전 큰 문제 발생
+
+발표 준비나 진행 중인 프로젝트가 끝날 때마다 중요한 점들을 체크하는 습관도 중요합니다. 지금은 버그 처리보다 앞으로 나가는 게 더 실익입니다. 시간 관리는 이렇게 시작해보세요:
+
+> 버그 해결 > 다음 일정 설정 > 리뷰 및 수정 > 다시 시험하기
+
+결론적으로 처음에는 전체적인 맥락보다 현재
+```
+
+**Gold Answer**
+
+```text
+발표에 필요한 핵심 기능부터 최대한 수정해 보세요. 해결이 어렵다면 시연 동선을 변경해 문제가 드러나지 않도록 준비하는 것도 현실적인 방법입니다. 판단 이유: 최종 발표는 코드 리뷰보다 시연과 설명의 비중이 더 큽니다.
+```
+
+---
+
+### Q6 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+새로운 기능을 넣을지 안정성을 높일지 고민됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+일주일 이상 남았다면 프로젝트 방향성을 해치지 않는 선에서 기능을 추가해도 됩니다. 막바지라면 안정성을 우선하세요. 판단 이유: 요즘은 AI를 활용해 구현 속도가 빨라졌지만 테스트 시간은 반드시 확보해야 합니다.
+```
+
+---
+
+### Q7 - FAIL / 0.0점
+
+- Category: `mentoring`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트와 면접 일정이 겹쳤습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+지원한 회사의 중요도와 합격 가능성을 충분히 고려한 뒤 결정하세요. 정말 원하는 회사라면 면접 준비를 우선하는 것도 충분히 현실적인 선택입니다. 판단 이유: 최종 목표는 프로젝트가 아니라 취업입니다.
+```
+
+---
+
+### Q8 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+팀장이 되었는데 과락까지 맞았습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+팀원들과 일정을 조율한 뒤 공부 시간을 반드시 확보하세요. 팀장이라고 해서 시험까지 포기할 필요는 없습니다. 판단 이유: 기초 실력이 있어야 이후 프로젝트도 더 안정적으로 수행할 수 있습니다.
+```
+
+---
+
+### Q9 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+알고리즘 공부와 프로젝트 중 하나만 선택해야 한다면?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+학기 초반이라면 알고리즘 공부를 추천합니다. 이후 프로젝트를 진행하면서도 큰 도움이 됩니다. 판단 이유: 알고리즘은 문제 해결 능력의 기초가 되기 때문입니다.
+```
+
+---
+
+### Q10 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+AI가 만든 코드를 그대로 올리는 팀원이 있습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+코드 품질이 충분하고 팀원이 내용을 이해하고 있다면 사용할 수 있습니다. 다만 핵심 로직은 반드시 함께 검증하는 것이 좋습니다. 판단 이유: AI 활용은 일반적인 문화가 되었지만 결과물에 대한 책임은 개발자에게 있습니다.
+```
+
+---
+
+### Q11 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+실력 차이가 너무 큰 팀입니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+팀원의 실력에 맞게 역할을 다시 나누는 것이 좋습니다. 어려운 기능은 경험자가 맡고, 나머지는 책임질 수 있는 기능을 맡아 완성도를 높이세요. 판단 이유: 프로젝트 평가는 개인보다 팀 결과가 더 중요합니다.
+```
+
+---
+
+### Q12 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+디자인에 시간을 너무 많이 쓰는 팀원이 있습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+핵심 기능이 안정화되기 전까지는 디자인보다 기능 구현에 집중하자고 이야기해 보세요. 판단 이유: SSAFY 프로젝트에서는 안정적인 시연과 완성도가 더 중요합니다.
+```
+
+---
+
+### Q13 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+역할 분담이 불공평합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+현재 작업량을 함께 정리한 뒤 남은 일정을 기준으로 다시 분배하는 것이 좋습니다. 판단 이유: 후반으로 갈수록 감정보다 일정 관리가 중요합니다.
+```
+
+---
+
+### Q14 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+회의가 너무 길어집니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+회의 시간을 20~30분 정도로 제한하고 결정 사항만 기록한 뒤 바로 구현에 들어가세요. 판단 이유: 개발 시간이 부족해지면 프로젝트 완성도가 떨어질 수 있습니다.
+```
+
+---
+
+### Q15 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+의견 충돌이 계속됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+가장 좋은 기술보다 일정 안에 완성 가능한 방법을 선택하는 것이 좋습니다. 판단 이유: 발표에서는 기술보다 결과물이 더 중요하게 평가되는 경우가 많습니다.
+```
+
+---
+
+### Q16 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+일정은 급한데 코드 리뷰를 해야 합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+핵심 기능과 치명적인 오류가 발생할 수 있는 부분만 우선 확인하세요. 판단 이유: SSAFY에서는 정식 코드리뷰 문화보다 빠른 개발이 일반적입니다.
+```
+
+---
+
+### Q17 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+팀원이 계속 늦습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+감정보다 프로젝트 일정과 영향도를 중심으로 이야기하고 개선이 어렵다면 프로님과 상담을 고려하세요. 판단 이유: 문제를 초기에 해결할수록 프로젝트 리스크가 줄어듭니다.
+```
+
+---
+
+### Q18 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+본인이 맡은 기능이 너무 많습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+필수 기능과 부가 기능을 구분하고 부가 기능은 과감히 조정하거나 분배하세요. 판단 이유: 기능 수보다 완성도가 더 높은 평가를 받습니다.
+```
+
+---
+
+### Q19 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트가 끝났는데 회고를 할지 말지 고민됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+짧게라도 회고를 진행해 잘한 점과 아쉬운 점을 기록하는 것을 추천합니다. 판단 이유: 다음 프로젝트에서 같은 실수를 줄일 수 있습니다.
+```
+
+---
+
+### Q20 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+새로운 라이브러리를 프로젝트 막바지에 도입할까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+특별한 이유가 없다면 기존 기술 스택을 유지하는 것이 좋습니다. 판단 이유: 막바지 기술 변경은 예상치 못한 버그를 만들 가능성이 높습니다.
+```
+
+---
+
+### Q21 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+과락을 한 번 맞았습니다. 공부 방법을 바꿔야 할까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+같은 방법으로 계속 공부하기보다 틀린 원인을 먼저 분석한 뒤 공부 방법을 조정해 보세요. 판단 이유: 과락 자체보다 같은 실수를 반복하지 않는 것이 더 중요합니다.
+```
+
+---
+
+### Q22 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+월말평가와 과목평가 중 무엇을 더 우선해야 하나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+둘 다 중요하지만 일반적으로 월말평가의 부담을 더 크게 느끼는 교육생이 많습니다. 준비 시간을 조금 더 확보하는 것을 추천합니다. 판단 이유: SSAFY에서는 월말평가를 중요한 분기점으로 생각하는 경우가 많습니다.
+```
+
+---
+
+### Q23 - FAIL / 16.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0323`
+- Keyword Recall: `0.1`
+
+**Question**
+
+프로젝트 때문에 공부를 못 했습니다. 어떻게 복구할까요?
+
+**Model Answer**
+
+```text
+공감합니다. 먼저 지금의 상태부터 인정하고, 다음 단계에서는 이렇게 시작하는 게 좋습니다. 선생님과 상담하기 / 카페나 커뮤니티에 질문하기 > 현재 문제 해결보다 앞으로 준비 방향이 더 중요함을 잠시 기억하세요. 일단 실력이나 기준으로 나누고, 남아있는 시간과 목표 간 균형을 찾아보세요. 처음에는 큰 맥락보다 작은 부분부터 시도해 보면서 자신에게 맞는 학습 방법을 찾으려면 충분히 공간을 두세요.
+```
+
+**Gold Answer**
+
+```text
+남은 기간 동안 범위를 모두 보려 하기보다 자주 틀리는 부분부터 복습하세요. 판단 이유: 시간이 부족할수록 선택과 집중이 중요합니다.
+```
+
+---
+
+### Q24 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+재시험 준비는 처음부터 다시 해야 하나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+이미 한 번 학습한 내용이므로 틀렸던 개념과 문제를 중심으로 복습하는 것이 효율적입니다. 판단 이유: 재시험은 기존 학습 경험을 활용하는 것이 좋습니다.
+```
+
+---
+
+### Q25 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+스터디를 꼭 해야 하나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+필수는 아니지만 혼자 공부가 잘되지 않는다면 스터디가 큰 도움이 될 수 있습니다. 판단 이유: SSAFY의 스터디는 자율적으로 운영됩니다.
+```
+
+---
+
+### Q26 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+GPT를 이용해서 공부해도 될까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+개념을 이해하는 용도로는 좋지만 문제를 직접 풀어보는 과정도 반드시 가져가세요. 판단 이유: 스스로 고민하는 과정이 실력을 더 오래 유지하게 합니다.
+```
+
+---
+
+### Q27 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+시험 전날 새로운 내용을 공부할까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+새로운 개념보다 기존에 틀렸던 내용을 정리하는 것을 추천합니다. 판단 이유: 시험 직전에는 안정적인 점수 확보가 더 중요합니다.
+```
+
+---
+
+### Q28 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+알고리즘이 너무 어렵습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+매일 조금씩 꾸준히 푸는 습관을 만드는 것이 가장 효과적입니다. 판단 이유: 알고리즘 실력은 단기간보다 반복 학습의 영향이 큽니다.
+```
+
+---
+
+### Q29 - FAIL / 18.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0455`
+- Keyword Recall: `0.2`
+
+**Question**
+
+공부와 휴식의 균형은 어떻게 잡아야 하나요?
+
+**Model Answer**
+
+```text
+설문 응답으로 보면 가장 가까운 현재 상황과 질문입니다. 질문에서는 "균형"이라는 개념이 있지만, 이 부분에 대해선 아직 충분히 확실하게 말하기 어렵습니다. 일단 이렇게 말씀해보세요:
+
+"일단 지금 상태로 볼 때 '균형'이라고 하기에는 너무나 많은 변수들이 있습니다."라고 생각하세요. 기준이나 목표 없이는 불필요한 비교나 판단보다 현실적이고 구체적인 이야기가 더 도움이 됩니다. 그래서 오늘부터 시작할 일은 다음과 같습니다:
+
+1. 나 자신에게 맞춰서 시간 관리를 다시 해봅시다. 2. 중요한 시험 준비 외에도 다른 활동도 함께 계획합니다. 3. 이제 막 입학했다면 처음부터 모든 것을 다 이해하려고 하는 것은 피하는
+```
+
+**Gold Answer**
+
+```text
+짧게 쉬더라도 다시 시작할 시간을 미리 정해두는 것이 좋습니다. 판단 이유: 꾸준히 공부하려면 회복도 중요합니다.
+```
+
+---
+
+### Q30 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+시험 성적이 계속 오르지 않습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+점수보다 어떤 유형을 반복해서 틀리는지 분석하는 데 시간을 더 투자해 보세요. 판단 이유: 원인을 알아야 공부 방향도 바꿀 수 있습니다.
+```
+
+---
+
+### Q31 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+과락을 맞고 너무 우울합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+과락 한 번으로 모든 것이 결정되지는 않습니다. 부족했던 부분을 정리하고 다음 평가를 준비해 보세요. 판단 이유: SSAFY는 꾸준히 성장하는 사람이 마지막에 좋은 결과를 얻는 경우가 많습니다.
+```
+
+---
+
+### Q32 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트가 너무 힘듭니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+모든 기능을 완벽하게 하려 하기보다 필수 기능부터 완성하는 데 집중해 보세요. 판단 이유: 발표에서는 기능 수보다 완성도가 더 중요한 평가 요소입니다.
+```
+
+---
+
+### Q33 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+번아웃이 왔습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+하루 정도 충분히 쉬고 다시 작은 목표부터 시작해 보세요. 판단 이유: 1년 과정은 꾸준함이 가장 중요합니다.
+```
+
+---
+
+### Q34 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+개발이 재미없어졌습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+잠시 쉬면서 지금까지 성장한 부분을 돌아보고 작은 프로젝트를 다시 만들어 보세요. 판단 이유: 지치는 시기는 누구에게나 찾아오지만 지나가는 경우가 많습니다.
+```
+
+---
+
+### Q35 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+계속 남과 비교하게 됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+다른 사람보다 어제의 나와 비교하는 습관을 가져보세요. 판단 이유: SSAFY에서는 꾸준히 성장한 사람이 결국 앞서가는 경우가 많습니다.
+```
+
+---
+
+### Q36 - FAIL / 16.5점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0444`
+- Keyword Recall: `0.1`
+
+**Question**
+
+취업이 너무 불안합니다.
+
+**Model Answer**
+
+```text
+일단 이렇게 생각해보세요. 결국 "불안"이라는 감정과 함께 어떤 문제나 고민이 있을까요? 지금부터 가장 우선순위로 해결할 만한 일이나 질문으로 나누면 좋습니다. 처음 겪는 상황이라서 당연히 어렵겠지만, 조금씩 움직이는 게 중요하다고 잊지 마세요.
+```
+
+**Gold Answer**
+
+```text
+불안해하기보다 프로젝트와 포트폴리오를 하나씩 완성하는 데 집중해 보세요. 판단 이유: 결국 취업은 결과물과 경험이 큰 영향을 미칩니다.
+```
+
+---
+
+### Q37 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+팀원에게 미안합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+미안한 마음만 갖기보다 지금 맡은 일을 끝까지 책임지는 모습을 보여주세요. 판단 이유: 책임감 있는 행동이 팀에 가장 큰 도움이 됩니다.
+```
+
+---
+
+### Q38 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표가 너무 무섭습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+발표 대본을 여러 번 읽기보다 실제 시연을 반복해서 연습해 보세요. 판단 이유: 최종 발표에서는 전달력과 자연스러운 시연이 중요합니다.
+```
+
+---
+
+### Q39 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+쉬어도 될까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+쉬는 것은 괜찮지만 언제 다시 시작할지 미리 정해두는 것을 추천합니다. 판단 이유: 회복도 꾸준히 달리기 위한 중요한 과정입니다.
+```
+
+---
+
+### Q40 - FAIL / 0.0점
+
+- Category: `counseling`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+포기하고 싶습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+지금 힘들더라도 스스로 개발자가 되고 싶은 이유를 다시 떠올려 보세요. 가능하다면 프로님과 상담도 받아보세요. 판단 이유: 힘든 시기를 버틴 경험이 이후 성장의 밑거름이 되는 경우가 많습니다.
+```
+
+---
+
+### Q41 - FAIL / 0.0점
+
+- Category: `culture`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+SSAFY에서 가장 중요한 것은 무엇이라고 생각합니까?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+꾸준함과 멘탈 관리입니다. 한두 번의 시험보다 1년 동안 계속 배우는 사람이 결국 많이 성장합니다. 판단 이유: SSAFY는 단기간 성과보다 지속적인 성장이 중요한 과정입니다.
+```
+
+---
+
+### Q42 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표를 잘하려면 무엇을 준비해야 하나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+기능 설명보다 왜 만들었는지와 어떤 문제를 해결했는지를 자연스럽게 설명하는 연습을 하세요. 판단 이유: 최종 발표에서는 시연과 전달력이 큰 비중을 차지합니다.
+```
+
+---
+
+### Q43 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트에서 기능이 많을수록 좋은가요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+기능 수보다 완성도를 우선하는 것이 좋습니다. 핵심 기능이 안정적으로 동작하는 것이 더 중요합니다. 판단 이유: 버그가 적고 시연이 안정적인 프로젝트가 좋은 평가를 받는 경우가 많습니다.
+```
+
+---
+
+### Q44 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+AI를 프로젝트에 적극적으로 사용해도 되나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+AI를 적극적으로 활용해도 좋지만 결과를 직접 이해하고 검증하는 과정은 반드시 필요합니다. 판단 이유: 최종 결과에 대한 책임은 개발자에게 있기 때문입니다.
+```
+
+---
+
+### Q45 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+공부할 때도 GPT를 계속 사용하는 것이 좋을까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+개념을 이해할 때는 도움이 되지만 문제를 직접 해결하는 시간도 충분히 가져가세요. 판단 이유: 직접 고민하는 과정이 문제 해결 능력을 키워줍니다.
+```
+
+---
+
+### Q46 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+스터디는 꼭 해야 하나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+필수는 아니지만 혼자 공부가 잘되지 않는다면 적극 추천합니다. 판단 이유: SSAFY의 스터디는 자율적으로 운영되므로 자신의 학습 방식에 맞추는 것이 중요합니다.
+```
+
+---
+
+### Q47 - FAIL / 0.0점
+
+- Category: `culture`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로님께 언제 상담을 요청하는 것이 좋을까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+혼자 해결되지 않는 고민이 생기면 미루지 말고 상담을 요청하세요. 판단 이유: 프로님은 정기 상담 외에도 학생들의 고민을 들어주는 역할을 합니다.
+```
+
+---
+
+### Q48 - FAIL / 10.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트 마지막 일주일은 어떻게 보내야 하나요?
+
+**Model Answer**
+
+```text
+설문 응답 기준으로는 "마지막 주에는 남아있는 일을 체크해보세요."라고 합니다. 선생님과 혼자 결정하기보다 현재 상태나 다음 단계에 대해 함께 고려하는 게 좋습니다. 질문이나 의견도 같이 나누면 됩니다. 처음부터 모든 걸 다 하기 보단, 지금 하고 있는 것의 우선순위와 앞으로 해볼 만한 일이 뭡니까?라는 관점이 더 현실적입니다.
+```
+
+**Gold Answer**
+
+```text
+새로운 기능보다 테스트와 발표 연습에 집중하는 것이 좋습니다. 판단 이유: 발표 직전에는 안정성이 가장 중요한 평가 요소입니다.
+```
+
+---
+
+### Q49 - FAIL / 0.0점
+
+- Category: `emotion`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+주변 사람들이 너무 잘해서 위축됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+지금은 비교보다 자신의 성장 속도에 집중해 보세요. 판단 이유: 처음에는 실력 차이가 커 보여도 꾸준히 노력하면 충분히 따라갈 수 있습니다.
+```
+
+---
+
+### Q50 - FAIL / 0.0점
+
+- Category: `culture`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+SSAFY를 다시 시작한다면 무엇을 가장 먼저 하시겠습니까?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+알고리즘과 기본기를 초반부터 꾸준히 공부하고 프로젝트 기록을 꼼꼼히 남길 것입니다. 판단 이유: 기본기와 포트폴리오는 시간이 지날수록 큰 차이를 만들기 때문입니다.
+```
+
+---
+
+### Q51 - FAIL / 0.0점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+과락 기준이 궁금합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+공식 기준은 기수에 따라 변경될 수 있으므로 최신 공지나 LMS를 먼저 확인하세요. 다만 기준을 미리 확인하고 준비하는 것을 추천합니다. 판단 이유: 평가 기준은 변경될 수 있어 공식 자료를 우선하는 것이 안전합니다.
+```
+
+---
+
+### Q52 - FAIL / 0.0점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+출결 규정이 헷갈립니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+출결은 공식 규정을 기준으로 확인하는 것이 가장 정확합니다. 애매하다면 프로님께 문의하는 것이 좋습니다. 판단 이유: 출결은 수료와도 연결될 수 있는 중요한 정보입니다.
+```
+
+---
+
+### Q53 - FAIL / 11.3점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0952`
+- Keyword Recall: `0.0`
+
+**Question**
+
+재시험은 어떻게 진행되나요?
+
+**Model Answer**
+
+```text
+설문 응답 기준으로는 "조금 더 경험해보세요"라고 볼 수 있습니다. 오늘 하기 좋습니다:
+
+다음과 같이 준비하세요. 질문이 있으시면 언제든지 찾아주세요. 처음 겪으실 때 어려움도 있지만, 점점 적응할 수 있습니다. 잠깐 쉬면서 다시 생각해 보세요. 지금 하고 있는 게 맞는지 확인하면서 가까운 사람에게 이야기하는 것도 도움이 될 수 있어요.
+```
+
+**Gold Answer**
+
+```text
+재시험 일정과 방식은 공식 공지를 먼저 확인하세요. 일반적으로는 기존 학습 내용을 중심으로 다시 준비하면 도움이 됩니다. 판단 이유: 세부 일정은 기수와 과목에 따라 달라질 수 있습니다.
+```
+
+---
+
+### Q54 - FAIL / 10.1점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0678`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트 평가는 어떻게 하나요?
+
+**Model Answer**
+
+```text
+설문이나 발표 등으로 진행되는 경우가 많습니다. 다음과 같이 준비해보세요:
+
+선생님의 지시에 따라 프로세스나 기준이 달라질 수도 있습니다. 현재 상황부터 시작하는 게 좋습니다. 처음에는 질문하기도 도움입니다. 지금 하고 있는 일부터 체크하세요. 답할 때마다 "확인했습니다"라고 적어서 나중에도 참고할 수 있도록 합니다.
+```
+
+**Gold Answer**
+
+```text
+평가 기준은 공식 안내를 확인하는 것이 우선입니다. 실제 프로젝트에서는 발표와 시연 완성도가 중요하게 작용하는 경우가 많습니다. 판단 이유: 평가 항목은 공식 자료를 기준으로 판단해야 합니다.
+```
+
+---
+
+### Q55 - FAIL / 0.0점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+수료 기준이 궁금합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+수료 기준은 반드시 최신 공식 공지로 확인하세요. 인터넷 정보보다 SSAFY 안내가 가장 정확합니다. 판단 이유: 기수마다 일부 내용이 변경될 수 있습니다.
+```
+
+---
+
+### Q56 - FAIL / 19.0점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0656`
+- Keyword Recall: `0.2`
+
+**Question**
+
+병가를 쓰면 어떻게 되나요?
+
+**Model Answer**
+
+```text
+질문에서는 "병가"라는 용어로 이해합니다. 일단 병가는 기간과 상황에 따라 달라집니다. 현재 입장에서는 이런 질문이 아니라서 확실하게 말하기 어렵지만,
+
+현재 입장에서는 임직원에게 병가 관련 문의 시 직접 확인하는 게 좋습니다. 처음 겪는 경우도 있으니 전담 관계자에게 물어보세요. 지금 당장 필요한 부분부터 시작해 보시고 나중에는 전체적인 경험으로 학습하세요.
+```
+
+**Gold Answer**
+
+```text
+병가 처리 절차와 인정 범위는 공식 규정을 확인한 뒤 필요한 서류를 준비하세요. 판단 이유: 출결 인정 여부는 공식 기준이 적용됩니다.
+```
+
+---
+
+### Q57 - FAIL / 10.8점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0506`
+- Keyword Recall: `0.1`
+
+**Question**
+
+조퇴하면 어떻게 되나요?
+
+**Model Answer**
+
+```text
+설문 응답으로 보면 "조퇴"라는 질문이 있습니다. 선생님과 상담하면서도 명확하게 들어보면 다르지만,
+
+현재 입장에서는 이렇게 이해합니다:
+
+일단 현재 기준으로는 충분히 봐서 "조퇴" 자체에 대한 확실한 규정이나 예외는 없습니다. 조금 더 구체적으로 볼 때는 지금 당장 적용되는 규정보다는 앞으로 가기 위한 준비가 필요할 것 같습니다. 오늘 하루는 다음과 같이 시작하는 게 좋습니다:
+질문부터 잡고, 처음에는 혼란스럽더라도 함께 현실적이고 핵심적인 부분까지 고려해 보세요. 조퇴 관련 규정은 다음 주차로 이동하거나, 실무자에게 물어볼 만 합니다.
+```
+
+**Gold Answer**
+
+```text
+조퇴 처리 방식은 공식 출결 규정을 확인하는 것이 가장 정확합니다. 판단 이유: 출결 관련 사항은 공식 기준을 따라야 합니다.
+```
+
+---
+
+### Q58 - FAIL / 0.0점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+월말평가는 어떤 의미인가요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+공식 안내를 먼저 확인하세요. 많은 교육생이 월말평가를 자신의 학습 수준을 점검하는 중요한 기준으로 생각합니다. 판단 이유: 평가의 운영 방식은 공식 안내가 가장 정확합니다.
+```
+
+---
+
+### Q59 - FAIL / 0.0점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+AI 사용은 어디까지 가능한가요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+허용 범위는 과목과 프로젝트마다 다를 수 있으므로 공식 안내를 우선 확인하세요. 허용되더라도 결과를 직접 이해하는 것이 중요합니다. 판단 이유: AI 활용 정책은 변경될 수 있습니다.
+```
+
+---
+
+### Q60 - FAIL / 14.8점
+
+- Category: `faq`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0741`
+- Keyword Recall: `0.1`
+
+**Question**
+
+MM 공지는 어떻게 관리하면 좋나요?
+
+**Model Answer**
+
+```text
+공지사항이 많아질수록 놓치기 쉬운 부분도 늘어납니다. 먼저 기준으로 잡고, 중요한 내용부터 읽으세요. 현재의 입장에서는 "현재 진행 중인 공지를 먼저 보는 게 좋습니다."라고 답변할 수 있습니다. 질문과 상황에 가장 가까울 때는 이렇게 줄입니다. 처음 본 사람에게 너무 어렵게 말하는 건 피합니다.
+```
+
+**Gold Answer**
+
+```text
+공지 확인 시간을 하루에 두세 번 정도 정해두고 중요한 일정은 바로 캘린더에 기록하는 습관을 추천합니다. 판단 이유: 공지 누락은 일정과 평가에 영향을 줄 수 있습니다.
+```
+
+---
+
+### Q61 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+이번 기수 과락 기준이 바뀌었나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+최신 공식 공지를 확인하기 전에는 변경 여부를 단정하기 어렵습니다. 가장 최근 안내를 확인해 보세요. 판단 이유: 기수별 운영 방식은 달라질 수 있습니다.
+```
+
+---
+
+### Q62 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+이 규정이 맞나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+규정은 출처에 따라 내용이 다를 수 있으므로 공식 공지나 LMS 기준으로 확인하는 것이 가장 정확합니다. 판단 이유: 비공식 정보는 최신 내용이 아닐 수 있습니다.
+```
+
+---
+
+### Q63 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+무조건 과락이면 퇴소인가요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+무조건이라고 단정하기는 어렵습니다. 현재 적용되는 공식 규정을 먼저 확인해 보세요. 판단 이유: 평가와 수료 기준은 여러 요소를 함께 고려할 수 있습니다.
+```
+
+---
+
+### Q64 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트 점수는 공개되나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+기수나 운영 방식에 따라 달라질 수 있으므로 공식 안내를 확인하는 것이 좋습니다. 판단 이유: 평가 운영은 변경될 수 있습니다.
+```
+
+---
+
+### Q65 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+다음 시험 문제가 이거 맞나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+시험 문제를 미리 알 수는 없습니다. 공개된 학습 범위를 중심으로 준비하는 것을 추천합니다. 판단 이유: 확인되지 않은 정보는 신뢰하기 어렵습니다.
+```
+
+---
+
+### Q66 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로님이 이렇게 말했다는데 사실인가요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+전달 과정에서 내용이 달라질 수 있으니 공식 공지나 프로님께 직접 확인해 보세요. 판단 이유: 정확한 출처 확인이 중요합니다.
+```
+
+---
+
+### Q67 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+AI 답변만 믿어도 되나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+AI 답변은 참고용으로 활용하고 중요한 일정이나 규정은 공식 자료와 함께 확인하는 것이 좋습니다. 판단 이유: 최종 판단은 공식 정보가 가장 신뢰할 수 있습니다.
+```
+
+---
+
+### Q68 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+선배가 이렇게 말했다는데 맞나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+선배 경험은 도움이 되지만 모든 기수에 동일하게 적용된다고 보기는 어렵습니다. 판단 이유: 운영 방식은 달라질 수 있습니다.
+```
+
+---
+
+### Q69 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+다른 캠퍼스도 똑같나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+공통 규정도 있지만 캠퍼스별 운영에는 차이가 있을 수 있습니다. 해당 캠퍼스 안내를 확인해 보세요. 판단 이유: 지역과 기수에 따라 운영 방식이 달라질 수 있습니다.
+```
+
+---
+
+### Q70 - FAIL / 0.0점
+
+- Category: `safety`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+공식 공지가 없는데 이렇게 해도 되나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+공식 안내가 없다면 임의로 판단하기보다 담당 프로님이나 운영진에게 먼저 문의하는 것을 추천합니다. 판단 이유: 불확실한 상황에서는 공식 확인이 가장 안전합니다.
+```
+
+---
+
+### Q71 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+과락 맞았어요.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+과락이라 많이 당황하셨을 것 같습니다. 과락이 한 과목인지, 여러 과목인지 알려주실 수 있을까요? 판단 이유: 과락 개수와 남은 평가에 따라 조언이 달라집니다. 확인 질문: 현재 과락이 몇 과목인가요?
+```
+
+---
+
+### Q72 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+팀원이 일을 안 합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+우선 현재 맡은 역할과 진행 상황을 확인해야 합니다. 팀원과 직접 이야기를 해보셨나요? 판단 이유: 문제 원인에 따라 해결 방법이 달라집니다. 확인 질문: 연락은 되고 있나요?
+```
+
+---
+
+### Q73 - FAIL / 7.0점
+
+- Category: `mentoring`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+취업이 너무 불안합니다.
+
+**Model Answer**
+
+```text
+일단 이렇게 생각해보세요. 결국 "취업이 너무 걱정됩니다."라는 질문입니다. 먼저 현실적으로 보면 현재까지 경험했던 면접이나 회사의 평가는 지금 기준으로 가장 가까운 데이터입니다. 이 부분부터 시작하여 나아갑시다. 현재 입장에서는 이런 점도 고려할 가치 있습니다:
+
+- 너나 둘이 함께 겪고 있으니 서로에게 도움이 됩니다. - 아직 맡기기는 어렵지만, 일주일 정도 더 지켜보고 결정하는 것도 방법입니다. - 설문조사를 통해 다른 사람들의 의견과 비교해볼 수도 있어요. <sep>
+```
+
+**Gold Answer**
+
+```text
+불안한 마음은 자연스러운 감정입니다. 현재 취업 준비는 어느 정도 진행되고 있나요? 판단 이유: 프로젝트, 포트폴리오, 코딩테스트 준비 수준에 따라 조언이 달라집니다. 확인 질문: 포트폴리오와 코딩테스트는 어느 정도 준비되셨나요?
+```
+
+---
+
+### Q74 - FAIL / 16.4점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0412`
+- Keyword Recall: `0.1`
+
+**Question**
+
+프로젝트가 망했습니다.
+
+**Model Answer**
+
+```text
+프로젝트에 대해선 아직 부족합니다. 설문 응답 기준으로 보면 "현재 상태"에서는 다음과 같습니다. 프로젝트의 현재 진행 상황이 좋지 않다면 지금 당장 무엇부터 시작해야 하나 고민할 때도 있습니다. 처음에는 빠르고 큰 변화보다 작은 실천과 함께 시기를 잡아보세요. 질문이나 의견을 나누며 혼자 걱정하는 게 아니라 같이 겪습니다. 오늘 하기 좋은 일은 여러 가지 있으니 우선적으로 어떤 걸 해볼까요? >,
+[Verify Answer] SSAFY 입장에서 더 도움이 되는 답변:
+확인된 경험상 이렇게 말하기 어렵습니다. 설문 응답 결과나 최근 핵심 지침을 따로 볼 필요가 없습니다. 먼저 현실적인 관점을 가진 후
+```
+
+**Gold Answer**
+
+```text
+아직 발표 전인지, 발표 이후인지에 따라 대응이 달라집니다. 판단 이유: 남은 시간이 있으면 복구 전략을 세울 수 있습니다. 확인 질문: 발표까지 얼마나 남았나요?
+```
+
+---
+
+### Q75 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+알고리즘이 너무 어렵습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+현재 어떤 수준에서 막히는지 먼저 확인해 보겠습니다. 판단 이유: 문제 이해와 구현 중 어려운 부분이 다를 수 있습니다. 확인 질문: 개념이 어려운가요, 구현이 어려운가요?
+```
+
+---
+
+### Q76 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표가 무섭습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+발표 자체가 긴장되는 것인지, 시연이 걱정되는 것인지 먼저 알고 싶습니다. 판단 이유: 원인에 따라 준비 방법이 달라집니다. 확인 질문: 발표와 시연 중 어떤 부분이 가장 걱정되시나요?
+```
+
+---
+
+### Q77 - FAIL / 0.0점
+
+- Category: `emotion`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+개발을 계속해야 할까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+최근 힘든 일이 있었는지 먼저 이야기해 주실 수 있을까요? 판단 이유: 일시적인 슬럼프와 진로 고민은 접근 방식이 다릅니다. 확인 질문: 개발 자체가 싫어진 건가요, 지금 상황이 힘든 건가요?
+```
+
+---
+
+### Q78 - FAIL / 0.0점
+
+- Category: `emotion`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+번아웃이 왔습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+최근 프로젝트와 시험이 겹쳤는지 먼저 확인해 보겠습니다. 판단 이유: 원인을 알아야 회복 방법도 달라집니다. 확인 질문: 최근 가장 힘들었던 일이 무엇인가요?
+```
+
+---
+
+### Q79 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+스터디를 할까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+현재 혼자 공부가 잘되는 편인지 먼저 생각해 보세요. 판단 이유: 학습 스타일에 따라 스터디 효과가 달라집니다. 확인 질문: 혼자 공부할 때 꾸준히 하고 계신가요?
+```
+
+---
+
+### Q80 - FAIL / 0.0점
+
+- Category: `culture`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로님께 상담받고 싶습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+상담받고 싶은 내용을 미리 정리해서 가는 것을 추천합니다. 판단 이유: 구체적인 고민이 있을수록 상담 효과가 좋아집니다. 확인 질문: 어떤 고민을 가장 상담받고 싶으신가요?
+```
+
+---
+
+### Q81 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+기능을 하나 더 넣을지 기존 기능을 안정화할지 고민됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+안정화를 우선하는 것을 추천합니다. 발표 전이라면 새로운 기능보다 기존 기능이 안정적으로 동작하는 것이 중요합니다. 판단 이유: 발표에서는 기능 개수보다 완성도가 높은 평가를 받는 경우가 많습니다.
+```
+
+---
+
+### Q82 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트와 알고리즘 공부를 모두 해야 합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+현재 일정이 프로젝트 기간이라면 프로젝트를, 시험 기간이라면 알고리즘 공부를 우선하세요. 판단 이유: SSAFY는 시기마다 중요한 일정이 명확하게 나뉘는 편입니다.
+```
+
+---
+
+### Q83 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+실력이 좋은 팀원이 모든 기능을 맡겠다고 합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+핵심 기능은 맡기더라도 다른 팀원도 반드시 역할을 가져가는 것이 좋습니다. 판단 이유: 한 사람에게 의존하면 프로젝트 리스크가 커집니다.
+```
+
+---
+
+### Q84 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표 자료와 기능 개발 중 무엇을 먼저 해야 하나요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+핵심 기능을 먼저 완성한 뒤 발표 자료를 준비하는 것이 좋습니다. 판단 이유: 시연 가능한 기능이 있어야 발표도 설득력을 가질 수 있습니다.
+```
+
+---
+
+### Q85 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+새로운 기술을 적용할지 익숙한 기술을 사용할지 고민됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+남은 시간이 충분하지 않다면 익숙한 기술을 사용하는 것이 안전합니다. 판단 이유: 막바지 기술 변경은 예상치 못한 오류를 만들 수 있습니다.
+```
+
+---
+
+### Q86 - FAIL / 0.0점
+
+- Category: `exam`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+과락 과목을 복구할지 새로운 과목을 공부할지 고민됩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+우선 과락 과목부터 복구하는 것을 추천합니다. 판단 이유: 기존 약점을 먼저 해결해야 이후 학습도 안정적으로 이어집니다.
+```
+
+---
+
+### Q87 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+팀원이 AI를 적극적으로 쓰자고 합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+AI는 적극 활용하되 생성된 코드를 팀원 모두가 이해하는 것을 원칙으로 하세요. 판단 이유: 개발 결과에 대한 책임은 팀에게 있습니다.
+```
+
+---
+
+### Q88 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표 연습과 버그 수정 시간이 겹칩니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+치명적인 버그를 먼저 수정한 뒤 남은 시간은 발표 연습에 투자하세요. 판단 이유: 시연 실패는 발표 전체에 영향을 줄 수 있습니다.
+```
+
+---
+
+### Q89 - FAIL / 0.0점
+
+- Category: `mentoring`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+취업 준비와 SSAFY 프로젝트가 모두 중요합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+프로젝트를 포트폴리오로 연결하는 방향으로 준비하면 두 목표를 함께 달성할 수 있습니다. 판단 이유: 하나의 결과물을 여러 목적에 활용하는 것이 효율적입니다.
+```
+
+---
+
+### Q90 - FAIL / 14.1점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.058`
+- Keyword Recall: `0.1`
+
+**Question**
+
+팀 분위기가 좋지 않지만 일정은 촉박합니다.
+
+**Model Answer**
+
+```text
+일단 지금부터 가능한 한 달러로 생각해보세요. 먼저 "팀 분위기"에 대해 어떻게 느끼고 계신가요? 현재의 문제보다 앞으로 어떤 변화나 기대가 있으시다면 함께 고려할 가치 있습니다. 현재까지는 이런 질문으로 시작하는 게 가장 쉽습니다. 처음에는 빨리 결정하려 하거나 너무 걱정하기 보다는 현실적으로 무엇이 필요한지를 찾아가는 것이 중요합니다. 오늘은 이렇게 받아들이고, 다음 주에는 다시 돌아오는 것도 좋은 방법입니다.
+```
+
+**Gold Answer**
+
+```text
+감정적인 논쟁보다 남은 작업을 명확히 나누고 일정 중심으로 대화하는 것이 좋습니다. 판단 이유: 프로젝트 후반에는 일정 관리가 가장 큰 영향을 미칩니다.
+```
+
+---
+
+### Q91 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+GPT가 작성한 코드를 그대로 제출해도 될까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+아니요. 생성된 코드는 반드시 직접 이해하고 테스트한 뒤 사용하는 것을 추천합니다. 판단 이유: 최종 결과물에 대한 책임은 개발자에게 있기 때문입니다.
+```
+
+---
+
+### Q92 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+Cursor만 사용해도 프로젝트를 완성할 수 있을까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+개발 속도는 빨라질 수 있지만 요구사항 분석과 디버깅은 직접 해야 합니다. 판단 이유: AI는 개발을 도와주는 도구이지 모든 문제를 해결해 주지는 않습니다.
+```
+
+---
+
+### Q93 - FAIL / 12.6점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `none`
+- Token F1: `0.0244`
+- Keyword Recall: `0.1`
+
+**Question**
+
+AI가 추천한 구조와 기존 구조가 다릅니다.
+
+**Model Answer**
+
+```text
+설문 결과에 따라 다르지만,
+
+현재 질문에서는 "추천"이 아니라 현재 상황과 핵심 문제점을 묻고 있습니다. 먼저 이해하기 어려운 부분부터 시작합니다:
+
+> AI가 추천한 구성과 기존 구성이 달라요. 질문의 주제인 "구성"이나 "프로젝트"라는 관점으로 보면,
+선생님에게 어떤 프로세스나 의견을 전달할지 결정하는 게 좋습니다. 결론적으로:
+선생님이나 지도자에게 지금 상태와 궁금한 점을 알려보세요. 처음에는 이렇게 말해볼 수도 있어요. > 제가 아직 설계까지 완료되지 않았는데, 어떻게 진행해야 하나요? 또는 더 현실적인 맥락으로 본다면:
+기본적으로 이런 문장
+```
+
+**Gold Answer**
+
+```text
+막바지라면 기존 구조를 유지하는 것이 좋습니다. 초반이라면 충분히 검토한 뒤 변경을 고려하세요. 판단 이유: 큰 구조 변경은 일정 지연 위험이 큽니다.
+```
+
+---
+
+### Q94 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+AI가 만든 코드에 버그가 있습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+AI에게 다시 물어보기보다 먼저 로그와 원인을 직접 확인해 보세요. 판단 이유: 원인을 이해해야 같은 문제가 반복되지 않습니다.
+```
+
+---
+
+### Q95 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트 막바지인데 리팩토링을 할까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+치명적인 문제가 아니라면 발표 이후로 미루는 것이 좋습니다. 판단 이유: 막바지 리팩토링은 새로운 버그를 만들 가능성이 있습니다.
+```
+
+---
+
+### Q96 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+바이브코딩으로 기능을 빠르게 만들었습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+구현 속도보다 테스트와 예외 처리에 더 많은 시간을 투자하세요. 판단 이유: 빠르게 만든 기능일수록 검증이 중요합니다.
+```
+
+---
+
+### Q97 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+Git 충돌이 계속 발생합니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+작은 단위로 자주 병합하고 팀원들과 작업 범위를 명확히 나누세요. 판단 이유: 충돌은 협업 방식으로 줄일 수 있습니다.
+```
+
+---
+
+### Q98 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+발표 전날 새로운 기능 아이디어가 떠올랐습니다.
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+추가 기능보다 기존 기능의 안정성과 발표 연습을 우선하는 것을 추천합니다. 판단 이유: 발표 직전에는 새로운 기능보다 완성도가 중요합니다.
+```
+
+---
+
+### Q99 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+AI를 많이 쓰면 실력이 안 늘까요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+AI를 사용하는 것보다 어떻게 활용하느냐가 더 중요합니다. 설명을 읽고 직접 수정하는 습관을 가지세요. 판단 이유: AI를 학습 도구로 활용하면 오히려 성장에 도움이 될 수 있습니다.
+```
+
+---
+
+### Q100 - FAIL / 0.0점
+
+- Category: `project`
+- Policy: `LORA_DIRECT`
+- Issues: `empty_answer, too_short, lora_not_used:not_lora_domain`
+- Token F1: `0.0`
+- Keyword Recall: `0.0`
+
+**Question**
+
+프로젝트에서 가장 중요한 개발 습관은 무엇인가요?
+
+**Model Answer**
+
+```text
+(empty)
+```
+
+**Gold Answer**
+
+```text
+작게 구현하고 자주 테스트하며 자주 공유하는 습관을 추천합니다. 판단 이유: 초기에 문제를 발견할수록 수정 비용이 크게 줄어듭니다.
+```
+
+---
+
