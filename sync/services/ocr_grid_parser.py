@@ -315,6 +315,20 @@ def _has_il_following(box, boxes):
     return False
 
 
+def _looks_like_timetable_day_header(box, boxes):
+    weekday_boxes = [
+        other for other in boxes
+        if str(other.get('text') or '').strip().upper() in WEEKDAY_HEADERS
+        or str(other.get('text') or '').strip() in KOREAN_WEEKDAY_HEADERS
+    ]
+    if not weekday_boxes:
+        return False
+    nearest_weekday = min(weekday_boxes, key=lambda other: abs(other['cx'] - box['cx']))
+    horizontally_aligned = abs(nearest_weekday['cx'] - box['cx']) <= 55
+    below_weekday = 0 <= box['y1'] - nearest_weekday['y2'] <= 80
+    return horizontally_aligned and below_weekday
+
+
 def _dedupe_month_headers(month_headers):
     seen = set()
     deduped = []
@@ -340,7 +354,7 @@ def _build_date_cells(month, boxes, timetable_mode=False):
         # In timetable mode, a bare digit (DAY_PATTERN) must be followed by '일'
         # to qualify as a date header. This prevents time-slot digits ("9" in "9:00")
         # and numbered-item digits ("1" in "1부") from creating spurious row splits.
-        if timetable_mode and DAY_PATTERN.match(text) and not _has_il_following(box, boxes):
+        if timetable_mode and DAY_PATTERN.match(text) and not _has_il_following(box, boxes) and not _looks_like_timetable_day_header(box, boxes):
             continue
         day_boxes.append((day, box))
 
@@ -487,16 +501,93 @@ def _event_titles_from_cell(boxes, cell):
 def _timetable_titles_from_cell(boxes, cell, source_title=''):
     cell_boxes = [
         box for box in boxes
-        if _overlap_ratio(_box_rect(box), cell) >= 0.5
+        if _timetable_box_belongs_to_cell(box, cell)
         and not _is_structural_box(box)
     ]
+    if not cell_boxes:
+        return []
+
     titles = []
-    for row in _group_rows(cell_boxes):
-        phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
+    for block in _timetable_cell_blocks(cell_boxes):
+        ordered_boxes = _sort_boxes_in_reading_order(block)
+        phrase = ' '.join(box['text'] for box in ordered_boxes)
         title = _clean_timetable_title(phrase, source_title=source_title)
         if title:
-            titles.append((title, row))
+            titles.append((title, ordered_boxes))
     return titles
+
+
+def _sort_boxes_in_reading_order(boxes):
+    ordered = []
+    for row in _group_rows(boxes):
+        ordered.extend(sorted(row, key=lambda item: item['x1']))
+    return ordered
+
+
+def _timetable_box_belongs_to_cell(box, cell):
+    if _overlap_area(_box_rect(box), cell) <= 0:
+        return False
+    return cell['x1'] - 10 <= box['x1'] <= cell['x2']
+
+
+def _timetable_cell_blocks(boxes):
+    blocks = []
+    for row in _group_rows(boxes):
+        if not blocks:
+            blocks.append(list(row))
+            continue
+        if _should_start_new_timetable_block(blocks[-1], row):
+            blocks.append(list(row))
+        else:
+            blocks[-1].extend(row)
+    return blocks
+
+
+def _should_start_new_timetable_block(previous_boxes, next_row):
+    previous_phrase = _timetable_phrase(previous_boxes)
+    next_phrase = _timetable_phrase(next_row)
+    previous_clean = _clean_timetable_title(previous_phrase)
+    next_clean = _clean_timetable_title(next_phrase)
+    gap = min(box['y1'] for box in next_row) - max(box['y2'] for box in previous_boxes)
+
+    if gap > 24:
+        return True
+    if _starts_new_timetable_item(next_phrase):
+        return bool(previous_clean)
+    if _continues_timetable_item(previous_phrase, next_phrase):
+        return False
+    if not previous_clean:
+        return False
+    if previous_clean and next_clean:
+        return True
+    return False
+
+
+def _timetable_phrase(boxes):
+    return ' '.join(box['text'] for box in _sort_boxes_in_reading_order(boxes))
+
+
+def _starts_new_timetable_item(text):
+    compact = _compact_text(text)
+    return (
+        compact in TIMETABLE_LUNCH_COMPACTS
+        or _is_time_only_text(text)
+        or str(text or '').lstrip().startswith('[실습')
+    )
+
+
+def _continues_timetable_item(previous_text, next_text):
+    previous = str(previous_text or '').strip()
+    next_value = str(next_text or '').strip()
+    if not next_value:
+        return False
+    if previous.endswith((':', '(', '[', '/', '&')):
+        return True
+    if next_value.startswith(('&', '/', ')', ']')):
+        return True
+    if re.match(r'^[a-z]', next_value):
+        return True
+    return False
 
 
 def _overlapping_cells(rect, cells):
@@ -672,7 +763,8 @@ def _normalize_timetable_spacing(text):
     text = re.sub(r'\s*/\s*', ' / ', text)
     text = re.sub(r'\[\s*', '[', text)
     text = re.sub(r'\s*\]', ']', text)
-    text = re.sub(r'\s*&\s*', '&', text)
+    text = re.sub(r'\s*&\s*', ' & ', text)
+    text = re.sub(r'\bQ\s*&\s*A\b', 'Q&A', text, flags=re.IGNORECASE)
     text = re.sub(r'\b(JS|Django)\s+(?=[A-Za-z])', r'\1: ', text)
     text = re.sub(r'\s+', ' ', text)
     text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
@@ -690,7 +782,7 @@ def _prefix_timetable_title(text):
 def _has_timetable_non_learning_marker(text):
     normalized = str(text or '').strip()
     compact = _compact_text(normalized)
-    if normalized.startswith('[실습 및 Q&A]'):
+    if normalized.startswith('[실습'):
         return True
     if any(keyword in compact for keyword in ['과목평가', '월말평가', '역량테스트']):
         return True

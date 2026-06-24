@@ -130,7 +130,6 @@ def is_blocking_generated_schedule_warning(warning):
         'timetable_title_equals_source_title',
         'non_positive_duration',
         'source_title_period_mismatch',
-        'generated_class_on_korean_holiday',
     }
 
 
@@ -159,13 +158,10 @@ def _is_timetable_source_period_mismatch(source_title, schedule):
     if not start_at:
         return False
     source_text = str(source_title or '')
-    month_match = re.search(r'(\d{1,2})\s*월', source_text)
-    week_match = re.search(r'(\d{1,2})\s*주차', source_text)
-    if not month_match or not week_match:
+    source_month, source_week = _source_month_week(source_text)
+    if source_month is None or source_week is None:
         return False
     event_date = timezone.localdate(start_at)
-    source_month = int(month_match.group(1))
-    source_week = int(week_match.group(1))
     if event_date.month != source_month:
         return True
     expected_week = _month_week_index(event_date)
@@ -179,6 +175,18 @@ def _month_week_index(event_date):
     if event_date < first_monday:
         return None
     return ((event_date - first_monday).days // 7) + 1
+
+
+def _source_month_week(source_text):
+    month_match = re.search(r'(\d{1,2})\s*월', source_text)
+    week_match = re.search(r'(\d{1,2})\s*주차', source_text)
+    if month_match and week_match:
+        return int(month_match.group(1)), int(week_match.group(1))
+
+    fallback_match = re.search(r'(?P<month>\d{1,2})\?\s*(?P<week>\d{1,2})\?\?', source_text)
+    if fallback_match:
+        return int(fallback_match.group('month')), int(fallback_match.group('week'))
+    return None, None
 
 
 def filter_calendar_visible_events(events):

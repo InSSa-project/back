@@ -64,7 +64,7 @@ class ScheduleEvent(models.Model):
 
 class UserScheduleEvent(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='user_schedule_events')
-    schedule_event = models.ForeignKey(ScheduleEvent, on_delete=models.CASCADE, related_name='user_schedule_events')
+    schedule_event = models.ForeignKey('schedules.ScheduleEvent', on_delete=models.CASCADE, related_name='user_schedule_events')
     is_done = models.BooleanField(default=False)
     memo = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
