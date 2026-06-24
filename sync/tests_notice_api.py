@@ -1058,3 +1058,424 @@ class BackfillNoticeTracksCommandTests(TestCase):
         # Should not raise and DB should still have correct value
         count = RawSsafyData.objects.filter(metadata_json__track_key='python').count()
         self.assertEqual(count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Supabase Storage adapter unit tests (no real network)
+# ---------------------------------------------------------------------------
+
+class NoticeStorageTests(TestCase):
+    """Unit tests for SupabaseNoticeStorage with mocked HTTP calls."""
+
+    def _make_storage(self, configured=True):
+        from sync.services.notice_storage import SupabaseNoticeStorage
+        storage = SupabaseNoticeStorage()
+        if configured:
+            storage._base_url = 'https://testproject.supabase.co'
+            storage._service_key = 'test-service-role-key'
+            storage._bucket = 'notices'
+            storage._timeout = 5
+        else:
+            storage._base_url = ''
+            storage._service_key = ''
+        return storage
+
+    def test_is_configured_true_when_url_and_key_set(self):
+        self.assertTrue(self._make_storage(configured=True).is_configured())
+
+    def test_is_configured_false_when_missing(self):
+        self.assertFalse(self._make_storage(configured=False).is_configured())
+
+    def test_assert_configured_raises_when_missing(self):
+        from sync.services.notice_storage import NoticeStorageUnconfigured
+        with self.assertRaises(NoticeStorageUnconfigured):
+            self._make_storage(configured=False).assert_configured()
+
+    def test_object_key_format(self):
+        key = self._make_storage().object_key(123, 0, 'abcd1234')
+        self.assertEqual(key, 'notices/123/0-abcd1234.webp')
+
+    def test_public_url_contains_key(self):
+        storage = self._make_storage()
+        url = storage.public_url('notices/123/0-abcd1234.webp')
+        self.assertIn('notices/123/0-abcd1234.webp', url)
+        self.assertIn('supabase.co', url)
+
+    def test_is_storage_url_matches_project(self):
+        storage = self._make_storage()
+        self.assertTrue(storage.is_storage_url('https://testproject.supabase.co/storage/v1/object/public/notices/1.webp'))
+        self.assertFalse(storage.is_storage_url('https://cdn.example.com/image.png'))
+
+    def test_upload_skips_if_object_exists(self):
+        from unittest.mock import patch, MagicMock
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 200
+        with patch('requests.head', mock_head):
+            url = storage.upload('notices/1/0-abc.webp', b'data')
+        self.assertIn('notices/1/0-abc.webp', url)
+        mock_head.assert_called_once()
+
+    def test_upload_posts_when_object_missing(self):
+        from unittest.mock import patch, MagicMock
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 404
+        mock_post = MagicMock()
+        mock_post.return_value.ok = True
+        with patch('requests.head', mock_head), patch('requests.post', mock_post):
+            url = storage.upload('notices/1/0-abc.webp', b'webp-data')
+        self.assertIn('notices/1/0-abc.webp', url)
+        mock_post.assert_called_once()
+        _args, kwargs = mock_post.call_args
+        headers = kwargs.get('headers', {})
+        self.assertEqual(headers.get('Content-Type'), 'image/webp')
+        self.assertIn('immutable', headers.get('Cache-Control', ''))
+
+    def test_upload_raises_on_http_error(self):
+        from unittest.mock import patch, MagicMock
+        from sync.services.notice_storage import NoticeStorageError
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 404
+        mock_post = MagicMock()
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 500
+        mock_post.return_value.text = 'Internal Server Error'
+        with patch('requests.head', mock_head), patch('requests.post', mock_post):
+            with self.assertRaises(NoticeStorageError):
+                storage.upload('notices/1/0-abc.webp', b'data')
+
+    def test_upload_handles_supabase_duplicate_400(self):
+        from unittest.mock import patch, MagicMock
+        storage = self._make_storage()
+        mock_head = MagicMock()
+        mock_head.return_value.status_code = 404
+        mock_post = MagicMock()
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 400
+        mock_post.return_value.text = 'The resource already exists'
+        with patch('requests.head', mock_head), patch('requests.post', mock_post):
+            url = storage.upload('notices/1/0-abc.webp', b'data')
+        self.assertIn('notices/1/0-abc.webp', url)
+
+    def test_service_key_not_in_public_url(self):
+        storage = self._make_storage()
+        url = storage.public_url('notices/1/0-abc.webp')
+        self.assertNotIn('test-service-role-key', url)
+
+    def test_content_hash_produces_16_char_hex(self):
+        from sync.services.notice_storage import content_hash
+        h = content_hash(b'hello world')
+        self.assertEqual(len(h), 16)
+        self.assertTrue(all(c in '0123456789abcdef' for c in h))
+
+    def test_is_local_media_url(self):
+        from sync.services.notice_storage import is_local_media_url
+        self.assertTrue(is_local_media_url('/media/notices/file.webp'))
+        self.assertFalse(is_local_media_url('https://cdn.example.com/file.webp'))
+
+    def test_is_supabase_storage_url(self):
+        from sync.services.notice_storage import is_supabase_storage_url
+        self.assertTrue(is_supabase_storage_url('https://abcd.supabase.co/storage/v1/object/public/notices/1.webp'))
+        self.assertFalse(is_supabase_storage_url('https://cdn.example.com/1.webp'))
+
+
+# ---------------------------------------------------------------------------
+# notice_images structured metadata → API response tests
+# ---------------------------------------------------------------------------
+
+class NoticeStorageImageApiTests(TestCase):
+    """Verify the API uses notice_images structured entries correctly."""
+
+    def test_storage_url_returned_from_notice_images(self):
+        storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/1/0-abc.webp'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Storage image notice',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {
+                        'source_url': 'https://edu.ssafy.com/original.png',
+                        'storage_key': 'notices/1/0-abc.webp',
+                        'storage_url': storage_url,
+                        'format': 'webp',
+                        'size_bytes': 102400,
+                        'sort_order': 0,
+                        'width': 1600,
+                        'height': 2200,
+                    }
+                ]
+            },
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]['url'], storage_url)
+        self.assertEqual(images[0]['sort_order'], 0)
+        self.assertEqual(images[0]['width'], 1600)
+        self.assertEqual(images[0]['height'], 2200)
+        self.assertEqual(images[0]['size_bytes'], 102400)
+
+    def test_notice_images_takes_priority_over_legacy_image_urls(self):
+        storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/2/0-def.webp'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Priority test',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {'source_url': 'https://edu.ssafy.com/original.png', 'storage_url': storage_url, 'sort_order': 0}
+                ],
+                'image_urls': ['/media/notices/old.webp'],
+            },
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]['url'], storage_url)
+
+    def test_source_url_fallback_when_no_storage_url(self):
+        source_url = 'https://edu.ssafy.com/original.png'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Fallback test',
+            raw_text='body',
+            metadata_json={'notice_images': [{'source_url': source_url, 'sort_order': 0}]},
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual(images[0]['url'], source_url)
+
+    def test_no_relative_media_url_in_response_when_storage_url_exists(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='No relative URL',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {'source_url': 'https://edu.ssafy.com/image.png',
+                     'storage_url': 'https://proj.supabase.co/storage/v1/object/public/notices/notices/3/0-ghi.webp',
+                     'sort_order': 0}
+                ]
+            },
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        url = images[0]['url']
+        self.assertFalse(url.startswith('/media/'))
+        self.assertFalse(url.startswith('/static/'))
+
+    def test_relative_media_url_becomes_absolute_in_legacy_path(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Relative URL notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['/media/notices/notice-1_opt.webp']},
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertTrue(images[0]['url'].startswith('http'))
+        self.assertIn('/media/notices/', images[0]['url'])
+
+    def test_image_order_preserved(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Multi-image notice',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {'storage_url': 'https://proj.supabase.co/img/1.webp', 'sort_order': 0},
+                    {'storage_url': 'https://proj.supabase.co/img/2.webp', 'sort_order': 1},
+                    {'storage_url': 'https://proj.supabase.co/img/3.webp', 'sort_order': 2},
+                ]
+            },
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        self.assertEqual([img['sort_order'] for img in images], [0, 1, 2])
+
+    def test_no_data_uri_in_response(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='No data URI',
+            raw_text='body',
+            metadata_json={'notice_images': [{'storage_url': 'https://proj.supabase.co/img/x.webp', 'sort_order': 0}]},
+        )
+
+        images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
+        for image in images:
+            self.assertFalse(str(image.get('url', '')).startswith('data:'))
+
+    def test_legacy_metadata_notice_returns_no_server_error(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Legacy notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/legacy.png']},
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(images[0]['url'], 'https://edu.ssafy.com/legacy.png')
+
+    def test_empty_images_for_notice_without_metadata(self):
+        raw_data = RawSsafyData.objects.create(source_type='notice', title='No images', raw_text='body')
+        self.assertEqual(self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images'], [])
+
+
+# ---------------------------------------------------------------------------
+# Backfill command — dry-run and option tests (no real storage)
+# ---------------------------------------------------------------------------
+
+class BackfillNoticeImagesCommandTests(TestCase):
+
+    def _run_command(self, **kwargs):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('backfill_notice_images', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_dry_run_makes_no_db_changes(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Dry run notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/image.png']},
+        )
+        self._run_command(dry_run=True)
+        notice.refresh_from_db()
+        self.assertNotIn('notice_images', notice.metadata_json)
+
+    def test_dry_run_output_mentions_dry_run(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Notice with image',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/image.png']},
+        )
+        output = self._run_command(dry_run=True)
+        self.assertIn('dry-run', output.lower())
+
+    def test_blocked_origin_skipped_in_dry_run(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Blocked origin',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://evil.example.com/image.png']},
+        )
+        output = self._run_command(dry_run=True)
+        self.assertIn('전체 notice', output)
+
+    def test_notice_id_option_restricts_to_single_notice(self):
+        target = RawSsafyData.objects.create(
+            source_type='notice', title='Target', raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/img.png']},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice', title='Other', raw_text='body',
+            metadata_json={'image_urls': ['https://edu.ssafy.com/img2.png']},
+        )
+        output = self._run_command(dry_run=True, notice_id=target.id)
+        self.assertIn('전체 notice', output)
+
+    def test_limit_option_output_contains_stats(self):
+        for i in range(5):
+            RawSsafyData.objects.create(
+                source_type='notice', title=f'Notice {i}', raw_text='body',
+                metadata_json={'image_urls': ['https://edu.ssafy.com/img.png']},
+            )
+        output = self._run_command(dry_run=True, limit=2)
+        self.assertIn('전체 notice', output)
+
+    def test_already_supabase_url_dry_run_shows_already_storage(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Already uploaded',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {
+                        'source_url': 'https://edu.ssafy.com/img.png',
+                        'storage_key': 'notices/1/0-abc.webp',
+                        'storage_url': 'https://proj.supabase.co/storage/v1/object/public/notices/notices/1/0-abc.webp',
+                        'sort_order': 0,
+                    }
+                ]
+            },
+        )
+        # dry-run should not try to re-download or re-upload
+        output = self._run_command(dry_run=True)
+        self.assertIn('전체 notice', output)
+
+
+# ---------------------------------------------------------------------------
+# Security / SSRF tests
+# ---------------------------------------------------------------------------
+
+class NoticeImageSSRFGuardTests(TestCase):
+
+    def _is_allowed(self, url):
+        from sync.management.commands.backfill_notice_images import _is_allowed_origin
+        return _is_allowed_origin(url)
+
+    def test_ssafy_cdn_allowed(self):
+        self.assertTrue(self._is_allowed('https://edu.ssafy.com/image.png'))
+
+    def test_ssafy_subdomain_allowed(self):
+        self.assertTrue(self._is_allowed('https://cdn.edu.ssafy.com/image.png'))
+
+    def test_arbitrary_host_blocked(self):
+        self.assertFalse(self._is_allowed('https://evil.example.com/image.png'))
+
+    def test_localhost_blocked(self):
+        self.assertFalse(self._is_allowed('http://localhost/image.png'))
+        self.assertFalse(self._is_allowed('http://127.0.0.1/image.png'))
+
+    def test_internal_ip_blocked(self):
+        self.assertFalse(self._is_allowed('http://192.168.1.1/image.png'))
+        self.assertFalse(self._is_allowed('http://10.0.0.1/image.png'))
+
+    def test_collect_source_urls_deduplicates(self):
+        from sync.management.commands.backfill_notice_images import _collect_source_urls
+        metadata = {
+            'image_urls': [
+                'https://edu.ssafy.com/img1.png',
+                'https://edu.ssafy.com/img1.png',
+                'https://edu.ssafy.com/img2.png',
+            ]
+        }
+        urls = _collect_source_urls(metadata)
+        self.assertEqual(len(urls), 2)
+
+    def test_collect_source_urls_prefers_notice_images_source_url(self):
+        from sync.management.commands.backfill_notice_images import _collect_source_urls
+        metadata = {
+            'notice_images': [
+                {'source_url': 'https://edu.ssafy.com/original.png',
+                 'storage_url': 'https://proj.supabase.co/img.webp'},
+            ],
+            'image_urls': ['https://edu.ssafy.com/other.png'],
+        }
+        urls = _collect_source_urls(metadata)
+        self.assertEqual(urls, ['https://edu.ssafy.com/original.png'])
+
+    def test_service_key_not_exposed_in_api_response(self):
+        from django.test import override_settings
+        storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/99/0-x.webp'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Key exposure test',
+            raw_text='body',
+            metadata_json={'notice_images': [{'storage_url': storage_url, 'sort_order': 0}]},
+        )
+        with override_settings(SUPABASE_SERVICE_ROLE_KEY='super-secret-key-do-not-expose'):
+            response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertNotIn(b'super-secret-key-do-not-expose', response.content)
