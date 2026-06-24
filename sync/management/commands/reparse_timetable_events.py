@@ -3,6 +3,7 @@ from django.core.management.base import BaseCommand, CommandError
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
 from sync.services.reparse_service import reparse_raw_data_to_events
+from sync.services.schedule_parser import parse_schedule_candidates
 from sync.services.tracks import normalize_track_key, track_key_from_text
 
 
@@ -47,6 +48,7 @@ class Command(BaseCommand):
 
         dry_run = options['dry_run'] or not options['confirm']
         existing_event_count = ScheduleEvent.objects.filter(raw_data__in=queryset, owner__isnull=True).count()
+        preview = _preview_reparse_titles(queryset)
 
         summary = reparse_raw_data_to_events(
             queryset,
@@ -64,10 +66,15 @@ class Command(BaseCommand):
                 f'created_count={summary.created_count}\n'
                 f'skipped_count={summary.skipped_count}\n'
                 f'replaced_event_count={summary.replaced_event_count}\n'
+                f'protected_event_count={summary.protected_event_count}\n'
                 f'failed_count={summary.failed_count}\n'
                 f'dry_run={str(dry_run).lower()}'
             )
         )
+        for item in preview:
+            self.stdout.write(f'raw_id={item["raw_id"]} source_title={item["source_title"]}')
+            self.stdout.write(f'  existing_titles={item["existing_titles"]}')
+            self.stdout.write(f'  parsed_titles={item["parsed_titles"]}')
         if dry_run:
             self.stdout.write(self.style.WARNING('Run again with --confirm to write changes.'))
 
@@ -92,3 +99,30 @@ def _raw_data_track(raw_data):
         or audience.get('track')
         or track_key_from_text(raw_data.title)
     )
+
+
+def _preview_reparse_titles(queryset, limit=3):
+    preview = []
+    for raw_data in queryset[:limit]:
+        existing_titles = list(
+            ScheduleEvent.objects.filter(raw_data=raw_data, owner__isnull=True)
+            .order_by('start_at', 'id')
+            .values_list('title', flat=True)[:12]
+        )
+        parsed_titles = [
+            schedule.title
+            for schedule in parse_schedule_candidates(
+                raw_data.raw_text,
+                default_title=raw_data.title,
+                ocr_boxes=raw_data.ocr_boxes,
+            )[:12]
+        ]
+        preview.append(
+            {
+                'raw_id': raw_data.id,
+                'source_title': raw_data.title,
+                'existing_titles': existing_titles,
+                'parsed_titles': parsed_titles,
+            }
+        )
+    return preview
