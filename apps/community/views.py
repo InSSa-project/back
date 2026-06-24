@@ -18,6 +18,9 @@ from .serializers import (
 from .services import CommunityCommentQueryService, CommunityLikeService, CommunityPostQueryService
 
 
+VALID_BOARD_TYPES = {choice[0] for choice in CommunityPost.BOARD_TYPE_CHOICES}
+
+
 class CommunityPostPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
@@ -39,7 +42,7 @@ class CommunityPostListCreateView(APIView):
 
     def get(self, request):
         board_type = request.query_params.get('board_type')
-        if board_type and board_type not in {CommunityPost.BOARD_GENERAL, CommunityPost.BOARD_SUGGESTION}:
+        if board_type and board_type not in VALID_BOARD_TYPES:
             return error_response('Invalid board_type.', status_code=status.HTTP_400_BAD_REQUEST)
 
         queryset = self.query_service_class().list_posts(request.user, board_type=board_type)

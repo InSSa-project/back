@@ -1,0 +1,20 @@
+{
+  "created_at": "2026-06-24T14:25:29",
+  "threshold": 55.0,
+  "total": 2,
+  "avg_score": 15.8,
+  "pass_count": 0,
+  "fail_count": 2,
+  "pass_rate": 0.0,
+  "fail_rate": 100.0,
+  "accuracy": 0.0,
+  "avg_latency_ms": 33608.5,
+  "by_category": {
+    "project": {
+      "total": 2,
+      "pass": 0,
+      "avg_score": 15.8,
+      "pass_rate": 0.0
+    }
+  }
+}

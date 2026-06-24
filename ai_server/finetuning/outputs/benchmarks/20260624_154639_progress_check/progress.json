@@ -1,0 +1,25 @@
+{
+  "status": "complete",
+  "updated_at": "2026-06-24T15:46:40",
+  "run_dir": "ai_server\\finetuning\\outputs\\benchmarks\\20260624_154639_progress_check",
+  "threshold": 55.0,
+  "total": 1,
+  "completed": 1,
+  "remaining": 0,
+  "progress_rate": 100.0,
+  "avg_score": 100.0,
+  "pass_count": 1,
+  "fail_count": 0,
+  "pass_rate": 100.0,
+  "fail_rate": 0.0,
+  "avg_latency_ms": 0.0,
+  "estimated_remaining_sec": 0.0,
+  "latest": {
+    "run_index": 1,
+    "score": 100.0,
+    "passed": true,
+    "category": "project",
+    "question": "과락이 두 개 있는데 프로젝트 발표도 일주일 남았습니다. 무엇부터 하시겠습니까?",
+    "issues": []
+  }
+}

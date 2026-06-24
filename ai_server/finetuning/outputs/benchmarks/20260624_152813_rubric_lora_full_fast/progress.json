@@ -1,0 +1,25 @@
+{
+  "status": "complete",
+  "updated_at": "2026-06-24T16:07:36",
+  "run_dir": "ai_server\\finetuning\\outputs\\benchmarks\\20260624_152813_rubric_lora_full_fast",
+  "threshold": 55.0,
+  "total": 100,
+  "completed": 100,
+  "remaining": 0,
+  "progress_rate": 100.0,
+  "avg_score": 57.3,
+  "pass_count": 61,
+  "fail_count": 39,
+  "pass_rate": 61.0,
+  "fail_rate": 39.0,
+  "avg_latency_ms": 13840.2,
+  "estimated_remaining_sec": 0.0,
+  "latest": {
+    "run_index": 100,
+    "score": 56.0,
+    "passed": true,
+    "category": "project",
+    "question": "프로젝트에서 가장 중요한 개발 습관은 무엇인가요?",
+    "issues": []
+  }
+}

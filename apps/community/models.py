@@ -5,9 +5,11 @@ from django.db import models
 class CommunityPost(models.Model):
     BOARD_GENERAL = 'general'
     BOARD_SUGGESTION = 'suggestion'
+    BOARD_QNA = 'qna'
     BOARD_TYPE_CHOICES = [
         (BOARD_GENERAL, 'General'),
         (BOARD_SUGGESTION, 'Suggestion'),
+        (BOARD_QNA, 'Q/A'),
     ]
 
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_posts')

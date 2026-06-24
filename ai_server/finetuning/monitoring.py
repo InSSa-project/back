@@ -4,6 +4,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -166,13 +169,17 @@ class MetricsVisualizer:
 
         # Summary Stats
         axes[1, 1].axis("off")
+        final_train_loss = f"{train_losses[-1]:.4f}" if train_losses else "N/A"
+        final_eval_loss = f"{eval_losses[-1]:.4f}" if eval_losses else "N/A"
+        initial_lr = f"{lrs[0]:.2e}" if lrs else "N/A"
+        final_lr = f"{lrs[-1]:.2e}" if lrs else "N/A"
         summary_text = f"""
 Training Summary:
 - Total Steps: {len(steps_loss)}
-- Final Train Loss: {train_losses[-1]:.4f if train_losses else 'N/A'}
-- Final Eval Loss: {eval_losses[-1]:.4f if eval_losses else 'N/A'}
-- Initial LR: {lrs[0]:.2e if lrs else 'N/A'}
-- Final LR: {lrs[-1]:.2e if lrs else 'N/A'}
+- Final Train Loss: {final_train_loss}
+- Final Eval Loss: {final_eval_loss}
+- Initial LR: {initial_lr}
+- Final LR: {final_lr}
         """
         axes[1, 1].text(0.1, 0.5, summary_text, fontsize=11, family="monospace")
 
@@ -200,7 +207,10 @@ class SampleEvaluator:
         step: Optional[int] = None,
     ) -> None:
         """샘플 프롬프트로 모델 응답 생성 및 기록"""
-        from .lora_dataset import build_prompt
+        try:
+            from .lora_dataset import build_prompt
+        except ImportError:
+            from lora_dataset import build_prompt
 
         results = {
             "timestamp": datetime.now().isoformat(),

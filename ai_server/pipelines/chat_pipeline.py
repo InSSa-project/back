@@ -12,6 +12,7 @@ from ai_server.classification.llm_intent_classifier import LLMIntentClassifier, 
 from ai_server.classification.rule_parser import RuleParser
 from ai_server.classification.server_verified_parser import ServerVerifiedParser
 from ai_server.classification.server_verified_router import ServerVerifiedIntentRouter, VerifiedRoute
+from ai_server.context.verified_context_builder import VerifiedContextBuilder
 from ai_server.core.config import get_settings
 from ai_server.llm.router import LlmRouter
 from ai_server.memory.conversation_memory import ConversationMemory
@@ -20,11 +21,13 @@ from ai_server.optimization.response_limit import limit_answer
 from ai_server.prompts.builder import PromptBuilder
 from ai_server.prompts.response_style import ResponseStyle
 from ai_server.rag.service import RAGService
+from ai_server.reasoning.lora_reasoner import LoRAReasonerClient
 from ai_server.retrieval.policy_router import RetrievalPolicyRouter
 from ai_server.retrieval.query_parser import ParsedQuery, ScheduleQueryParser, ScheduleQueryType
 from ai_server.retrieval.schedule_constraints import ScheduleConstraintMerger
 from ai_server.retrieval.schedule_formatter import ScheduleAnswerFormatter
 from ai_server.schemas.chat import ChatRequest, ChatResponse
+from ai_server.validation.final_answer_validator import FinalAnswerValidator
 from ai_server.validation.result_validator import ResultValidator
 
 
@@ -49,9 +52,12 @@ class ChatPipeline:
         self.answer_policy_router = AnswerPolicyRouter()
         self.memory = ConversationMemory()
         self.prompt_builder = PromptBuilder()
+        self.verified_context_builder = VerifiedContextBuilder()
         self.response_style = ResponseStyle()
         self.schedule_formatter = ScheduleAnswerFormatter()
         self.result_validator = ResultValidator()
+        self.final_answer_validator = FinalAnswerValidator()
+        self.lora_reasoner = LoRAReasonerClient(self.settings)
         self.llm = llm_client or LlmRouter().get_provider(self.settings.llm_provider)
 
     def run(self, request: ChatRequest) -> ChatResponse:
@@ -61,6 +67,7 @@ class ChatPipeline:
         rule_result = self.rule_parser.parse(request.message, parsed_query, classified, verified_decision)
         gate_result = self.confidence_gate.decide(rule_result)
         response = self._run_core(request)
+        response = self.final_answer_validator.apply(response)
         response.usage.update(
             {
                 'rule_parser': asdict(rule_result),
@@ -189,6 +196,34 @@ class ChatPipeline:
             fallback_prefix=policy.fallback_prefix,
             parsed_query=parsed_query,
         )
+        lora_result = self.lora_reasoner.maybe_answer(
+            question=request.message,
+            query_type=query_type,
+            answer_policy=policy.answer_policy,
+            verified_context=getattr(prompt_result, 'verified_context', None),
+            route=verified_decision.route,
+        )
+        if lora_result.used:
+            answer, answer_usage = limit_answer(lora_result.answer)
+            return ChatResponse(
+                answer=answer,
+                intent=intent,
+                query_type=query_type,
+                answer_policy='LORA_REASONER',
+                references=rag_result.references if policy.use_references else [],
+                usage={
+                    **answer_usage,
+                    'mode': 'lora_reasoner',
+                    'lora_reasoner_reason': lora_result.reason,
+                    'retrieval': retrieval_evaluation.__dict__,
+                    **rag_validation.as_usage(),
+                    'extracted_date': self._format_extracted_date(parsed_query),
+                    'prompt': prompt_result.metadata,
+                    'server_verified_route': verified_decision.route,
+                    'server_verified_reason': verified_decision.reason,
+                },
+            )
+
         llm_response = self.llm.complete(prompt_result.messages)
         answer, answer_usage = limit_answer(llm_response['answer'])
         return ChatResponse(
@@ -463,8 +498,20 @@ class ChatPipeline:
         parsed_query=None,
     ):
         user_context = request.user_context.model_dump_json()
-        memory_context = self.memory.build_context(request.session_id)
-        return self.prompt_builder.build_messages(
+        memory_context = self.memory.build_context(request.session_id, request.conversation_context)
+        verified_context = self.verified_context_builder.build(
+            question=request.message,
+            intent=intent,
+            query_type=query_type,
+            answer_policy=answer_policy,
+            user_context=user_context,
+            memory_context=memory_context,
+            chunks=chunks,
+            references=[],
+            retrieval_evaluation=retrieval_evaluation,
+            parsed_query=parsed_query,
+        )
+        prompt_result = self.prompt_builder.build_messages(
             question=request.message,
             intent=intent,
             query_type=query_type,
@@ -478,6 +525,10 @@ class ChatPipeline:
             memory_context=memory_context,
             fallback_prefix=fallback_prefix,
         )
+        prompt_result.metadata['verified_context'] = verified_context.metadata
+        prompt_result.metadata['verified_context_preview'] = verified_context.to_prompt_text()[:1200]
+        prompt_result.verified_context = verified_context
+        return prompt_result
 
     def _build_filters(self, request: ChatRequest) -> dict:
         filters = {
