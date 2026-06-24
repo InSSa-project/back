@@ -63,7 +63,7 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
             continue
 
         if replace_events:
-            existing_events = ScheduleEvent.objects.filter(raw_data=raw_data)
+            existing_events = ScheduleEvent.objects.filter(raw_data=raw_data, owner__isnull=True)
             replace_count = existing_events.count()
             summary.replaced_event_count += replace_count
             if not dry_run and replace_count:

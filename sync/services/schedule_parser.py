@@ -136,17 +136,18 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
     grid_candidates, grid_debug = parse_grid_schedule_candidates(ocr_boxes or [], source_title=default_title)
     for candidate in grid_candidates:
         start_at = _aware(candidate.event_date, time.min)
+        is_timetable_candidate = candidate.reason == 'timetable_cell_text'
         schedules.append(
             ParsedSchedule(
                 title=candidate.title,
-                description=f'{candidate.description}\n원본 공지: {default_title}'.strip(),
+                description='' if is_timetable_candidate else candidate.description,
                 start_at=start_at,
                 end_at=start_at + timedelta(days=1),
                 is_all_day=True,
                 event_type=candidate.event_type,
                 metadata_json={
-                    'parser': 'ocr_timetable_grid' if candidate.reason == 'timetable_cell_text' else 'ocr_calendar_grid',
-                    'parser_type': 'timetable_grid' if candidate.reason == 'timetable_cell_text' else 'calendar_grid',
+                    'parser': 'ocr_timetable_grid' if is_timetable_candidate else 'ocr_calendar_grid',
+                    'parser_type': 'timetable_grid' if is_timetable_candidate else 'calendar_grid',
                     'raw_title': candidate.source_text or candidate.title,
                     'source_title': default_title,
                     'source_text': candidate.source_text,
@@ -154,8 +155,8 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
                     'category_label': _category_label(candidate.event_type),
                     'track': _extract_track_from_title(default_title),
                     'candidate_date': candidate.event_date.isoformat(),
-                    'date_mapping_source': 'ocr_header' if candidate.reason == 'timetable_cell_text' else 'explicit_text_date',
-                    'original_header_date': candidate.event_date.isoformat() if candidate.reason == 'timetable_cell_text' else '',
+                    'date_mapping_source': 'ocr_header' if is_timetable_candidate else 'explicit_text_date',
+                    'original_header_date': candidate.event_date.isoformat() if is_timetable_candidate else '',
                     'fallback_date': '',
                     'skip_reason': '',
                     'row_index': candidate.row_index,

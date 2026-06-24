@@ -476,6 +476,67 @@ class SampleNoticeImportTests(TestCase):
         self.assertIn('과목평가 9', titles)
         self.assertNotIn(source_title, titles)
 
+    def test_reparse_timetable_events_command_is_idempotent(self):
+        source_title = '[학습] 5월 2주차 Data 트랙 시간표'
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/timetable-command',
+            title=source_title,
+            raw_text='[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\nPandas 실습',
+            ocr_boxes=_timetable_ocr_boxes(),
+        )
+
+        dry_run_output = StringIO()
+        first_output = StringIO()
+        second_output = StringIO()
+
+        call_command('reparse_timetable_events', '--raw-id', raw_data.id, '--dry-run', stdout=dry_run_output)
+        self.assertIn('dry_run=true', dry_run_output.getvalue())
+        self.assertEqual(ScheduleEvent.objects.count(), 0)
+
+        call_command('reparse_timetable_events', '--raw-id', raw_data.id, '--confirm', stdout=first_output)
+        call_command('reparse_timetable_events', '--raw-id', raw_data.id, '--confirm', stdout=second_output)
+
+        self.assertEqual(ScheduleEvent.objects.count(), 1)
+        self.assertIn('created_count=1', first_output.getvalue())
+        self.assertIn('replaced_event_count=1', second_output.getvalue())
+
+    def test_clear_ocr_timetable_descriptions_command_only_clears_auto_text(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url='https://example.com/raw/timetable-description-cleanup',
+            title='[학습] 5월 2주차 Data 트랙 시간표',
+            raw_text='body',
+        )
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 12, 9, 0))
+        auto_event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='[학습] Pandas',
+            description='SSAFY OCR 시간표 셀에서 추출한 일정\n원본 공지: source',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'parser': 'ocr_timetable_grid'},
+        )
+        manual_event = ScheduleEvent.objects.create(
+            title='Manual note',
+            description='Keep this description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='personal',
+            source_type='manual',
+        )
+        output = StringIO()
+
+        call_command('clear_ocr_timetable_descriptions', stdout=output)
+
+        auto_event.refresh_from_db()
+        manual_event.refresh_from_db()
+        self.assertEqual(auto_event.description, '')
+        self.assertEqual(manual_event.description, 'Keep this description')
+        self.assertIn('changed_count=1', output.getvalue())
+
     def test_reparse_wrapper_title_does_not_block_timetable_cell_title(self):
         source_title = '[학습] 5월 2주차 Python 트랙 시간표'
         raw_data = RawSsafyData.objects.create(
@@ -3071,7 +3132,7 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(schedules[0].metadata_json['display_title'], 'Pandas 실습')
         self.assertEqual(schedules[0].metadata_json['category_label'], '학습')
         self.assertEqual(schedules[0].metadata_json['track'], 'Data')
-        self.assertIn(source_title, schedules[0].description)
+        self.assertEqual(schedules[0].description, '')
         self.assertEqual(schedules[0].start_at.date().isoformat(), '2026-05-12')
         self.assertEqual(grid_debug.candidates[0]['source_text'], 'Pandas 실습')
 
@@ -3085,6 +3146,31 @@ class SampleNoticeImportTests(TestCase):
         )
 
         self.assertEqual([schedule.title for schedule in schedules], ['[학습] Django: DRF 1'])
+
+    def test_timetable_grid_merges_multiline_boxes_in_same_cell(self):
+        source_title = '[학습] 5월 2주차 Data 트랙 시간표'
+        ocr_boxes = _timetable_ocr_boxes()[:-1]
+        ocr_boxes.extend(
+            [
+                {'text': '[Live 방송]', 'x1': 205, 'y1': 132, 'x2': 290, 'y2': 148, 'confidence': 0.98},
+                {'text': '데이터엔지니어링활용2:', 'x1': 205, 'y1': 150, 'x2': 340, 'y2': 166, 'confidence': 0.98},
+                {'text': 'Elasticsearch analyzer', 'x1': 205, 'y1': 168, 'x2': 350, 'y2': 184, 'confidence': 0.98},
+                {'text': '&mapping', 'x1': 205, 'y1': 186, 'x2': 275, 'y2': 202, 'confidence': 0.98},
+            ]
+        )
+
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n5월\n11\n12\n13\n14\n15\nElasticsearch analyzer\n&mapping',
+            default_title=source_title,
+            ocr_boxes=ocr_boxes,
+        )
+
+        self.assertEqual(
+            [schedule.title for schedule in schedules],
+            ['[학습] 데이터엔지니어링활용2: Elasticsearch analyzer & mapping'],
+        )
+        self.assertEqual(schedules[0].description, '')
+        self.assertEqual(grid_debug.candidates[0]['source_box_count'], 4)
 
     def test_timetable_grid_does_not_prefix_clear_non_learning_items(self):
         source_title = '[학습] 5월 2주차 마이스터고 트랙 시간표'

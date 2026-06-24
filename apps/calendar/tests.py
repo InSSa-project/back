@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -5,7 +6,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.calendar.models import HiddenCalendarEvent
+from apps.calendar.models import HiddenCalendarEvent, UserScheduleEvent
 from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
@@ -19,6 +20,7 @@ class CalendarApiTests(TestCase):
             email='calendar-user@example.com',
             password='password',
         )
+        UserProfile.objects.create(user=self.user, track='Python')
         self.client.force_login(self.user)
 
     def test_calendar_events_include_schedule_event_without_raw_data(self):
@@ -84,10 +86,9 @@ class CalendarApiTests(TestCase):
             {rawless_event.id},
         )
 
-    def test_calendar_events_do_not_hide_public_notice_for_user_profile(self):
-        UserProfile.objects.create(user=self.user, track='Python')
+    def test_calendar_events_hide_other_track_for_user_profile(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
-        event = ScheduleEvent.objects.create(
+        ScheduleEvent.objects.create(
             title='Java public notice schedule',
             start_at=start_at,
             end_at=start_at + timedelta(hours=1),
@@ -99,10 +100,9 @@ class CalendarApiTests(TestCase):
         response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([item['id'] for item in response.json()['data']], [event.id])
+        self.assertEqual(response.json()['data'], [])
 
     def test_calendar_events_include_generated_ssafy_event_with_required_fields(self):
-        UserProfile.objects.create(user=self.user, track='Python')
         raw_data = RawSsafyData.objects.create(
             source_type='notice',
             source_url='https://edu.ssafy.com/notices/real',
@@ -156,7 +156,8 @@ class CalendarApiTests(TestCase):
         self.assertEqual(item['display_title'], 'SSAFY real schedule')
         self.assertEqual(item['track_key'], 'python')
         self.assertEqual(item['source_url'], 'https://edu.ssafy.com/notices/real')
-        self.assertEqual(item['display_memo'], 'parsed schedule')
+        self.assertEqual(item['description'], 'parsed schedule')
+        self.assertEqual(item['display_memo'], '')
         self.assertTrue(item['is_global'])
         self.assertFalse(item['is_common'])
 
@@ -191,6 +192,66 @@ class CalendarApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual({item['id'] for item in response.json()['data']}, {python_event.id, common_event.id})
+
+    def test_user_track_filter_ignores_other_track_query(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        python_event = ScheduleEvent.objects.create(
+            title='Python schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
+        )
+        ScheduleEvent.objects.create(
+            title='Data schedule',
+            start_at=start_at + timedelta(hours=1),
+            end_at=start_at + timedelta(hours=2),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'data'},
+        )
+
+        response = self.client.get(reverse('calendar-events'), {'track': 'data'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.json()['data']], [python_event.id])
+
+    def test_admin_can_read_all_and_filter_specific_track(self):
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        python_event = ScheduleEvent.objects.create(
+            title='Python schedule',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
+        )
+        data_event = ScheduleEvent.objects.create(
+            title='Data schedule',
+            start_at=start_at + timedelta(hours=1),
+            end_at=start_at + timedelta(hours=2),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'data'},
+        )
+
+        all_response = self.client.get(reverse('calendar-events'))
+        data_response = self.client.get(reverse('calendar-events'), {'track': 'data'})
+
+        self.assertEqual({item['id'] for item in all_response.json()['data']}, {python_event.id, data_event.id})
+        self.assertEqual([item['id'] for item in data_response.json()['data']], [data_event.id])
+
+    def test_profile_without_track_returns_explicit_error(self):
+        self.user.profile.track = ''
+        self.user.profile.save(update_fields=['track'])
+
+        response = self.client.get(reverse('calendar-events'))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['code'], 'PROFILE_INCOMPLETE')
 
     def test_calendar_events_return_schedules_when_raw_data_table_is_empty(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
@@ -246,6 +307,41 @@ class CalendarApiTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertTrue(ScheduleEvent.objects.filter(pk=event.id).exists())
 
+    def test_user_memo_does_not_change_shared_event_description(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Shared SSAFY schedule',
+            description='Shared description',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        other_user = get_user_model().objects.create_user(
+            username='memo-other-user',
+            email='memo-other-user@example.com',
+            password='password',
+        )
+        UserProfile.objects.create(user=other_user, track='Python')
+
+        response = self.client.patch(
+            reverse('calendar-event-detail', args=[event.id]),
+            data=json.dumps({'memo': 'My private note'}),
+            content_type='application/json',
+        )
+
+        event.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(event.description, 'Shared description')
+        self.assertEqual(response.json()['data']['display_memo'], 'My private note')
+        self.assertEqual(UserScheduleEvent.objects.get(user=self.user, schedule_event=event).memo, 'My private note')
+
+        self.client.force_login(other_user)
+        other_response = self.client.get(reverse('calendar-event-detail', args=[event.id]))
+        self.assertEqual(other_response.status_code, 200)
+        self.assertEqual(other_response.json()['data']['display_memo'], '')
+
     def test_delete_calendar_event_hides_public_event_for_user(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
         event = ScheduleEvent.objects.create(
@@ -272,6 +368,7 @@ class CalendarApiTests(TestCase):
             email='calendar-visible-user@example.com',
             password='password',
         )
+        UserProfile.objects.create(user=other_user, track='Python')
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
         event = ScheduleEvent.objects.create(
             title='Shared SSAFY schedule',

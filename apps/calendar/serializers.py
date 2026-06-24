@@ -124,14 +124,9 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
         return timezone.localtime(deadline_at).isoformat() if deadline_at else None
 
     def get_display_memo(self, event):
-        metadata = event.metadata_json or {}
-        memo = str(metadata.get('display_memo') or metadata.get('user_friendly_description') or '').strip()
-        if memo:
-            return memo
-        if event.description:
-            return event.description
-        if self.get_raw_data_id(event):
-            return 'SSAFY notice schedule'
+        user_memo = self._user_memo(event)
+        if user_memo:
+            return user_memo
         return ''
 
     def get_user_friendly_description(self, event):
@@ -167,6 +162,14 @@ class ScheduleEventSerializer(serializers.ModelSerializer):
             return RawSsafyData.objects.filter(pk=raw_data_id).first()
         except (TypeError, ValueError):
             return None
+
+    def _user_memo(self, event):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return ''
+        link = UserScheduleEvent.objects.filter(user=user, schedule_event=event).only('memo').first()
+        return str(link.memo or '').strip() if link else ''
 
     def _parse_metadata_datetime(self, value):
         if not value:
