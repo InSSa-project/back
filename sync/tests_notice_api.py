@@ -303,6 +303,62 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.json()['count'], 1)
         self.assertEqual(response.json()['results'][0]['title'], 'Python extra study')
 
+    def test_notice_search_limited_to_title_only(self):
+        # 본문에만 검색어가 있는 공지는 결과에 포함되지 않아야 함
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java live session',
+            raw_text='python material is here',
+        )
+
+        response = self.client.get(reverse('notice-list'), {'search': 'python'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['count'], 0)
+
+    def test_notice_scope_all_shows_only_common_notices(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'scope': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('Common notice', titles)
+        self.assertNotIn('Python notice', titles)
+
+    def test_notice_track_all_returns_all_tracks(self):
+        # track=all (explicit) 은 모든 트랙 공지를 반환해야 함 (scope=all과 다름)
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+
+        response = self.client.get(reverse('notice-list'), {'track': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('Common notice', titles)
+        self.assertIn('Python notice', titles)
+
     def test_notice_list_filters_by_track_key_with_common_and_count(self):
         RawSsafyData.objects.create(
             source_type='notice',
@@ -558,11 +614,10 @@ class NoticeApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         images = response.json()['images']
-        self.assertEqual(len(images), 2)
-        self.assertEqual(images[0]['url'], 'http://testserver/media/notices/1.png')
-        self.assertEqual(images[0]['alt'], 'Image notice')
-        self.assertEqual(images[0]['sort_order'], 0)
-        self.assertEqual(images[1]['url'], 'https://cdn.example.com/notices/2.png')
+        # /media/notices/1.png: local file does not exist → excluded from response
+        # https://cdn.example.com/notices/2.png: external URL → included
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]['url'], 'https://cdn.example.com/notices/2.png')
 
     def test_notice_detail_returns_empty_images_array_when_missing(self):
         raw_data = RawSsafyData.objects.create(source_type='notice', title='No image notice', raw_text='body')
@@ -958,20 +1013,46 @@ class NoticeImageSerializerTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['images'], [])
 
-    def test_local_media_url_is_served_as_absolute_url(self):
+    def test_local_media_url_without_file_is_excluded(self):
+        # If the local media file does not exist (e.g. after Render redeploy),
+        # the URL must NOT be returned to the client.
         raw_data = RawSsafyData.objects.create(
             source_type='notice',
-            title='Local image notice',
+            title='Local image notice (file gone)',
             raw_text='body',
-            metadata_json={'image_urls': ['/media/notices/notice-1_opt.webp']},
+            metadata_json={'image_urls': ['/media/notices/nonexistent_opt.webp']},
         )
 
         response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
 
         self.assertEqual(response.status_code, 200)
         images = response.json()['images']
-        self.assertEqual(len(images), 1)
-        self.assertIn('/media/notices/', images[0]['url'])
+        self.assertEqual(images, [])
+
+    def test_local_media_url_with_existing_file_is_absolute(self):
+        from pathlib import Path
+        from django.conf import settings
+        notices_dir = Path(settings.MEDIA_ROOT) / 'notices'
+        notices_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file = notices_dir / 'test-notice-exists.webp'
+        tmp_file.write_bytes(b'RIFF\x00\x00\x00\x00WEBPVP8 ')
+
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Local image notice (file exists)',
+            raw_text='body',
+            metadata_json={'image_urls': ['/media/notices/test-notice-exists.webp']},
+        )
+
+        try:
+            response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+            self.assertEqual(response.status_code, 200)
+            images = response.json()['images']
+            self.assertEqual(len(images), 1)
+            self.assertTrue(images[0]['url'].startswith('http'))
+            self.assertIn('/media/notices/test-notice-exists.webp', images[0]['url'])
+        finally:
+            tmp_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1270,17 +1351,17 @@ class NoticeStorageImageApiTests(TestCase):
         self.assertFalse(url.startswith('/media/'))
         self.assertFalse(url.startswith('/static/'))
 
-    def test_relative_media_url_becomes_absolute_in_legacy_path(self):
+    def test_relative_media_url_without_file_excluded_in_legacy_path(self):
+        # /media/ URL is excluded when the file does not exist on disk
         raw_data = RawSsafyData.objects.create(
             source_type='notice',
-            title='Relative URL notice',
+            title='Relative URL notice (no file)',
             raw_text='body',
             metadata_json={'image_urls': ['/media/notices/notice-1_opt.webp']},
         )
 
         images = self.client.get(reverse('notice-detail', args=[raw_data.id])).json()['images']
-        self.assertTrue(images[0]['url'].startswith('http'))
-        self.assertIn('/media/notices/', images[0]['url'])
+        self.assertEqual(images, [])
 
     def test_image_order_preserved(self):
         raw_data = RawSsafyData.objects.create(

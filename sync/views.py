@@ -5,6 +5,7 @@ import re
 from datetime import date, datetime
 from urllib.parse import urlencode, urljoin
 
+from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from django.http import JsonResponse
@@ -144,8 +145,8 @@ def notice_list(request):
         track_key = _normalize_notice_track_key(track_filter)
         if track_key not in _supported_notice_track_keys():
             return JsonResponse({'detail': 'Unsupported track.'}, status=400)
-        if track_key == COMMON_TRACK_KEY and (_explicit_all_scope(scope) or _explicit_all_track(explicit_track_filter)):
-            pass
+        if track_key == COMMON_TRACK_KEY and _explicit_all_track(explicit_track_filter):
+            pass  # track=all 명시 요청 → 트랙 필터 없이 전체 반환
         elif track_key != COMMON_TRACK_KEY and category != 'mentoring':
             rows = [row for row in rows if _notice_matches_track(row, track_key)]
         elif track_key == COMMON_TRACK_KEY:
@@ -371,11 +372,7 @@ def _normalize_search_query(value):
 
 
 def _apply_notice_search_queryset(queryset, search):
-    return queryset.filter(
-        Q(title__icontains=search)
-        | Q(raw_text__icontains=search)
-        | Q(raw_html__icontains=search)
-    )
+    return queryset.filter(Q(title__icontains=search))
 
 
 def _explicit_all_scope(value):
@@ -549,9 +546,15 @@ def _notice_image_url(source, raw_data, request=None):
     if lowered.startswith('//'):
         return f'https:{url}'
     if lowered.startswith('/media/') or lowered.startswith('/static/'):
+        # Skip /media/ URLs whose file no longer exists on disk
+        # (Render ephemeral filesystem: files are lost on every redeploy).
+        if lowered.startswith('/media/') and not _local_media_file_exists(url):
+            return ''
         return request.build_absolute_uri(url) if request is not None else url
     if lowered.startswith('media/') or lowered.startswith('static/'):
         path = f'/{url}'
+        if path.lower().startswith('/media/') and not _local_media_file_exists(path):
+            return ''
         return request.build_absolute_uri(path) if request is not None else path
 
     source_url = notice_source_url(raw_data) or getattr(raw_data, 'source_url', '')
@@ -906,3 +909,16 @@ def _non_negative_int(value, default):
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= 0 else default
+
+
+def _local_media_file_exists(url):
+    """Return True only if the /media/ path maps to an existing local file."""
+    from pathlib import Path
+    try:
+        rel = str(url or '').lstrip('/')
+        if rel.startswith('media/'):
+            rel = rel[len('media/'):]
+        path = Path(settings.MEDIA_ROOT) / rel
+        return path.is_file()
+    except Exception:
+        return False
