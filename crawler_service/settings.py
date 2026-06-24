@@ -121,7 +121,7 @@ WSGI_APPLICATION = 'crawler_service.wsgi.application'
 DATABASE_URL = env('DATABASE_URL', default='').strip()
 DB_ENGINE = env('DB_ENGINE', default='sqlite').strip().lower()
 
-# Oracle Cloud / Supabase 배포 환경
+# Oracle Cloud deployment environment
 if DATABASE_URL:
     DATABASES = {
         'default': dj_database_url.parse(
@@ -178,10 +178,10 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = Path(env('MEDIA_ROOT', default=str(BASE_DIR / 'media')))
 
-# Supabase Storage — used by backfill_notice_images and notice image upload pipeline.
-# The service role key is backend-only and must never appear in API responses.
+# Legacy Supabase settings are kept only for backward-compatible metadata/tests.
+# Current notice image backfill stores files under MEDIA_ROOT/notices.
 SUPABASE_URL = env('SUPABASE_URL', default='')
 SUPABASE_SERVICE_ROLE_KEY = env('SUPABASE_SERVICE_ROLE_KEY', default='')
 SUPABASE_STORAGE_BUCKET = env('SUPABASE_STORAGE_BUCKET', default='notices')

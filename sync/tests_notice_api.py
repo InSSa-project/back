@@ -316,7 +316,7 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['count'], 0)
 
-    def test_notice_scope_all_shows_only_common_notices(self):
+    def test_notice_scope_all_returns_all_tracks(self):
         RawSsafyData.objects.create(
             source_type='notice',
             title='Common notice',
@@ -335,7 +335,7 @@ class NoticeApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         titles = {item['title'] for item in response.json()['results']}
         self.assertIn('Common notice', titles)
-        self.assertNotIn('Python notice', titles)
+        self.assertIn('Python notice', titles)
 
     def test_notice_track_all_returns_all_tracks(self):
         # track=all (explicit) 은 모든 트랙 공지를 반환해야 함 (scope=all과 다름)
@@ -524,6 +524,38 @@ class NoticeApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual({item['title'] for item in response.json()['results']}, {'Meister notice', 'Python notice'})
+
+    def test_notice_list_scope_all_ignores_authenticated_user_track(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='scope-all', email='scope-all@example.com', password='password')
+        UserProfile.objects.create(user=user, track='Python')
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python notice',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Meister notice',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='Common notice',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'), {'scope': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {item['title'] for item in response.json()['results']},
+            {'Python notice', 'Meister notice', 'Common notice'},
+        )
 
     def test_notice_list_explicit_common_track_returns_common_only(self):
         RawSsafyData.objects.create(
@@ -1050,9 +1082,30 @@ class NoticeImageSerializerTests(TestCase):
             images = response.json()['images']
             self.assertEqual(len(images), 1)
             self.assertTrue(images[0]['url'].startswith('http'))
-            self.assertIn('/media/notices/test-notice-exists.webp', images[0]['url'])
+            self.assertIn(f'/api/v1/notices/{raw_data.id}/images/0/', images[0]['url'])
+
+            image_response = self.client.get(reverse('notice-image', args=[raw_data.id, 0]))
+            self.assertEqual(image_response.status_code, 200)
+            self.assertEqual(image_response['Content-Type'], 'image/webp')
+            self.assertIn('immutable', image_response['Cache-Control'])
+            self.assertIn('ETag', image_response)
+            image_response.close()
         finally:
             tmp_file.unlink(missing_ok=True)
+
+    def test_notice_image_endpoint_rejects_missing_and_unsafe_paths(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Unsafe image notice',
+            raw_text='body',
+            metadata_json={'notice_images': [{'storage_key': '../secret.webp', 'sort_order': 0}]},
+        )
+
+        unsafe_response = self.client.get(reverse('notice-image', args=[raw_data.id, 0]))
+        missing_response = self.client.get(reverse('notice-image', args=[raw_data.id, 1]))
+
+        self.assertEqual(unsafe_response.status_code, 404)
+        self.assertEqual(missing_response.status_code, 404)
 
 
 # ---------------------------------------------------------------------------
@@ -1268,6 +1321,38 @@ class NoticeStorageTests(TestCase):
 
 class NoticeStorageImageApiTests(TestCase):
     """Verify the API uses notice_images structured entries correctly."""
+
+    def test_local_storage_key_returns_notice_image_endpoint(self):
+        from pathlib import Path
+        from django.conf import settings
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Local storage image notice',
+            raw_text='body',
+            metadata_json={
+                'notice_images': [
+                    {
+                        'source_url': 'https://edu.ssafy.com/original.png',
+                        'storage_key': '',
+                        'file_name': '0-localhash.webp',
+                        'format': 'webp',
+                        'sort_order': 0,
+                    }
+                ]
+            },
+        )
+        image_dir = Path(settings.MEDIA_ROOT) / 'notices' / str(raw_data.id)
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = image_dir / '0-localhash.webp'
+        image_path.write_bytes(b'RIFF\x00\x00\x00\x00WEBPVP8 ')
+
+        try:
+            response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+            self.assertEqual(response.status_code, 200)
+            image = response.json()['images'][0]
+            self.assertIn(f'/api/v1/notices/{raw_data.id}/images/0/', image['url'])
+        finally:
+            image_path.unlink(missing_ok=True)
 
     def test_storage_url_returned_from_notice_images(self):
         storage_url = 'https://proj.supabase.co/storage/v1/object/public/notices/notices/1/0-abc.webp'
