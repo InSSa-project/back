@@ -437,8 +437,14 @@ class NoticeApiTests(TestCase):
         response = self.client.get(reverse('notice-list'))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['count'], 1)
-        self.assertEqual(response.json()['results'][0]['title'], 'Common notice')
+        titles = {item['title'] for item in response.json()['results']}
+        # Explicitly-common notices + notices whose title implies no specific track
+        # (inferred is_common=True) are both shown.  Track-specific notices are excluded.
+        self.assertIn('Common notice', titles)
+        self.assertIn('Unknown track notice', titles)
+        self.assertNotIn('Python notice', titles)
+        track_keys = {item['track_key'] for item in response.json()['results']}
+        self.assertNotIn('python', track_keys)
 
     def test_notice_list_explicit_track_all_returns_all_tracks(self):
         User = get_user_model()
@@ -642,3 +648,413 @@ class NoticeApiTests(TestCase):
 
         self.assertEqual(document.sync_raw_data_id, raw_data.id)
         self.assertEqual(AiDocument.objects.filter(sync_raw_data=raw_data).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Track classification tests
+# ---------------------------------------------------------------------------
+
+class TrackKeyFromTextTests(TestCase):
+    """Unit tests for sync.services.tracks.track_key_from_text."""
+
+    def _call(self, text):
+        from sync.services.tracks import track_key_from_text
+        return track_key_from_text(text)
+
+    def test_python_title(self):
+        self.assertEqual(self._call('[학습] 6월 4주차 Python 트랙 시간표'), 'python')
+
+    def test_java_major_title_with_space(self):
+        self.assertEqual(self._call('[학습] 6월 4주차 Java 전공 트랙 시간표'), 'java_major')
+
+    def test_java_non_major_title_with_space(self):
+        self.assertEqual(self._call('[학습] 6월 4주차 Java 비전공 트랙 시간표'), 'java_non_major')
+
+    def test_java_non_major_not_classified_as_java_major(self):
+        # "Java 비전공" must never resolve to java_major
+        self.assertNotEqual(self._call('[학습] Java 비전공 트랙 시간표'), 'java_major')
+
+    def test_embedded_robot_title(self):
+        result = self._call('[학습] 6월 Embedded Robot 트랙 시간표')
+        self.assertEqual(result, 'embedded_robot')
+
+    def test_embedded_title(self):
+        self.assertEqual(self._call('[학습] 6월 Embedded 트랙 시간표'), 'embedded')
+
+    def test_mobile_title(self):
+        self.assertEqual(self._call('[학습] 6월 Mobile 트랙 시간표'), 'mobile')
+
+    def test_data_title(self):
+        self.assertEqual(self._call('[학습] 6월 Data 트랙 시간표'), 'data')
+
+    def test_meister_title(self):
+        self.assertEqual(self._call('[학습] 6월 Meister 트랙 시간표'), 'meister')
+
+    def test_meister_korean_title(self):
+        self.assertEqual(self._call('[학습] 마이스터고 시간표'), 'meister')
+
+    def test_general_notice_returns_empty(self):
+        self.assertEqual(self._call('[공지] SSAFY 6기 행사 안내'), '')
+
+    def test_empty_title_returns_empty(self):
+        self.assertEqual(self._call(''), '')
+
+    def test_none_returns_empty(self):
+        self.assertEqual(self._call(None), '')
+
+
+class ClassifyNoticeTrackTests(TestCase):
+    """Unit tests for sync.services.tracks.classify_notice_track."""
+
+    def _call(self, title, metadata=None):
+        from sync.services.tracks import classify_notice_track
+        return classify_notice_track(title, metadata)
+
+    def test_explicit_is_common_wins(self):
+        result = self._call('[학습] Python 시간표', {'is_common': True})
+        self.assertEqual(result['track_key'], 'all')
+        self.assertTrue(result['is_common'])
+
+    def test_explicit_track_key_wins_over_title(self):
+        result = self._call('[학습] Python 시간표', {'track_key': 'meister'})
+        self.assertEqual(result['track_key'], 'meister')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_python(self):
+        result = self._call('[학습] 6월 4주차 Python 트랙 시간표')
+        self.assertEqual(result['track_key'], 'python')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_java_non_major(self):
+        result = self._call('[학습] Java 비전공 트랙 시간표')
+        self.assertEqual(result['track_key'], 'java_non_major')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_java_major(self):
+        result = self._call('[학습] Java 전공 트랙 시간표')
+        self.assertEqual(result['track_key'], 'java_major')
+        self.assertFalse(result['is_common'])
+
+    def test_title_inference_meister(self):
+        result = self._call('[학습] Meister 트랙 시간표')
+        self.assertEqual(result['track_key'], 'meister')
+        self.assertFalse(result['is_common'])
+
+    def test_general_notice_becomes_common(self):
+        result = self._call('[공지] 수료식 안내')
+        self.assertEqual(result['track_key'], 'all')
+        self.assertTrue(result['is_common'])
+
+    def test_empty_title_and_no_metadata_becomes_common(self):
+        result = self._call('')
+        self.assertTrue(result['is_common'])
+
+    def test_audience_track_respected(self):
+        result = self._call('[공지] 안내', {'audience': {'track': 'data'}})
+        self.assertEqual(result['track_key'], 'data')
+        self.assertFalse(result['is_common'])
+
+
+# ---------------------------------------------------------------------------
+# Track filtering tests (via the notice list API)
+# ---------------------------------------------------------------------------
+
+class NoticeTrackFilterTests(TestCase):
+    """Integration tests for track-aware notice list filtering."""
+
+    def setUp(self):
+        self.python_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Python 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'python'},
+        )
+        self.java_major_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Java 전공 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'java_major'},
+        )
+        self.meister_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='마이스터고 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        self.common_notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='전체 공지',
+            raw_text='body',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+
+    def test_meister_user_sees_meister_and_common_only(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='m1', email='m1@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='Meister')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('마이스터고 시간표', titles)
+        self.assertIn('전체 공지', titles)
+        self.assertNotIn('Python 시간표', titles)
+        self.assertNotIn('Java 전공 시간표', titles)
+
+    def test_python_user_sees_python_and_common_only(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='p1', email='p1@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='python')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        titles = {item['title'] for item in response.json()['results']}
+        self.assertIn('Python 시간표', titles)
+        self.assertIn('전체 공지', titles)
+        self.assertNotIn('마이스터고 시간표', titles)
+        self.assertNotIn('Java 전공 시간표', titles)
+
+    def test_meister_user_does_not_see_python_timetable(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='m2', email='m2@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='Meister')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        python_ids = [item['id'] for item in response.json()['results'] if item['track_key'] == 'python']
+        self.assertEqual(python_ids, [])
+
+    def test_explicit_track_all_returns_all_tracks(self):
+        response = self.client.get(reverse('notice-list'), {'track': 'all'})
+
+        self.assertEqual(response.status_code, 200)
+        track_keys = {item['track_key'] for item in response.json()['results']}
+        self.assertIn('python', track_keys)
+        self.assertIn('meister', track_keys)
+        self.assertIn('java_major', track_keys)
+        self.assertIn('all', track_keys)
+
+    def test_unauthenticated_user_sees_all_notices(self):
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        # Anonymous users have no track filter applied
+        self.assertGreaterEqual(response.json()['count'], 4)
+
+    def test_notice_infers_track_from_title_when_no_metadata(self):
+        # No track_key in metadata — should be inferred from title
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] 6월 4주차 Java 비전공 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        response = self.client.get(reverse('notice-list'), {'track': 'java_basic'})
+
+        self.assertEqual(response.status_code, 200)
+        inferred = [item for item in response.json()['results'] if '비전공' in item['title']]
+        self.assertEqual(len(inferred), 1)
+        self.assertEqual(inferred[0]['track_key'], 'java_non_major')
+        self.assertFalse(inferred[0]['is_common'])
+
+    def test_notice_infers_meister_from_title_for_meister_user(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Meister 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        User = get_user_model()
+        user = User.objects.create_user(username='m3', email='m3@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='Meister')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        meister_items = [item for item in response.json()['results'] if 'Meister 트랙' in item['title']]
+        self.assertEqual(len(meister_items), 1)
+        self.assertEqual(meister_items[0]['track_key'], 'meister')
+
+    def test_general_notice_without_metadata_shown_as_common(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[공지] 일반 운영 안내',
+            raw_text='body',
+            metadata_json={},
+        )
+        User = get_user_model()
+        user = User.objects.create_user(username='p2', email='p2@test.com', password='pw')
+        UserProfile.objects.create(user=user, track='python')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('notice-list'))
+
+        general_items = [item for item in response.json()['results'] if '일반 운영 안내' in item['title']]
+        self.assertEqual(len(general_items), 1, 'General notice must be visible to all users')
+        self.assertTrue(general_items[0]['is_common'])
+
+
+# ---------------------------------------------------------------------------
+# Image serialisation tests
+# ---------------------------------------------------------------------------
+
+class NoticeImageSerializerTests(TestCase):
+    """Verify that the notice API never embeds image binaries or triggers HTTP requests."""
+
+    def test_images_field_contains_only_urls_and_metadata(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Image notice',
+            raw_text='body',
+            metadata_json={
+                'image_urls': [
+                    'https://cdn.example.com/notice-1.png',
+                    'https://cdn.example.com/notice-2.webp',
+                ],
+            },
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(len(images), 2)
+        for image in images:
+            self.assertIn('url', image)
+            self.assertIn('sort_order', image)
+            # No base64 or binary data
+            self.assertFalse(str(image.get('url', '')).startswith('data:'))
+
+    def test_list_api_does_not_include_image_binaries(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='List image notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['https://cdn.example.com/big.png']},
+        )
+
+        response = self.client.get(reverse('notice-list'))
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()['results'][0]
+        for image in item.get('images', []):
+            self.assertFalse(str(image.get('url', '')).startswith('data:'))
+
+    def test_no_images_returns_empty_array(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='No image notice',
+            raw_text='body',
+            metadata_json={},
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['images'], [])
+
+    def test_local_media_url_is_served_as_absolute_url(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='Local image notice',
+            raw_text='body',
+            metadata_json={'image_urls': ['/media/notices/notice-1_opt.webp']},
+        )
+
+        response = self.client.get(reverse('notice-detail', args=[raw_data.id]))
+
+        self.assertEqual(response.status_code, 200)
+        images = response.json()['images']
+        self.assertEqual(len(images), 1)
+        self.assertIn('/media/notices/', images[0]['url'])
+
+
+# ---------------------------------------------------------------------------
+# Backfill command tests
+# ---------------------------------------------------------------------------
+
+class BackfillNoticeTracksCommandTests(TestCase):
+    """Verify the backfill_notice_tracks management command behaviour."""
+
+    def _run_command(self, **kwargs):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('backfill_notice_tracks', stdout=out, **kwargs)
+        return out.getvalue()
+
+    def test_dry_run_does_not_modify_db(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command(dry_run=True)
+        notice.refresh_from_db()
+        self.assertNotIn('track_key', notice.metadata_json)
+
+    def test_fills_missing_track_key(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command()
+        notice.refresh_from_db()
+        self.assertEqual(notice.metadata_json.get('track_key'), 'python')
+        self.assertFalse(notice.metadata_json.get('is_common'))
+
+    def test_preserves_existing_track_key_without_force(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        self._run_command()
+        notice.refresh_from_db()
+        # Existing value must be preserved
+        self.assertEqual(notice.metadata_json.get('track_key'), 'meister')
+
+    def test_force_overwrites_existing_track_key(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={'track_key': 'meister'},
+        )
+        self._run_command(force=True)
+        notice.refresh_from_db()
+        self.assertEqual(notice.metadata_json.get('track_key'), 'python')
+
+    def test_general_notice_classified_as_common(self):
+        notice = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[공지] 일반 운영 안내',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command()
+        notice.refresh_from_db()
+        self.assertEqual(notice.metadata_json.get('track_key'), 'all')
+        self.assertTrue(notice.metadata_json.get('is_common'))
+
+    def test_idempotent_reruns(self):
+        RawSsafyData.objects.create(
+            source_type='notice',
+            title='[학습] Python 트랙 시간표',
+            raw_text='body',
+            metadata_json={},
+        )
+        self._run_command()
+        self._run_command()
+        # Should not raise and DB should still have correct value
+        count = RawSsafyData.objects.filter(metadata_json__track_key='python').count()
+        self.assertEqual(count, 1)

@@ -31,7 +31,7 @@ from sync.services.notice_policy import (
     notice_title,
     user_visible_notice_queryset,
 )
-from sync.services.tracks import COMMON_TRACK_KEY, canonical_track_display, canonical_track_keys, normalize_track_key
+from sync.services.tracks import COMMON_TRACK_KEY, canonical_track_display, canonical_track_keys, normalize_track_key, track_key_from_text
 from sync.services.import_service import run_notice_import
 from sync.services.manual_ocr_service import apply_manual_ocr_text
 
@@ -726,6 +726,19 @@ def _notice_track_info(raw_data):
     )
     track_key = _normalize_notice_track_key(source_value)
     is_common = _is_common_notice_track(track_key, source_value, metadata)
+
+    # No explicit track metadata → try to infer from title so that notices like
+    # "[학습] Java 전공 트랙 시간표" are not treated as common for all users.
+    if not is_common and not track_key and not source_value:
+        title = notice_title(raw_data)
+        inferred = track_key_from_text(title)
+        if inferred and inferred != COMMON_TRACK_KEY:
+            track_key = inferred
+            is_common = False
+        else:
+            is_common = True
+            track_key = COMMON_TRACK_KEY
+
     if is_common:
         track_key = COMMON_TRACK_KEY
     display = metadata.get('track_display') or metadata.get('track_name') or canonical_track_display(track_key)
@@ -754,9 +767,8 @@ def _is_common_notice_track(track_key, source_value, metadata):
         return True
     if track_key == COMMON_TRACK_KEY:
         return True
-    # Notices with no track information are visible to everyone.
-    if not source_value and not track_key:
-        return True
+    # Note: "no track info" is NOT treated as common here. Title-based inference
+    # is performed in _notice_track_info after this function returns False.
     return str(source_value or '').strip().lower() in {'common', 'all', 'global', '공통', '전체'}
 
 
