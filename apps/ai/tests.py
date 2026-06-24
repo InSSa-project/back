@@ -1159,6 +1159,34 @@ class PersonalContextChatPipelineTests(TestCase):
         self.assertIn('과목평가', sent_context)
 
 
+    def test_priority_advice_with_project_and_fail_context_uses_recommendation_context(self):
+        now = timezone.now()
+        ScheduleEvent.objects.create(
+            title='REST API evaluation',
+            start_at=now + timedelta(days=1),
+            end_at=now + timedelta(days=1, hours=1),
+            event_type='exam',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='project presentation',
+            start_at=now + timedelta(days=1),
+            end_at=now + timedelta(days=1, hours=1),
+            event_type='project',
+            source_type='notice',
+        )
+
+        response = self._ask(
+            self.user_a,
+            'REST API \uacfc\ub77d\uc778\ub370 \ud504\ub85c\uc81d\ud2b8 \ubc1c\ud45c\ub3c4 \ub0b4\uc77c\uc785\ub2c8\ub2e4. \ubb34\uc5c7\ubd80\ud130 \ud574\uc57c \ud560\uae4c\uc694?',
+        )
+        sent_context = self.llm.messages[-1][1]['content']
+
+        self.assertEqual(response.query_type, DomainIntent.RECOMMENDED_SCHEDULE)
+        self.assertEqual(response.answer_policy, 'PERSONAL_CONTEXT_LLM')
+        self.assertIn('recommended_schedules', sent_context)
+        self.assertNotEqual(response.answer_policy, 'OFFICIAL_NO_CONTEXT')
+
 class PipelineResultValidatorUsageTests(TestCase):
     def test_schedule_no_match_attaches_result_validator_usage(self):
         pipeline = ChatPipeline()

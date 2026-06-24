@@ -39,3 +39,9 @@ build/
 dist/
 *.egg-info/
 .eggs/
+
+# AI / LoRA artifacts
+ai_server/finetuning/outputs/
+*.safetensors
+*.pt
+*.pth

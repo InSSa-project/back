@@ -140,7 +140,8 @@ def _visible_event_queryset(user):
 def _upcoming_event_candidates(user, now, week_start, week_end):
     queryset = (
         _visible_event_queryset(user)
-        .filter(start_at__lte=week_end, end_at__gte=week_start)
+        .filter(start_at__lte=week_end)
+        .filter(Q(end_at__gte=now) | Q(end_at__isnull=True, start_at__gte=now))
         .order_by('start_at', 'id')[:EVENT_SCAN_LIMIT]
     )
     events = list(queryset)
@@ -157,7 +158,18 @@ def _filter_events_for_profile(user, events):
 
 
 def _future_events(events, now):
-    return [event for event in events if _event_target_at(event, now) >= now]
+    return [event for event in events if _event_is_active_or_future(event, now)]
+
+
+def _event_is_active_or_future(event, now):
+    deadline_at = _event_deadline_at(event)
+    if deadline_at is not None:
+        return deadline_at >= now
+    end_at = getattr(event, 'end_at', None)
+    if end_at is not None:
+        return end_at >= now
+    start_at = getattr(event, 'start_at', None)
+    return bool(start_at and start_at >= now)
 
 
 def _today_event_count(user, now):

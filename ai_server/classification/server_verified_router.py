@@ -43,6 +43,8 @@ class ServerVerifiedIntentRouter:
             return IntentDecision(VerifiedRoute.RECOMMENDED_SCHEDULE, reason='urgent_recommendation_rule', requires_personal_context=True)
         if self._is_recommendation_question(text):
             return IntentDecision(VerifiedRoute.RECOMMENDED_SCHEDULE, reason='recommendation_rule', requires_personal_context=True)
+        if self._is_project_explanation_question(text):
+            return IntentDecision(VerifiedRoute.RAG, reason='project_explanation_question')
         if self._is_weak_subject_question(text):
             return IntentDecision(VerifiedRoute.PERSONAL_SCORE, reason='weak_subject_rule', requires_personal_context=True)
         if self._is_personal_risk_question(text):
@@ -98,6 +100,26 @@ class ServerVerifiedIntentRouter:
             self._words('\\uc694\\uc57d', '\\uc815\\ub9ac', '\\uc54c\\ub824', '\\ubcf4\\uc5ec', '\\ud655\\uc778', '\\uc911\\uc694', '\\ucd5c\\uadfc'),
         )
 
+
+    def _is_project_explanation_question(self, text: str) -> bool:
+        compact = text.replace(' ', '')
+        has_project = self._contains_any(
+            compact,
+            self._words('\ud504\ub85c\uc81d\ud2b8', '\uad00\ud1b5pjt', '\uad00\ud1b5\ud504\ub85c\uc81d\ud2b8', '\ucd5c\uc885\uad00\ud1b5'),
+        )
+        asks_explanation = self._contains_any(
+            compact,
+            self._words(
+                '\uc124\uba85', '\ubb50\uc57c', '\ubb34\uc5c7', '\uc5b4\ub5bb\uac8c', '\ubc29\ubc95', '\uac00\uc774\ub4dc',
+                '\uc8fc\uc758\uc0ac\ud56d', '\uc900\ube44', '\uc9c4\ud589', '\ud3c9\uac00\ubc29\uc2dd', '\uc81c\ucd9c\ubc29\ubc95',
+                '\ub0b4\uc6a9', '\uc815\ub9ac', '\uc54c\ub824\uc918', '\uc54c\ub824', '\ub300\ud574',
+            ),
+        )
+        asks_date_only = self._contains_any(
+            compact,
+            self._words('\uc77c\uc815', '\uc5b8\uc81c', '\ub0a0\uc9dc', '\uba87\uc77c', '\uac00\uae4c\uc6b4'),
+        )
+        return has_project and asks_explanation and not asks_date_only
 
     def _is_weak_subject_question(self, text: str) -> bool:
         compact = text.replace(' ', '')

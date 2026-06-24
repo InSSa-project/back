@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import re
 from datetime import timedelta
 
@@ -11,7 +11,7 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     extracted_date_range_for_schedule,
 )
-from sync.services.tracks import COMMON_TRACK_KEY, common_track_metadata, normalize_track_key
+from sync.services.tracks import COMMON_TRACK_KEY, common_track_metadata, normalize_track_key, track_key_from_text
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -78,7 +78,12 @@ def build_generated_event_metadata(raw_data, schedule):
 
 def _normalize_generated_track_metadata(metadata):
     audience = metadata.setdefault('audience', {})
-    explicit_track = metadata.get('track_key') or metadata.get('track')
+    explicit_track = (
+        metadata.get('track_key')
+        or audience.get('track_key')
+        or metadata.get('track')
+        or audience.get('track')
+    )
     normalized_track = normalize_track_key(explicit_track)
     if normalized_track:
         metadata['track_key'] = normalized_track
@@ -323,6 +328,11 @@ def _infer_generation(text):
 
 
 def _infer_track(text):
+    lines = str(text or '').splitlines()
+    first_line = lines[0] if lines else ''
+    canonical_track = track_key_from_text(first_line) or track_key_from_text(text)
+    if canonical_track:
+        return canonical_track
     has_sw = bool(re.search(r'\bSW\b', text or '', flags=re.IGNORECASE))
     has_ai = bool(re.search(r'\bAI\b', text or '', flags=re.IGNORECASE))
     if has_sw and has_ai:
@@ -344,3 +354,5 @@ def _infer_campus(text):
         if campus in (text or ''):
             return campus
     return None
+
+

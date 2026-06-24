@@ -109,7 +109,7 @@ def event_list(request):
     if event_type:
         events = _filter_queryset_by_event_type(events, event_type)
     events = filter_calendar_visible_events(events.select_related('raw_data'))
-    events = _filter_events_by_audience_params(events, request.GET)
+    events = _filter_events_by_audience_params(events, request.GET, user)
     events = [event for event in events if _event_occurs_in_range(event, start_at, end_at)]
     events = [event for event in events if not _is_hidden_meaningless_event(event)]
 
@@ -508,12 +508,19 @@ def _is_generated_event(event, metadata, raw_data_id=None):
     return bool(raw_data_id or event.raw_data_id or event.event_type == 'generated' or event.source_type in {'notice', 'ssafy', 'learning', 'evaluation'})
 
 
-def _filter_events_by_audience_params(events, params):
+def _filter_events_by_audience_params(events, params, user=None):
     filters = {
         key: params.get(key)
         for key in ['track', 'generation', 'campus', 'class_number']
         if params.get(key)
     }
+    if 'track' not in filters:
+        default_track = _default_user_track(user)
+        if default_track:
+            filters['track'] = default_track
+    elif _is_common_track(filters.get('track')):
+        filters.pop('track', None)
+
     if not filters:
         return events
 
@@ -523,6 +530,18 @@ def _filter_events_by_audience_params(events, params):
         if _matches_audience_filters(event, event.metadata_json or {}, audience, filters):
             filtered.append(event)
     return filtered
+
+
+def _default_user_track(user):
+    if not getattr(user, 'is_authenticated', False):
+        return ''
+    profile = getattr(user, 'profile', None) or getattr(user, 'userprofile', None)
+    raw_track = getattr(profile, 'track', None) if profile is not None else None
+    raw_track = raw_track or getattr(user, 'track', '')
+    normalized = _normalize_track(raw_track)
+    if normalized in CANONICAL_TRACKS:
+        return normalized
+    return ''
 
 
 def _filter_queryset_by_event_type(events, event_type):

@@ -16,6 +16,7 @@
 - 사용자 직접 생성 일정과 무관한 일반 공지 일정
 """
 import logging
+import re
 from datetime import date
 
 from django.core.management.base import BaseCommand
@@ -31,7 +32,7 @@ TIMETABLE_PARSER_TYPES = {'timetable_grid', 'ocr_timetable_grid'}
 
 
 class Command(BaseCommand):
-    help = '캘린더 일정 정리: 국가공휴일 중복 timetable 일정 제거'
+    help = '??? ?? ??: ????? timetable ? OCR ??PJT ?? ??'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -129,6 +130,7 @@ class Command(BaseCommand):
             e for e in notice_gen
             if e.start_at.astimezone(tz).date() in holiday_dates
         ]
+        timetable_project_duplicates = _find_timetable_project_duplicates(notice_gen, tz)
 
         self.stdout.write(f'\n=== 국가공휴일 중복 분석 ===')
         self.stdout.write(f'공식 국가공휴일 날짜 수     : {len(holiday_dates)}개')
@@ -152,17 +154,25 @@ class Command(BaseCommand):
                     self.stdout.write(f'    ... 외 {len(evs)-5}개')
 
         # ── 5. 실행 ────────────────────────────────────────────────────────
-        delete_ids = [e.id for e in timetable_on_holiday]
+        self.stdout.write(f'\n=== OCR timetable project duplicate analysis ===')
+        self.stdout.write(f'generic project duplicates in same raw/date/track: {len(timetable_project_duplicates)}')
+        if timetable_project_duplicates:
+            for e in timetable_project_duplicates[:20]:
+                self.stdout.write(f'  id={e.id} | {e.start_at.astimezone(tz).date()} | {e.title[:80]} | raw={e.raw_data_id}')
+            if len(timetable_project_duplicates) > 20:
+                self.stdout.write(f'  ... and {len(timetable_project_duplicates) - 20} more')
+
+        delete_ids = list(dict.fromkeys([e.id for e in timetable_on_holiday] + [e.id for e in timetable_project_duplicates]))
 
         self.stdout.write(f'\n=== 예정된 작업 ===')
-        self.stdout.write(f'삭제 예정: {len(delete_ids)}개 (timetable × 국가공휴일)')
+        self.stdout.write(f'delete_plan_count: {len(delete_ids)} (holiday timetable + OCR project duplicates)')
         self.stdout.write(f'수정 예정: 0개')
         self.stdout.write(f'재생성 예정: 0개 (재파싱 별도 수행 시 holiday blocking으로 자동 제외)')
 
         if dry_run:
             self.stdout.write(f'\n=== 예상 최종 현황 ===')
             self.stdout.write(f'적용 후 예상 총 일정 수  : {total - len(delete_ids)}개')
-            self.stdout.write(f'적용 후 예상 공지 기반   : {len(notice_gen) - len(timetable_on_holiday)}개')
+            self.stdout.write(f'expected_notice_generated_count: {len(notice_gen) - len(delete_ids)}')
             self.stdout.write(f'국가공휴일 일정 (유지)   : {len(national_holidays)}개')
             transaction.set_rollback(True)
             self.stdout.write(self.style.WARNING('\n[DRY-RUN] 실제 변경 없이 종료합니다.'))
@@ -184,3 +194,64 @@ class Command(BaseCommand):
             self.stdout.write(f'국가공휴일 일정          : {remaining_national_hol}개')
 
         self.stdout.write(self.style.SUCCESS('\n완료'))
+
+
+def _find_timetable_project_duplicates(events, tz):
+    groups = {}
+    for event in events:
+        if event.owner_id is not None or event.event_type != 'project':
+            continue
+        metadata = event.metadata_json or {}
+        parser_type = metadata.get('parser_type') or metadata.get('parser')
+        if parser_type not in TIMETABLE_PARSER_TYPES:
+            continue
+        group = _project_dedupe_group(event.title)
+        if group != 'PROJECT_PJT_GENERIC':
+            continue
+        audience = metadata.get('audience') or {}
+        track = metadata.get('track_key') or audience.get('track_key') or metadata.get('track') or audience.get('track') or 'all'
+        key = (
+            event.raw_data_id,
+            event.start_at.astimezone(tz).date().isoformat(),
+            event.end_at.astimezone(tz).date().isoformat() if event.end_at else '',
+            str(track),
+            group,
+        )
+        groups.setdefault(key, []).append(event)
+
+    duplicates = []
+    for group_events in groups.values():
+        if len(group_events) <= 1:
+            continue
+        keep = sorted(group_events, key=_project_keep_sort_key)[0]
+        duplicates.extend(event for event in group_events if event.id != keep.id)
+    return duplicates
+
+
+def _project_keep_sort_key(event):
+    title = str(event.title or '')
+    compact = _compact_project_title(title)
+    has_time_prefix = bool(re.match(r'^\s*\[[^\]]+\]\s*\d{1,2}\s*-\s*\d{1,2}', title))
+    has_overview = 'OVERVIEW' in compact
+    return (has_time_prefix, has_overview, len(compact), event.id)
+
+
+def _project_dedupe_group(title):
+    compact = _compact_project_title(title)
+    if '\uad00\ud1b5' not in compact or ('PJT' not in compact and '\ud504\ub85c\uc81d\ud2b8' not in compact):
+        return compact
+    if '\uacbd\uc9c4\ub300\ud68c' in compact:
+        return 'PROJECT_PJT_CONTEST'
+    if 'OT' in compact:
+        return 'PROJECT_PJT_OT'
+    if '\uc81c\ucd9c' in compact or '\ub9c8\uac10' in compact:
+        return 'PROJECT_PJT_DEADLINE'
+    if '\ubc1c\ud45c' in compact:
+        return 'PROJECT_PJT_PRESENTATION'
+    return 'PROJECT_PJT_GENERIC'
+
+
+def _compact_project_title(title):
+    compact = re.sub(r'[\s.()_\-/~:\[\]]+', '', str(title or '')).upper()
+    compact = compact.replace('PROJECT', 'PJT')
+    return compact
