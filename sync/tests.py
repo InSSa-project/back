@@ -1587,6 +1587,175 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
         ocr_mock.assert_not_called()
 
+    def test_duplicate_notice_with_mock_skipped_ocr_is_backfilled_by_google_vision(self):
+        item = _notice_item('https://example.com/notices/missing-ocr', 'missing-ocr')
+        item['raw_text'] = '공지 본문'
+        item['raw_html'] = '<main>공지 본문<img src="/notice.png"></main>'
+        item['metadata_json']['image_urls'] = ['https://example.com/notice.png']
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=item['source_url'],
+            title=item['title'],
+            raw_text=item['raw_text'],
+            raw_html=item['raw_html'],
+            metadata_json={
+                **item['metadata_json'],
+                'ocr_provider': 'mock',
+                'ocr_status': 'skipped',
+                'ocr_text_length': 0,
+            },
+            status=RawSsafyData.STATUS_PARSED,
+        )
+
+        with patch.dict('os.environ', {'OCR_PROVIDER': 'google_vision'}, clear=False):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                with patch(
+                    'sync.services.import_service.extract_text_from_image_urls',
+                    return_value=_ocr_success_result('OCR 복구 일정 2026.05.20'),
+                ) as ocr_mock:
+                    job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(job_log.raw_count, 0)
+        self.assertEqual(job_log.ocr_processed_count, 1)
+        self.assertIn('updated_count=1', job_log.message)
+        self.assertEqual(existing.metadata_json['ocr_provider'], 'google_vision')
+        self.assertEqual(existing.metadata_json['ocr_status'], 'success')
+        self.assertEqual(existing.metadata_json['ocr_text_length'], len('OCR 복구 일정 2026.05.20'))
+        self.assertEqual(existing.raw_text.count('[OCR_TEXT]'), 1)
+        self.assertIn('OCR 복구 일정 2026.05.20', existing.raw_text)
+        self.assertEqual(existing.ocr_boxes[0]['text'], 'OCR')
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+        ocr_mock.assert_called_once_with(['https://example.com/notice.png'])
+
+    def test_duplicate_notice_with_success_ocr_text_and_boxes_is_not_backfilled(self):
+        item = _notice_item('https://example.com/notices/success-ocr', 'success-ocr')
+        item['metadata_json']['image_urls'] = ['https://example.com/notice.png']
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=item['source_url'],
+            title=item['title'],
+            raw_text=f"{item['raw_text']}\n\n[OCR_TEXT]\n기존 OCR 2026.05.20",
+            raw_html=item['raw_html'],
+            ocr_boxes=[{'text': '기존', 'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}],
+            metadata_json={
+                **item['metadata_json'],
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'success',
+                'ocr_text_length': len('기존 OCR 2026.05.20'),
+                'ocr_box_count': 1,
+            },
+            status=RawSsafyData.STATUS_PARSED,
+        )
+        ScheduleEvent.objects.create(
+            raw_data=existing,
+            title='기존 OCR',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            source_id=str(existing.pk),
+        )
+
+        with patch.dict('os.environ', {'OCR_PROVIDER': 'google_vision'}, clear=False):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                with patch('sync.services.import_service.extract_text_from_image_urls') as ocr_mock:
+                    job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(job_log.ocr_processed_count, 0)
+        self.assertEqual(job_log.skipped_count, 1)
+        self.assertEqual(RawSsafyData.objects.count(), 1)
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+        self.assertIn('기존 OCR 2026.05.20', existing.raw_text)
+        ocr_mock.assert_not_called()
+
+    def test_duplicate_notice_with_failed_ocr_is_not_auto_retried(self):
+        item = _notice_item('https://example.com/notices/failed-ocr', 'failed-ocr')
+        item['metadata_json']['image_urls'] = ['https://example.com/notice.png']
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=item['source_url'],
+            title=item['title'],
+            raw_text=item['raw_text'],
+            raw_html=item['raw_html'],
+            metadata_json={
+                **item['metadata_json'],
+                'ocr_provider': 'google_vision',
+                'ocr_status': 'failed',
+                'ocr_text_length': 0,
+                'ocr_error_type': 'provider_auth_error',
+            },
+            status=RawSsafyData.STATUS_PARSED,
+        )
+        ScheduleEvent.objects.create(
+            raw_data=existing,
+            title='SSAFY 일정',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            source_id=str(existing.pk),
+        )
+
+        with patch.dict('os.environ', {'OCR_PROVIDER': 'google_vision'}, clear=False):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                with patch('sync.services.import_service.extract_text_from_image_urls') as ocr_mock:
+                    job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(job_log.ocr_processed_count, 0)
+        self.assertEqual(job_log.skipped_count, 1)
+        self.assertEqual(existing.metadata_json['ocr_status'], 'failed')
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+        ocr_mock.assert_not_called()
+
+    def test_duplicate_notice_ocr_backfill_does_not_duplicate_existing_schedule_event(self):
+        item = _notice_item('https://example.com/notices/ocr-duplicate-event', 'ocr-duplicate-event')
+        item['raw_text'] = '공지 본문'
+        item['raw_html'] = '<main>공지 본문<img src="/notice.png"></main>'
+        item['metadata_json']['image_urls'] = ['https://example.com/notice.png']
+        existing = RawSsafyData.objects.create(
+            source_type='notice',
+            source_url=item['source_url'],
+            title=item['title'],
+            raw_text=item['raw_text'],
+            raw_html=item['raw_html'],
+            metadata_json={
+                **item['metadata_json'],
+                'ocr_provider': 'mock',
+                'ocr_status': 'skipped',
+                'ocr_text_length': 0,
+            },
+            status=RawSsafyData.STATUS_PARSED,
+        )
+        ScheduleEvent.objects.create(
+            raw_data=existing,
+            title='OCR_TEXT] OCR 복구 일정',
+            start_at=timezone.datetime(2026, 5, 20, tzinfo=timezone.get_current_timezone()),
+            end_at=timezone.datetime(2026, 5, 21, tzinfo=timezone.get_current_timezone()),
+            is_all_day=True,
+            event_type='notice',
+            source_type='notice',
+            source_id=str(existing.pk),
+        )
+
+        with patch.dict('os.environ', {'OCR_PROVIDER': 'google_vision'}, clear=False):
+            with patch('sync.services.import_service.load_notices_by_mode', return_value=[item]):
+                with patch(
+                    'sync.services.import_service.extract_text_from_image_urls',
+                    return_value=_ocr_success_result('OCR 복구 일정 2026.05.20'),
+                ):
+                    job_log = run_notice_import(mode='ssafy_notice')
+
+        existing.refresh_from_db()
+        self.assertEqual(job_log.ocr_processed_count, 1)
+        self.assertEqual(ScheduleEvent.objects.filter(raw_data=existing).count(), 1)
+        self.assertEqual(existing.raw_text.count('[OCR_TEXT]'), 1)
+
     def test_notice_original_id_matches_existing_when_source_url_changes(self):
         existing = RawSsafyData.objects.create(
             source_type='notice',
@@ -4934,6 +5103,18 @@ def _source_item(source_type, source_url, title, notice_id, raw_text=''):
             'published_at': '2026-05-14',
             'collected_from': 'ssafy_notice',
         },
+    }
+
+
+def _ocr_success_result(text, provider='google_vision'):
+    return {
+        'ocr_text': text,
+        'ocr_provider': provider,
+        'ocr_status': 'success',
+        'ocr_error': '',
+        'ocr_error_type': '',
+        'ocr_failed_count': 0,
+        'ocr_boxes': [{'text': 'OCR', 'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}],
     }
 
 
