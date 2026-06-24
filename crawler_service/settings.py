@@ -121,7 +121,7 @@ WSGI_APPLICATION = 'crawler_service.wsgi.application'
 DATABASE_URL = env('DATABASE_URL', default='').strip()
 DB_ENGINE = env('DB_ENGINE', default='sqlite').strip().lower()
 
-# Render / Supabase 배포 환경
+# Oracle Cloud / Supabase 배포 환경
 if DATABASE_URL:
     DATABASES = {
         'default': dj_database_url.parse(

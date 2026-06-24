@@ -1014,7 +1014,7 @@ class NoticeImageSerializerTests(TestCase):
         self.assertEqual(response.json()['images'], [])
 
     def test_local_media_url_without_file_is_excluded(self):
-        # If the local media file does not exist (e.g. after Render redeploy),
+        # If the local media file does not exist (e.g. after Oracle Cloud redeploy),
         # the URL must NOT be returned to the client.
         raw_data = RawSsafyData.objects.create(
             source_type='notice',
