@@ -547,7 +547,7 @@ def _notice_image_url(source, raw_data, request=None):
         return f'https:{url}'
     if lowered.startswith('/media/') or lowered.startswith('/static/'):
         # Skip /media/ URLs whose file no longer exists on disk
-        # (Render ephemeral filesystem: files are lost on every redeploy).
+        # (Oracle Cloud ephemeral filesystem: files are lost on every redeploy).
         if lowered.startswith('/media/') and not _local_media_file_exists(url):
             return ''
         return request.build_absolute_uri(url) if request is not None else url

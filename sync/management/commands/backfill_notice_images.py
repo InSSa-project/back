@@ -6,7 +6,7 @@ optimised WebP, uploads them to Supabase Storage, and updates metadata_json
 with a structured ``notice_images`` entry.
 
 This replaces the previous local-disk approach where images were stored in
-``media/notices/``.  Local disk storage on Render (and most PaaS) is
+``media/notices/``.  Local disk storage on Oracle Cloud (and most PaaS) is
 ephemeral: files vanish on every redeploy, causing intermittent 404s and
 image-loading failures.
 

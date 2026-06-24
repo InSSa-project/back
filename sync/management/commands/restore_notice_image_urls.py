@@ -4,7 +4,7 @@ Management command: restore_notice_image_urls
 Restores notice image_urls that were overwritten to /media/ paths by the
 previous backfill_notice_images command (which stored files on the local disk).
 
-Because Render uses an ephemeral filesystem, those /media/ files are gone after
+Because Oracle Cloud uses an ephemeral filesystem, those /media/ files are gone after
 every redeploy. This command recovers the original SSAFY CDN URLs by
 re-extracting them from raw_html, then replaces the /media/ entries.
 
