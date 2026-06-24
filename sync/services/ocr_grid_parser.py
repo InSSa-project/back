@@ -148,7 +148,7 @@ def parse_grid_schedule_candidates(ocr_boxes, source_title=''):
     all_section_boxes = []
     timetable_mode = _looks_like_timetable(source_title)
     for month, section_boxes in month_sections:
-        cells = _build_date_cells(month, section_boxes)
+        cells = _build_date_cells(month, section_boxes, timetable_mode=timetable_mode)
         all_cells.extend(cells)
         all_section_boxes.extend(section_boxes)
         debug.date_cell_count += len(cells)
@@ -301,6 +301,20 @@ def _month_from_split_boxes(number_box, boxes):
     return None
 
 
+def _has_il_following(box, boxes):
+    """Return True if box has '일' immediately to its right on the same line."""
+    for other in boxes:
+        if other is box:
+            continue
+        if other['text'] != '일':
+            continue
+        same_line = abs(other['cy'] - box['cy']) <= max(18, box['y2'] - box['y1'])
+        to_right = 0 <= other['x1'] - box['x2'] <= 30
+        if same_line and to_right:
+            return True
+    return False
+
+
 def _dedupe_month_headers(month_headers):
     seen = set()
     deduped = []
@@ -313,12 +327,22 @@ def _dedupe_month_headers(month_headers):
     return deduped
 
 
-def _build_date_cells(month, boxes):
+def _build_date_cells(month, boxes, timetable_mode=False):
     day_boxes = []
     for box in boxes:
+        # Skip digit boxes that are month prefixes (e.g. "2" in split "2월 4일")
+        if _month_from_split_boxes(box, boxes) is not None:
+            continue
         day = _day_from_box(box)
-        if day and _valid_day(month, day):
-            day_boxes.append((day, box))
+        if day is None or not _valid_day(month, day):
+            continue
+        text = str(box['text'] or '').strip()
+        # In timetable mode, a bare digit (DAY_PATTERN) must be followed by '일'
+        # to qualify as a date header. This prevents time-slot digits ("9" in "9:00")
+        # and numbered-item digits ("1" in "1부") from creating spurious row splits.
+        if timetable_mode and DAY_PATTERN.match(text) and not _has_il_following(box, boxes):
+            continue
+        day_boxes.append((day, box))
 
     day_boxes = _dedupe_day_boxes(day_boxes)
     if not day_boxes:

@@ -18,23 +18,19 @@ from sync.services.tracks import (
 
 
 DEFAULT_YEAR = 2026
-ONLINE_WEEK_KEYWORDS = ('온라인 위크', 'online week', '?⑤씪???꾪겕')
+ONLINE_WEEK_KEYWORDS = ('온라인 위크', 'online week')
 GENERIC_TITLES = {
     '공지사항 상세',
     '게시물 상세',
     'SSAFY document',
     'SSAFY 일정',
-    '怨듭??ы빆 ?곸꽭',
-    '寃뚯떆臾??곸꽭',
-    'SSAFY ?쇱젙',
 }
-DEADLINE_KEYWORDS = ['마감', '제출', '까지', 'due', 'deadline', '留덇컧', '?쒖텧', '源뚯?']
+DEADLINE_KEYWORDS = ['마감', '제출', '까지', 'due', 'deadline']
 EVENT_KEYWORDS = [
     '제출', '마감', '평가', '시험', '테스트', '특강', '프로젝트', '멘토링', '발표', '설명회',
     '입과', '수료', '방학', '개강', '종강', '공통', '코딩', '월말', '과제',
-    '?쒖텧', '留덇컧', '?됯?', '?쒗뿕', '?뚯뒪??', '?밴컯', '?꾨줈?앺듃',
 ]
-CONTEXT_KEYWORDS = ['15기', '1학기', '진행일정', '전체 일정', '일정', '15湲?', '1?숆린', '吏꾪뻾?쇱젙']
+CONTEXT_KEYWORDS = ['15기', '1학기', '진행일정', '전체 일정', '일정']
 META_LINE_KEYWORDS = ['운영팀', '목록', '공지사항 상세', '메뉴 네비게이션', 'HOME', 'Copyright']
 WEEKDAY_HEADERS = {'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'}
 CALENDAR_KEYWORDS = [
@@ -213,124 +209,6 @@ def parse_schedule_candidates_with_debug(raw_text, default_title='SSAFY 일정',
     if not grid_candidates and not getattr(grid_debug, 'review_required_candidate_count', 0):
         schedules.extend(_parse_calendar_ocr_candidates(raw_text))
     return _dedupe_schedules(schedules), grid_debug
-
-
-def _parse_evaluation_notice(raw_text, default_title):
-    text = f'{default_title or ""}\n{raw_text or ""}'
-    if not _looks_like_evaluation_notice(text):
-        return [], GridParseDebug(candidates=[], review_required_candidates=[])
-
-    track = _extract_clear_track(text)
-    debug = GridParseDebug(candidates=[], review_required_candidates=[])
-    if not track:
-        debug.reason = 'evaluation_notice_track_review_required'
-        debug.review_required_candidates = [
-            {
-                'title': default_title or '평가 안내',
-                'source_text': _debug_text_sample(text),
-                'review_required_reason': 'missing_or_ambiguous_track',
-            }
-        ]
-        debug.review_required_candidate_count = 1
-        return [], debug
-
-    schedules = []
-    for line in _candidate_lines_for_evaluation(text):
-        match = EVALUATION_DATE_PATTERN.search(line)
-        type_match = EVALUATION_TYPE_PATTERN.search(line)
-        if not match or not type_match:
-            continue
-        subject = _evaluation_subject(line, match, type_match)
-        if not subject:
-            continue
-        event_date = date(
-            int(match.group('year') or DEFAULT_YEAR),
-            int(match.group('month')),
-            int(match.group('day')),
-        )
-        evaluation_type = type_match.group(1)
-        title = f'{evaluation_type}: {subject}'
-        schedules.append(
-            ParsedSchedule(
-                title=title[:255],
-                description=f'SSAFY 평가 안내 OCR에서 추출한 {track} 트랙 시험 일정',
-                start_at=_aware(event_date, time.min),
-                end_at=_aware(event_date, time.min) + timedelta(days=1),
-                is_all_day=True,
-                event_type='exam',
-                metadata_json={
-                    'parser': 'evaluation_notice_ocr',
-                    'parser_type': 'evaluation_notice',
-                    'raw_title': title,
-                    'source_title': default_title,
-                    'display_title': normalize_schedule_display_title(title),
-                    'track': track,
-                    'candidate_date': event_date.isoformat(),
-                    'date_mapping_source': 'explicit_text_date',
-                    'confidence': 0.9,
-                    'skip_reason': '',
-                },
-            )
-        )
-
-    if not schedules:
-        debug.reason = 'evaluation_notice_no_parseable_rows'
-        debug.review_required_candidates = [
-            {
-                'title': default_title or '평가 안내',
-                'source_text': _debug_text_sample(text),
-                'review_required_reason': 'no_parseable_evaluation_rows',
-            }
-        ]
-        debug.review_required_candidate_count = 1
-    else:
-        debug.reason = 'evaluation_notice_ok'
-        debug.candidates = [
-            {
-                'title': schedule.title,
-                'inferred_date': schedule.start_at.date().isoformat(),
-                'event_type': schedule.event_type,
-                'track': track,
-            }
-            for schedule in schedules
-        ]
-        debug.candidate_count = len(debug.candidates)
-        debug.metadata_json = {'track': track, 'parser': 'evaluation_notice_ocr'}
-    return schedules, debug
-
-
-def _looks_like_evaluation_notice(text):
-    return (
-        '[OCR_TEXT]' in text
-        and
-        ('평가 안내' in text or '평가안내' in text)
-        and ('과목평가' in text or '월말평가' in text)
-    )
-
-
-def _extract_clear_track(text):
-    found = []
-    for keyword in TRACK_KEYWORDS:
-        if re.search(re.escape(keyword), text, re.I):
-            found.append(keyword)
-    return found[0] if len(set(found)) == 1 else ''
-
-
-def _extract_track_from_title(title):
-    text = str(title or '')
-    track_map = [
-        ('Python', 'Python'),
-        ('Data', 'Data'),
-        ('마이스터고', '마이스터고'),
-        ('Java', 'Java'),
-        ('Embedded Robot', 'Embedded Robot'),
-        ('Embedded', 'Embedded'),
-        ('Mobile', 'Mobile'),
-    ]
-    for keyword, label in track_map:
-        if keyword.lower() in text.lower():
-            return label
-    return ''
 
 
 def _category_label(event_type):
@@ -645,7 +523,6 @@ def _is_allowed_promotional_exception(title):
         '과목평가',
         '월말평가',
         'AI 강의',
-        'AI 媛뺤쓽',
         '설날',
         'SSAFY DAY',
         '온라인 위크',
@@ -715,86 +592,6 @@ def _aware(event_date, event_time):
     return timezone.make_aware(naive, timezone.get_current_timezone())
 
 
-def _parse_evaluation_notice(raw_text, default_title):
-    text = f'{default_title or ""}\n{raw_text or ""}'
-    if not _looks_like_evaluation_notice(text):
-        return [], GridParseDebug(candidates=[], review_required_candidates=[])
-
-    track = _extract_clear_track(text)
-    target_tracks = canonical_track_keys() if track else [COMMON_TRACK_KEY]
-    debug = GridParseDebug(candidates=[], review_required_candidates=[])
-    schedules = []
-
-    for line in _candidate_lines_for_evaluation(text):
-        match = EVALUATION_DATE_PATTERN.search(line)
-        type_match = EVALUATION_TYPE_PATTERN.search(line)
-        if not match or not type_match:
-            continue
-        subject = _evaluation_subject(line, match, type_match)
-        if not subject:
-            continue
-        event_date = date(
-            int(match.group('year') or DEFAULT_YEAR),
-            int(match.group('month')),
-            int(match.group('day')),
-        )
-        evaluation_type = type_match.group(1)
-        title = f'{evaluation_type}: {subject}'
-        for track_key in target_tracks:
-            track_display = 'All' if track_key == COMMON_TRACK_KEY else canonical_track_display(track_key)
-            common_metadata = common_track_metadata() if track_key == COMMON_TRACK_KEY else {}
-            schedules.append(
-                ParsedSchedule(
-                    title=title[:255],
-                    description=f'SSAFY evaluation notice parsed for {track_display} track',
-                    start_at=_aware(event_date, time.min),
-                    end_at=_aware(event_date, time.min) + timedelta(days=1),
-                    is_all_day=True,
-                    event_type='exam',
-                    metadata_json={
-                        'parser': 'evaluation_notice_ocr',
-                        'parser_type': 'evaluation_notice',
-                        'raw_title': title,
-                        'source_title': default_title,
-                        'display_title': normalize_schedule_display_title(title),
-                        'track': track_display,
-                        'track_key': track_key,
-                        'track_display': track_display,
-                        **common_metadata,
-                        'candidate_date': event_date.isoformat(),
-                        'date_mapping_source': 'explicit_text_date',
-                        'confidence': 0.9 if track else 0.8,
-                        'skip_reason': '',
-                    },
-                )
-            )
-
-    if not schedules:
-        debug.reason = 'evaluation_notice_no_parseable_rows'
-        debug.review_required_candidates = [
-            {
-                'title': default_title or 'evaluation notice',
-                'source_text': _debug_text_sample(text),
-                'review_required_reason': 'no_parseable_evaluation_rows',
-            }
-        ]
-        debug.review_required_candidate_count = 1
-    else:
-        debug.reason = 'evaluation_notice_ok'
-        debug.candidates = [
-            {
-                'title': schedule.title,
-                'inferred_date': schedule.start_at.date().isoformat(),
-                'event_type': schedule.event_type,
-                'track': (schedule.metadata_json or {}).get('track') or '',
-            }
-            for schedule in schedules
-        ]
-        debug.candidate_count = len(debug.candidates)
-        debug.metadata_json = {'track': canonical_track_display(track) if track else 'all', 'parser': 'evaluation_notice_ocr'}
-    return schedules, debug
-
-
 def _parse_title(line, default_title):
     cleaned = re.sub(DATE_RANGE_PATTERN, '', line)
     cleaned = re.sub(DATE_PATTERN, '', cleaned)
@@ -808,13 +605,13 @@ def _parse_title(line, default_title):
 
 
 def _parse_event_type(line):
-    if any(keyword in line for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트', '?됯?', '?쒗뿕', '?뚯뒪??']):
+    if any(keyword in line for keyword in ['평가', '월말평가', '과목평가', 'SW 역량테스트']):
         return 'exam'
-    if any(keyword in line for keyword in ['제출', '마감', '과제', '?쒖텧', '留덇컧']):
+    if any(keyword in line for keyword in ['제출', '마감', '과제']):
         return 'assignment'
-    if any(keyword in line for keyword in ['프로젝트', 'PJT', '경진대회', '?꾨줈?앺듃']):
+    if any(keyword in line for keyword in ['프로젝트', 'PJT', '경진대회']):
         return 'project'
-    if any(keyword in line for keyword in ['강의', '특강', '캠프', '?밴컯']):
+    if any(keyword in line for keyword in ['강의', '특강', '캠프']):
         return 'lecture'
     if any(keyword in line for keyword in ['SSAFY DAY', '입학식', '밋업']):
         return 'event'

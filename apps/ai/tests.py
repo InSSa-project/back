@@ -1441,7 +1441,10 @@ class AIServiceRefactorContractTests(SimpleTestCase):
             title='SSAFY 공지',
             content='확인된 공지 내용',
             document_type='NOTICE',
-            metadata={'source_type': 'notice'},
+            metadata={
+                'source_type': 'notice',
+                'source_url': 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7',
+            },
             score=1.0,
         )
 
@@ -1457,7 +1460,44 @@ class AIServiceRefactorContractTests(SimpleTestCase):
 
         self.assertEqual(response.answer, 'mock 모델 답변')
         self.assertEqual(response.references[0].ai_document_id, 7)
+        self.assertEqual(response.references[0].source_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
+        self.assertEqual(response.references[0].external_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
         self.assertEqual(response.references[0].title, 'SSAFY 공지')
+
+    def test_schedule_references_keep_source_url(self):
+        chunk = RetrievedChunk(
+            chunk_id='schedule-event:10',
+            ai_document_id=0,
+            raw_data_id=10,
+            title='SSAFY schedule',
+            content='Schedule source',
+            document_type='SCHEDULE_EVENT',
+            metadata={
+                'source_type': 'notice',
+                'source_url': 'https://edu.ssafy.com/comm/notice/view.do?noticeId=10',
+            },
+            score=1.0,
+        )
+        pipeline = ChatPipeline(llm_client=self.MockLLMClient())
+
+        references = pipeline._schedule_references([chunk])
+
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0].source_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=10')
+
+    def test_schedule_reference_links_do_not_mark_route_as_rag(self):
+        from apps.ai.services import AIService
+
+        payload = {
+            'answer_policy': 'SCHEDULE_DB_DIRECT',
+            'references': [{'source_url': 'https://edu.ssafy.com/comm/notice/view.do?noticeId=10'}],
+            'usage': {'mode': 'schedule_db_direct'},
+        }
+
+        AIService()._annotate_route_metrics(payload)
+
+        self.assertTrue(payload['usage']['used_db'])
+        self.assertFalse(payload['usage']['used_rag'])
 
     def test_rag_failure_returns_safe_fallback_without_server_crash(self):
         from ai_server.rag.service import RAGService
@@ -1607,3 +1647,24 @@ class DjangoAIAPICompatibilityTests(TestCase):
         self.assertEqual(result['usage']['mode'], 'ai_server_timeout')
         self.assertNotIn('secret-internal-host', result['answer'])
         self.assertNotIn('secret internal detail', result['answer'])
+
+    def test_fastapi_client_normalizes_reference_source_url(self):
+        from apps.ai.services import FastAPIAIClient
+
+        result = FastAPIAIClient(base_url='http://ai-server')._normalize_reference(
+            {
+                'ai_document_id': 7,
+                'title': 'SSAFY notice',
+                'source_type': 'notice',
+                'score': 0.92,
+                'snippet': 'notice body',
+                'chunk_id': 'doc:1',
+                'raw_data_id': 3,
+                'metadata': {
+                    'source_url': 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7',
+                },
+            }
+        )
+
+        self.assertEqual(result['source_url'], 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
+        self.assertEqual(result['external_url'], 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')

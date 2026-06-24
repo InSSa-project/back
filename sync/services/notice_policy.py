@@ -17,7 +17,9 @@ USER_VISIBLE_NOTICE_SOURCE_TYPES = {
 AI_DOCUMENT_NOTICE_SOURCE_TYPES = {
     *USER_VISIBLE_NOTICE_SOURCE_TYPES,
     'academic_rule',
+    'mentoring',
     'mentoring_notice',
+    'mentoring_qna',
     'mentor_story',
     'geeknews',
     'external_article',

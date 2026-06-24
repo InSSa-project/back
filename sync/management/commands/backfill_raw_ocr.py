@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
 from django.core.management.base import BaseCommand
-from django.db import transaction
 
 from sync.models import RawSsafyData
 from sync.services.ocr_service import extract_text_from_image_urls
@@ -71,6 +70,10 @@ class Command(BaseCommand):
         image_downloader = None
         authenticated_context = None
         if options.get('authenticated_download') and not options['dry_run']:
+            # sync_playwright uses asyncio internally which triggers Django's async safety
+            # checks on all DB operations. Allow sync DB calls for this management command.
+            import os as _os
+            _os.environ.setdefault('DJANGO_ALLOW_ASYNC_UNSAFE', '1')
             authenticated_context = _open_authenticated_context()
             image_downloader = _build_authenticated_image_downloader(authenticated_context)
 
@@ -111,49 +114,45 @@ def _backfill_queryset(queryset, dry_run=False, reparse=False, force=False, imag
     summary.ocr_errors = []
     updated_raw_ids = []
 
-    with transaction.atomic():
-        for raw_data in queryset:
-            summary.raw_checked += 1
-            image_urls = _collect_image_urls(raw_data)
-            summary.image_count += len(image_urls)
+    for raw_data in queryset:
+        summary.raw_checked += 1
+        image_urls = _collect_image_urls(raw_data)
+        summary.image_count += len(image_urls)
 
-            if not image_urls:
-                summary.no_image_count += 1
-                if not dry_run:
-                    _update_metadata(raw_data, image_urls=image_urls, ocr_result=None)
-                    raw_data.save(update_fields=['metadata_json', 'ocr_boxes'])
-                continue
-
-            if _has_existing_ocr_boxes(raw_data) and not force:
-                summary.skipped_existing_ocr_count += 1
-                continue
-            if force:
-                summary.forced_count += 1
-
-            if dry_run:
-                continue
-
-            ocr_result = _safe_extract_text(image_urls, image_downloader=image_downloader)
-            if ocr_result.get('ocr_error') or ocr_result.get('ocr_error_type'):
-                summary.ocr_errors.append(_format_ocr_debug(raw_data, image_urls, ocr_result))
-            summary.ocr_processed_count += len(image_urls)
-            summary.ocr_failed_count += ocr_result.get(
-                'ocr_failed_count',
-                1 if ocr_result.get('ocr_status') == 'failed' else 0,
-            )
-
-            ocr_text = ocr_result.get('ocr_text', '')
-            _update_metadata(raw_data, image_urls=image_urls, ocr_result=ocr_result)
-            if ocr_text:
-                raw_data.raw_text = _replace_ocr_text(raw_data.raw_text, ocr_text)
-                raw_data.save(update_fields=['raw_text', 'metadata_json', 'ocr_boxes'])
-                summary.updated_count += 1
-                updated_raw_ids.append(raw_data.id)
-            else:
+        if not image_urls:
+            summary.no_image_count += 1
+            if not dry_run:
+                _update_metadata(raw_data, image_urls=image_urls, ocr_result=None)
                 raw_data.save(update_fields=['metadata_json', 'ocr_boxes'])
+            continue
+
+        if _has_existing_ocr_boxes(raw_data) and not force:
+            summary.skipped_existing_ocr_count += 1
+            continue
+        if force:
+            summary.forced_count += 1
 
         if dry_run:
-            transaction.set_rollback(True)
+            continue
+
+        ocr_result = _safe_extract_text(image_urls, image_downloader=image_downloader)
+        if ocr_result.get('ocr_error') or ocr_result.get('ocr_error_type'):
+            summary.ocr_errors.append(_format_ocr_debug(raw_data, image_urls, ocr_result))
+        summary.ocr_processed_count += len(image_urls)
+        summary.ocr_failed_count += ocr_result.get(
+            'ocr_failed_count',
+            1 if ocr_result.get('ocr_status') == 'failed' else 0,
+        )
+
+        ocr_text = ocr_result.get('ocr_text', '')
+        _update_metadata(raw_data, image_urls=image_urls, ocr_result=ocr_result)
+        if ocr_text:
+            raw_data.raw_text = _replace_ocr_text(raw_data.raw_text, ocr_text)
+            raw_data.save(update_fields=['raw_text', 'metadata_json', 'ocr_boxes'])
+            summary.updated_count += 1
+            updated_raw_ids.append(raw_data.id)
+        else:
+            raw_data.save(update_fields=['metadata_json', 'ocr_boxes'])
 
     if reparse and updated_raw_ids and not dry_run:
         reparse_summary = reparse_raw_data_to_events(RawSsafyData.objects.filter(id__in=updated_raw_ids))

@@ -1,3 +1,4 @@
+import os
 import re
 
 from django.core.management.base import BaseCommand, CommandError
@@ -12,7 +13,7 @@ from sync.models import CrawlJobLog
 from sync.services.import_service import preview_notice_import, run_notice_import
 
 
-DEFAULT_SCHEDULED_SOURCES = ('notice', 'mentoring_notice')
+DEFAULT_SCHEDULED_SOURCES = ('notice', 'academic_rule', 'mentoring', 'mentoring_notice', 'mentoring_qna')
 DEFAULT_RECENT_LIMIT = 30
 DEFAULT_MAX_PAGES = 2
 
@@ -36,7 +37,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--all',
             action='store_true',
-            help='Collect all configured sources. Hourly default only checks notice and mentoring_notice.',
+            help='Collect all configured sources. Hourly default checks notice, academic_rule, mentoring, mentoring_notice, and mentoring_qna.',
         )
         parser.add_argument('--skip-source', help='Comma-separated source list to skip, e.g. mentoring_notice.')
         parser.add_argument(
@@ -88,7 +89,7 @@ class Command(BaseCommand):
 
 def _scheduled_options(options):
     prepared = dict(options)
-    if not prepared.get('all') and not prepared.get('source') and not prepared.get('source_type'):
+    if not prepared.get('all') and not prepared.get('source') and not prepared.get('source_type') and not os.getenv('SSAFY_CRAWLER_SOURCES'):
         prepared['source_type'] = list(DEFAULT_SCHEDULED_SOURCES)
     if not prepared.get('all'):
         prepared['recent_limit'] = prepared.get('recent_limit') or DEFAULT_RECENT_LIMIT
@@ -106,7 +107,9 @@ def _selected_sources_display(options):
         values.append(options['source'])
     for source_type in options.get('source_type') or []:
         values.append(source_type)
-    return ','.join(values) if values else 'none'
+    if values:
+        return ','.join(values)
+    return os.getenv('SSAFY_CRAWLER_SOURCES') or 'none'
 
 
 def _print_scheduled_dry_run(command, preview, started_at):
