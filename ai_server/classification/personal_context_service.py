@@ -42,6 +42,10 @@ class PersonalContextAnswerService:
         if self._is_empty(intent, context):
             return self._empty_response(intent)
 
+        deterministic_response = self._deterministic_response(intent, context)
+        if deterministic_response:
+            return deterministic_response
+
         lora_response = self._try_lora_answer(question, intent, context)
         if lora_response:
             return lora_response
@@ -77,6 +81,8 @@ class PersonalContextAnswerService:
             django.setup()
 
     def _try_lora_answer(self, question: str, intent: str, context: dict) -> ChatResponse | None:
+        if intent in {DomainIntent.PERSONAL_SCORE, DomainIntent.PERSONAL_RISK, DomainIntent.RECOMMENDED_SCHEDULE}:
+            return None
         lora_result = self.lora_reasoner.maybe_answer(
             question=question,
             query_type=intent,
@@ -103,6 +109,94 @@ class PersonalContextAnswerService:
                 'lora_reasoner_reason': lora_result.reason,
             },
         )
+
+    def _deterministic_response(self, intent: str, context: dict) -> ChatResponse | None:
+        if intent == DomainIntent.PERSONAL_SCORE:
+            return self._direct_response(self._score_answer(context), intent, 'PERSONAL_CONTEXT_DB_DIRECT')
+        if intent == DomainIntent.PERSONAL_RISK:
+            answer = self._risk_answer(context)
+            policy = 'PERSONAL_CONTEXT_DB_DIRECT' if context.get('score_state', {}).get('has_scores') else 'PERSONAL_CONTEXT_NO_DATA'
+            return self._direct_response(answer, intent, policy)
+        if intent == DomainIntent.RECOMMENDED_SCHEDULE:
+            answer = self._recommendation_answer(context)
+            return self._direct_response(answer, intent, 'PERSONAL_CONTEXT_DB_DIRECT')
+        return None
+
+    def _direct_response(self, answer: str, intent: str, policy: str) -> ChatResponse:
+        answer, answer_usage = limit_answer(answer)
+        return ChatResponse(
+            answer=answer,
+            intent=intent.lower(),
+            query_type=intent,
+            answer_policy=policy,
+            references=[],
+            usage={
+                **answer_usage,
+                'mode': 'personal_context_db_direct',
+                'context_type': intent,
+                'rag_used': False,
+                'lora_attempted': False,
+                'lora_used': False,
+            },
+        )
+
+    def _score_answer(self, context: dict) -> str:
+        records = context.get('recent_evaluations') or []
+        lines = ['현재 입력된 성적 기록입니다.']
+        for item in records[:5]:
+            label = '과목평가' if item.get('evaluation_type') == 'subject' else '월말평가'
+            title = item.get('subject_name') or item.get('title') or f"{item.get('round_number')}회차"
+            score = item.get('score')
+            status = item.get('status') or ''
+            score_text = f'{score}점' if score is not None else status
+            lines.append(f'- {label} {title}: {score_text}')
+        lines.append('다른 사용자의 성적이나 없는 기록은 포함하지 않았습니다.')
+        return '\n'.join(lines)
+
+    def _risk_answer(self, context: dict) -> str:
+        score_state = context.get('score_state') or {}
+        if not score_state.get('has_scores'):
+            return (
+                '현재 입력된 성적 기록이 없어 과락 위험도를 판단할 수 없습니다.\n'
+                '리스크 관리 화면에 과목평가/월말평가 점수나 Pass/Fail 상태를 먼저 입력해 주세요.'
+            )
+
+        details = context.get('status_details') or {}
+        lines = ['현재 입력된 성적 기준으로 확인한 과락/수료 위험도입니다.']
+        summary = details.get('summary')
+        if summary:
+            lines.append(f'- 종합: {summary}')
+        for item in details.get('evidence_items') or []:
+            label = item.get('label') or '평가'
+            value = item.get('value') or ''
+            metrics = item.get('metrics') or ''
+            if metrics:
+                lines.append(f'- {label}: {value} ({metrics})')
+            else:
+                lines.append(f'- {label}: {value}')
+        lines.append('없는 성적이나 일정은 추측하지 않았습니다.')
+        return '\n'.join(lines)
+
+    def _recommendation_answer(self, context: dict) -> str:
+        items = context.get('recommended_schedules') or []
+        if not items:
+            return '현재 추천할 일정 데이터가 없습니다. 캘린더 일정이나 성적을 입력하면 우선순위를 다시 계산할 수 있습니다.'
+
+        lines = ['확인된 일정과 성적 기준으로 우선순위를 정리했습니다.']
+        for index, item in enumerate(items[:3], start=1):
+            title = item.get('title') or '확인 필요 일정'
+            period = item.get('period') or item.get('badge') or ''
+            reason = item.get('reason') or ''
+            action = item.get('action') or '일정 내용 확인'
+            label = f'{index}. {title}'
+            if period:
+                label += f' ({period})'
+            lines.append(label)
+            if reason:
+                lines.append(f'   - 이유: {reason}')
+            lines.append(f'   - 먼저 할 일: {action}')
+        lines.append('DB에 없는 일정이나 준비물은 새로 만들지 않았습니다.')
+        return '\n'.join(lines)
 
     def _context_for(self, intent: str, dashboard: dict) -> dict:
         score_state = self._score_state(dashboard)
