@@ -88,12 +88,35 @@ class CalendarApiTests(TestCase):
             {rawless_event.id},
         )
 
-    def test_calendar_events_hide_other_track_for_user_profile(self):
+    def test_calendar_events_default_to_user_profile_track_and_keep_common_events(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
-        ScheduleEvent.objects.create(
-            title='Java public notice schedule',
+        python_event = ScheduleEvent.objects.create(
+            title='Python public notice schedule',
             start_at=start_at,
             end_at=start_at + timedelta(hours=1),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track_key': 'python', 'is_common': False},
+        )
+        common_event = ScheduleEvent.objects.create(
+            title='Common public notice schedule',
+            start_at=start_at + timedelta(hours=1),
+            end_at=start_at + timedelta(hours=2),
+            event_type='notice',
+            source_type='notice',
+            metadata_json={'track_key': 'all', 'is_common': True},
+        )
+        trackless_event = ScheduleEvent.objects.create(
+            title='Trackless common notice schedule',
+            start_at=start_at + timedelta(hours=2),
+            end_at=start_at + timedelta(hours=3),
+            event_type='notice',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='Java public notice schedule',
+            start_at=start_at + timedelta(hours=3),
+            end_at=start_at + timedelta(hours=4),
             event_type='notice',
             source_type='notice',
             metadata_json={'track_key': 'java_major', 'is_common': False},
@@ -102,7 +125,10 @@ class CalendarApiTests(TestCase):
         response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['data'], [])
+        self.assertEqual(
+            {item['id'] for item in response.json()['data']},
+            {python_event.id, common_event.id, trackless_event.id},
+        )
 
     def test_calendar_events_include_generated_ssafy_event_with_required_fields(self):
         raw_data = RawSsafyData.objects.create(

@@ -410,6 +410,51 @@ class ScheduleDbChatPipelineTests(TestCase):
         self.assertIn('확인해봤지만 오늘 이후 가까운 일정은 없어요', response.answer)
         self.assertNotIn('가까운 일반 공지', response.answer)
 
+    def test_exam_timeline_query_returns_past_and_future_evaluations(self):
+        today = timezone.localdate()
+        day_start = timezone.make_aware(timezone.datetime.combine(today, timezone.datetime.min.time()))
+        past_subject_exam = ScheduleEvent.objects.create(
+            title='3회차 과목평가',
+            start_at=day_start - timedelta(days=20),
+            end_at=day_start - timedelta(days=20) + timedelta(hours=1),
+            event_type='exam',
+            source_type='notice',
+        )
+        future_monthly_exam = ScheduleEvent.objects.create(
+            title='6회차 월말평가',
+            start_at=day_start + timedelta(days=10),
+            end_at=day_start + timedelta(days=10) + timedelta(hours=1),
+            event_type='exam',
+            source_type='notice',
+        )
+        for index in range(305):
+            ScheduleEvent.objects.create(
+                title=f'일반 공지 일정 {index}',
+                start_at=day_start - timedelta(days=300 - index),
+                end_at=day_start - timedelta(days=300 - index) + timedelta(hours=1),
+                event_type='notice',
+                source_type='notice',
+            )
+        ScheduleEvent.objects.create(
+            title='일반 공지 일정',
+            start_at=day_start + timedelta(days=2),
+            end_at=day_start + timedelta(days=2, hours=1),
+            event_type='notice',
+            source_type='notice',
+        )
+
+        response = self._ask(
+            self.user_a,
+            message='지금까지 있었던 과목평가 월말평가 일정, 앞으로 남은 일정도 알려줘',
+        )
+
+        self.assertEqual(response.answer_policy, 'SERVER_VERIFIED_SCHEDULE_DB_DIRECT')
+        self.assertIn('과목평가/월말평가 일정', response.answer)
+        self.assertIn(past_subject_exam.title, response.answer)
+        self.assertIn(future_monthly_exam.title, response.answer)
+        self.assertNotIn('일반 공지 일정', response.answer)
+        self.assertEqual(response.usage['constraint_include_filters'], ['exam'])
+
     def test_empty_schedule_date_returns_no_confirmed_schedule_message(self):
         response = self._ask(self.user_a, message='2026-06-03 일정 알려줘')
 
@@ -1159,6 +1204,34 @@ class PersonalContextChatPipelineTests(TestCase):
         self.assertIn('과목평가', sent_context)
 
 
+    def test_priority_advice_with_project_and_fail_context_uses_recommendation_context(self):
+        now = timezone.now()
+        ScheduleEvent.objects.create(
+            title='REST API evaluation',
+            start_at=now + timedelta(days=1),
+            end_at=now + timedelta(days=1, hours=1),
+            event_type='exam',
+            source_type='notice',
+        )
+        ScheduleEvent.objects.create(
+            title='project presentation',
+            start_at=now + timedelta(days=1),
+            end_at=now + timedelta(days=1, hours=1),
+            event_type='project',
+            source_type='notice',
+        )
+
+        response = self._ask(
+            self.user_a,
+            'REST API \uacfc\ub77d\uc778\ub370 \ud504\ub85c\uc81d\ud2b8 \ubc1c\ud45c\ub3c4 \ub0b4\uc77c\uc785\ub2c8\ub2e4. \ubb34\uc5c7\ubd80\ud130 \ud574\uc57c \ud560\uae4c\uc694?',
+        )
+        sent_context = self.llm.messages[-1][1]['content']
+
+        self.assertEqual(response.query_type, DomainIntent.RECOMMENDED_SCHEDULE)
+        self.assertEqual(response.answer_policy, 'PERSONAL_CONTEXT_LLM')
+        self.assertIn('recommended_schedules', sent_context)
+        self.assertNotEqual(response.answer_policy, 'OFFICIAL_NO_CONTEXT')
+
 class PipelineResultValidatorUsageTests(TestCase):
     def test_schedule_no_match_attaches_result_validator_usage(self):
         pipeline = ChatPipeline()
@@ -1463,6 +1536,47 @@ class AIServiceRefactorContractTests(SimpleTestCase):
         self.assertEqual(response.references[0].source_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
         self.assertEqual(response.references[0].external_url, 'https://edu.ssafy.com/comm/notice/view.do?noticeId=7')
         self.assertEqual(response.references[0].title, 'SSAFY 공지')
+
+    def test_notice_question_uses_notice_db_direct_answer(self):
+        from ai_server.rag.service import RAGSearchResult, RAGService
+        from ai_server.references.tracker import ReferenceTracker
+
+        chunk = RetrievedChunk(
+            chunk_id='notice-db:7',
+            ai_document_id=7,
+            raw_data_id=3,
+            title='[평가] 10회차 과목평가 안내',
+            content='10회차 과목평가 안내 내용',
+            document_type='SYNC_NOTICE',
+            metadata={
+                'source_type': 'notice',
+                'published_at': '2026.05.20 09:00',
+            },
+            score=0.9,
+        )
+
+        class StubNoticeRAGService(RAGService):
+            def search_notices(self, question, parsed_query=None, limit=4):
+                evaluation = self.evaluator.evaluate([chunk], query=question)
+                references = ReferenceTracker().from_chunks([chunk])
+                return RAGSearchResult(chunks=[chunk], evaluation=evaluation, references=references)
+
+        class FailingLLMClient(self.MockLLMClient):
+            def complete(self, messages, **_kwargs):
+                raise AssertionError('notice DB direct answer must not call the LLM')
+
+        pipeline = ChatPipeline(
+            rag_service=StubNoticeRAGService(),
+            llm_client=FailingLLMClient(),
+        )
+        response = pipeline.run(
+            ChatRequest(message='\ucd5c\uc2e0 \uacf5\uc9c0 \uc54c\ub824\uc918', user_context=UserContext(user_id=1))
+        )
+
+        self.assertEqual(response.answer_policy, 'NOTICE_DB_DIRECT')
+        self.assertEqual(response.usage['mode'], 'notice_db_direct')
+        self.assertIn('[평가] 10회차 과목평가 안내', response.answer)
+        self.assertEqual(response.references[0].source_type, 'notice')
 
     def test_schedule_references_keep_source_url(self):
         chunk = RetrievedChunk(

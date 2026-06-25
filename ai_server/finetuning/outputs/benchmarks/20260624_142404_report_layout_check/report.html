@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>INSSA Gold Benchmark Report</title>
+  <style>
+    body { font-family: "Segoe UI", "Malgun Gothic", sans-serif; margin: 28px; color: #17202a; background: #f6f7f9; }
+    h1 { margin-bottom: 8px; }
+    .cards { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 10px; margin: 18px 0; }
+    .card { background: white; border: 1px solid #dde2e7; border-radius: 8px; padding: 14px; }
+    .card b { display: block; font-size: 13px; color: #52616f; margin-bottom: 6px; }
+    .card span { font-size: 22px; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; background: white; margin: 14px 0 24px; }
+    th, td { border: 1px solid #dde2e7; padding: 8px; text-align: left; }
+    th { background: #eef2f6; }
+    .item { background: white; border: 1px solid #dde2e7; border-left: 6px solid #8c9bab; border-radius: 8px; padding: 18px; margin: 16px 0; }
+    .item.pass { border-left-color: #2e9d64; }
+    .item.fail { border-left-color: #d64545; }
+    .item h2 { margin: 0 0 10px; }
+    .item h2 span { font-size: 14px; margin-left: 8px; }
+    .item h2 small { color: #52616f; margin-left: 8px; }
+    .meta { display: grid; grid-template-columns: 130px 1fr 130px 1fr; gap: 6px 12px; font-size: 14px; background: #f8fafc; padding: 10px; border-radius: 6px; }
+    .answers { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    pre { white-space: pre-wrap; line-height: 1.5; background: #111827; color: #f9fafb; padding: 14px; border-radius: 6px; overflow-x: auto; }
+    @media (max-width: 900px) { .cards, .answers, .meta { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>INSSA Gold Answer Benchmark</h1>
+  <p>Created: 2026-06-24T14:24:04</p>
+  <div class="cards">
+    <div class="card"><b>Accuracy</b><span>100.0%</span></div>
+    <div class="card"><b>Success</b><span>100.0%</span></div>
+    <div class="card"><b>Fail</b><span>0.0%</span></div>
+    <div class="card"><b>Avg Score</b><span>100.0</span></div>
+    <div class="card"><b>Total</b><span>2</span></div>
+  </div>
+  <h2>Category Summary</h2>
+  <table>
+    <thead><tr><th>Category</th><th>Total</th><th>Avg Score</th><th>Success Rate</th><th>Pass</th></tr></thead>
+    <tbody><tr><td>project</td><td>2</td><td>100.0</td><td>100.0%</td><td>2</td></tr></tbody>
+  </table>
+  
+                <section class="item pass">
+                  <h2>Q1 <span>PASS</span> <small>100.0점</small></h2>
+                  <div class="meta">
+                    <b>Category</b> project
+                    <b>Policy</b> 
+                    <b>Issues</b> none
+                    <b>Token F1</b> 1.0
+                    <b>Keyword Recall</b> 1.0
+                  </div>
+                  <h3>Question</h3>
+                  <p>과락이 두 개 있는데 프로젝트 발표도 일주일 남았습니다. 무엇부터 하시겠습니까?</p>
+                  <div class="answers">
+                    <div>
+                      <h3>Model Answer</h3>
+                      <pre>(empty)</pre>
+                    </div>
+                    <div>
+                      <h3>Gold Answer</h3>
+                      <pre>시험공부를 먼저 하는 것을 추천합니다. 프로젝트는 필수 기능만 유지하면서 시험 대비에 집중하는 것이 좋습니다. 판단 이유: 프로젝트는 이후에도 진행할 기회가 있지만 시험 일정은 정해져 있어 일반적으로 시험의 우선순위가 더 높습니다.</pre>
+                    </div>
+                  </div>
+                </section>
+                
+                <section class="item pass">
+                  <h2>Q2 <span>PASS</span> <small>100.0점</small></h2>
+                  <div class="meta">
+                    <b>Category</b> project
+                    <b>Policy</b> 
+                    <b>Issues</b> none
+                    <b>Token F1</b> 1.0
+                    <b>Keyword Recall</b> 1.0
+                  </div>
+                  <h3>Question</h3>
+                  <p>프로젝트 기능은 많이 남았는데 시험도 다가옵니다. 어떻게 시간을 배분하시겠습니까?</p>
+                  <div class="answers">
+                    <div>
+                      <h3>Model Answer</h3>
+                      <pre>(empty)</pre>
+                    </div>
+                    <div>
+                      <h3>Gold Answer</h3>
+                      <pre>최종관통 프로젝트 기간이라면 프로젝트에 더 집중하는 것이 좋습니다. 시험 범위는 유지 수준으로만 복습하세요. 판단 이유: 이 시기에는 프로젝트 자체가 가장 큰 일정인 경우가 많습니다.</pre>
+                    </div>
+                  </div>
+                </section>
+                
+</body>
+</html>

@@ -1,4 +1,4 @@
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Count, Max, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
@@ -6,7 +6,8 @@ from rest_framework.views import APIView
 
 from common.utils.api_response import success_response
 
-from .models import AiQualityLog
+from .models import AiQualityLog, ChatMessage, ChatSession
+from .serializers import ChatMessageSerializer, ChatSessionSerializer
 from .services import AIService
 
 
@@ -21,6 +22,50 @@ class AiChatView(APIView):
             session_id=request.data.get('session_id'),
         )
         return success_response(result)
+
+
+class AiChatSessionListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        limit = _bounded_int(request.query_params.get('limit'), default=30, minimum=1, maximum=100)
+        queryset = (
+            ChatSession.objects.filter(user=request.user)
+            .annotate(message_count=Count('messages'), last_message_at=Max('messages__created_at'))
+            .order_by('-last_message_at', '-created_at', '-id')[:limit]
+        )
+        return success_response(
+            {
+                'items': ChatSessionSerializer(queryset, many=True).data,
+                'limit': limit,
+            }
+        )
+
+
+class AiChatSessionMessageListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        limit = _bounded_int(request.query_params.get('limit'), default=100, minimum=1, maximum=300)
+        session = ChatSession.objects.filter(id=session_id, user=request.user).first()
+        if not session:
+            return success_response({'session': None, 'items': []})
+        messages = ChatMessage.objects.filter(session=session).order_by('created_at', 'id')[:limit]
+        return success_response(
+            {
+                'session': ChatSessionSerializer(
+                    ChatSession.objects.filter(id=session.id)
+                    .annotate(message_count=Count('messages'), last_message_at=Max('messages__created_at'))
+                    .first()
+                ).data,
+                'items': ChatMessageSerializer(messages, many=True).data,
+                'limit': limit,
+            }
+        )
+
+    def delete(self, request, session_id):
+        deleted_count, _details = ChatSession.objects.filter(id=session_id, user=request.user).delete()
+        return success_response({'deleted': deleted_count > 0, 'session_id': session_id})
 
 
 class AiQualitySummaryView(APIView):
@@ -138,6 +183,14 @@ def _days_param(request):
     except (TypeError, ValueError):
         days = 30
     return max(1, min(days, 180))
+
+
+def _bounded_int(value, default, minimum, maximum):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
 
 
 def _ratio(count, total):

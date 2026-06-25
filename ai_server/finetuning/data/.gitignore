@@ -4,3 +4,4 @@ exports/
 *.csv
 *.xlsx
 *.zip
+!smoke.jsonl

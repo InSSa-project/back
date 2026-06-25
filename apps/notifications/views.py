@@ -14,3 +14,21 @@ class NotificationListView(APIView):
     def get(self, request):
         notifications = self.service_class().list_notifications(request.user)
         return success_response(NotificationSerializer(notifications, many=True).data)
+
+
+class NotificationMarkAllReadView(APIView):
+    permission_classes = [IsAuthenticated]
+    service_class = NotificationService
+
+    def post(self, request):
+        self.service_class().mark_all_read(request.user)
+        return success_response({'marked_read': True})
+
+
+class NotificationMarkReadView(APIView):
+    permission_classes = [IsAuthenticated]
+    service_class = NotificationService
+
+    def post(self, request, notification_id):
+        updated = self.service_class().mark_read(request.user, notification_id)
+        return success_response({'marked_read': bool(updated), 'id': notification_id})

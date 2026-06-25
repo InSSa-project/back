@@ -1,11 +1,14 @@
-import json
+﻿import json
 from datetime import timedelta
+from io import StringIO
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -15,7 +18,7 @@ from apps.ai.models import AiDocument
 from apps.users.jwt.service import JwtService
 from apps.users.models import UserProfile
 from schedules.models import ScheduleEvent
-from schedules.services import filter_events_for_user_profile
+from schedules.services import build_generated_event_metadata, filter_events_for_user_profile
 from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
 from sync.models import RawSsafyData
 from sync.services.import_service import run_sample_notice_import
@@ -88,6 +91,68 @@ class ScheduleEventApiTests(TestCase):
         self.assertIn('display_title', payload[0])
         self.assertTrue(payload[0]['source_url'])
         self.assertTrue(payload[0]['source_title'])
+
+    def test_event_list_defaults_to_user_profile_track(self):
+        UserProfile.objects.create(user=self.user, track='python')
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 25, 9, 0))
+        ScheduleEvent.objects.create(
+            title='Python track event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'python', 'track_key': 'python'}, 'track_key': 'python'},
+        )
+        ScheduleEvent.objects.create(
+            title='Embedded track event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'embedded', 'track_key': 'embedded'}, 'track_key': 'embedded'},
+        )
+        ScheduleEvent.objects.create(
+            title='Common event',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'all', 'track_key': 'all'}, 'track_key': 'all', 'is_common': True},
+        )
+
+        response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-06-25', 'end': '2026-06-25'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        titles = [item['title'] for item in response.json()]
+        self.assertIn('Python track event', titles)
+        self.assertIn('Common event', titles)
+        self.assertNotIn('Embedded track event', titles)
+
+    def test_event_list_all_track_param_disables_user_profile_track_filter(self):
+        UserProfile.objects.create(user=self.user, track='python')
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 25, 9, 0))
+        for title, track in [('Python track event', 'python'), ('Embedded track event', 'embedded')]:
+            ScheduleEvent.objects.create(
+                title=title,
+                start_at=start_at,
+                end_at=start_at + timedelta(hours=1),
+                event_type='study',
+                source_type='notice',
+                metadata_json={'audience': {'track': track, 'track_key': track}, 'track_key': track},
+            )
+
+        response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-06-25', 'end': '2026-06-25', 'track': 'all'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        titles = [item['title'] for item in response.json()]
+        self.assertIn('Python track event', titles)
+        self.assertIn('Embedded track event', titles)
 
     def test_event_list_returns_null_source_fields_without_raw_data(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
@@ -427,7 +492,7 @@ class ScheduleEventApiTests(TestCase):
             {public_notice.id, personal_event.id, holiday_event.id},
         )
 
-    def test_authenticated_profile_mismatch_does_not_hide_public_generated_events(self):
+    def test_authenticated_profile_mismatch_hides_other_track_generated_events_by_default(self):
         UserProfile.objects.create(
             user=self.user,
             track='Python',
@@ -480,8 +545,16 @@ class ScheduleEventApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         titles = [item['title'] for item in response.json()]
-        self.assertIn('Public generated event for another audience', titles)
+        self.assertNotIn('Public generated event for another audience', titles)
         self.assertNotIn('Other user private event', titles)
+
+        all_response = self.client.get(
+            reverse('schedule-event-list'),
+            {'start': '2026-04-26', 'end': '2026-06-06', 'track': 'all'},
+        )
+        self.assertEqual(all_response.status_code, 200)
+        all_titles = [item['title'] for item in all_response.json()]
+        self.assertIn('Public generated event for another audience', all_titles)
 
     def test_event_list_includes_event_when_only_deadline_is_in_range(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))
@@ -1218,6 +1291,111 @@ class ScheduleEventApiTests(TestCase):
         self.assertIn('class_number', event.metadata_json['audience'])
         self.assertIn('campus', event.metadata_json['audience'])
 
+    def test_generated_event_metadata_infers_track_from_raw_title(self):
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='5\uc6d4 3\uc8fc\ucc28 \ub9c8\uc774\uc2a4\ud130\uace0 \ud2b8\ub799 \uc2dc\uac04\ud45c',
+            raw_text='body',
+        )
+        schedule = SimpleNamespace(
+            title='Track timetable',
+            start_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0)),
+            end_at=timezone.make_aware(timezone.datetime(2026, 5, 20, 10, 0)),
+            event_type='study',
+            metadata_json={},
+        )
+
+        metadata = build_generated_event_metadata(raw_data, schedule)
+
+        self.assertEqual(metadata['track_key'], 'meister')
+        self.assertEqual(metadata['track'], 'meister')
+        self.assertEqual(metadata['audience']['track_key'], 'meister')
+        self.assertEqual(metadata['audience']['track'], 'meister')
+        self.assertFalse(metadata['is_common'])
+
+    def test_backfill_schedule_event_tracks_infers_missing_track_metadata(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='5\uc6d4 3\uc8fc\ucc28 \ub9c8\uc774\uc2a4\ud130\uace0 \ud2b8\ub799 \uc2dc\uac04\ud45c',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {}},
+        )
+
+        dry_run_out = StringIO()
+        call_command('backfill_schedule_event_tracks', stdout=dry_run_out)
+        event.refresh_from_db()
+        self.assertNotIn('track_key', event.metadata_json)
+        self.assertIn('changed=1', dry_run_out.getvalue())
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'meister')
+        self.assertEqual(event.metadata_json['audience']['track_key'], 'meister')
+        self.assertFalse(event.metadata_json['is_common'])
+
+    def test_backfill_schedule_event_tracks_corrects_generic_track_label(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='5\uc6d4 3\uc8fc\ucc28 Embedded Robot \ud2b8\ub799 \uc2dc\uac04\ud45c',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'SW/AI'}, 'track': 'SW/AI'},
+        )
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'embedded_robot')
+        self.assertEqual(event.metadata_json['track'], 'embedded_robot')
+        self.assertEqual(event.metadata_json['audience']['track_key'], 'embedded_robot')
+        self.assertFalse(event.metadata_json['is_common'])
+
+    def test_backfill_schedule_event_tracks_marks_whole_schedule_as_common(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[\ud559\uc2b5] 15\uae30 1\ud559\uae30 \uc804\uccb4 \uc77c\uc815',
+            raw_text='body',
+        )
+        event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='\uad00\ud1b5 \ud504\ub85c\uc81d\ud2b8 \uc9d1\uc911\uae30\uac04',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {}},
+        )
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'all')
+        self.assertTrue(event.metadata_json['is_common'])
+        self.assertEqual(event.metadata_json['audience']['track_key'], 'all')
+
+    def test_backfill_schedule_event_tracks_preserves_existing_canonical_track(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Java(\uc804\uacf5) \ud2b8\ub799 \uc2dc\uac04\ud45c',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'python', 'track_key': 'python'}, 'track_key': 'python'},
+        )
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'python')
+
     def test_profile_filter_keeps_unrestricted_events_and_matching_audience(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
         unrestricted = ScheduleEvent.objects.create(
@@ -1576,3 +1754,5 @@ class CommunityUrlRegistrationTests(TestCase):
             resolve(self.COMMUNITY_LIST_URL)
         except Resolver404:
             self.fail(f'{self.COMMUNITY_LIST_URL} 가 URL conf에 등록되지 않았습니다.')
+
+

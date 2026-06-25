@@ -24,6 +24,7 @@ class FastAPIAIClient:
                 json={
                     'session_id': session_id,
                     'message': message,
+                    'conversation_context': self._conversation_context(user, session_id),
                     'user_context': {
                         'user_id': user.id,
                         'campus': getattr(user, 'campus', ''),
@@ -54,6 +55,33 @@ class FastAPIAIClient:
 
         payload['references'] = [self._normalize_reference(ref) for ref in payload.get('references', [])]
         return payload
+
+    def _conversation_context(self, user, session_id, limit=8):
+        if not session_id:
+            return []
+        try:
+            session = ChatSession.objects.filter(id=session_id, user=user).first()
+            if not session:
+                return []
+            messages = list(
+                session.messages.order_by('-created_at', '-id')
+                .values('role', 'content', 'created_at')[:limit]
+            )
+        except Exception:
+            return []
+        result = []
+        for message in reversed(messages):
+            content = str(message.get('content') or '').strip()
+            if not content:
+                continue
+            result.append(
+                {
+                    'role': str(message.get('role') or '').lower(),
+                    'content': content[:700],
+                    'created_at': message.get('created_at').isoformat() if message.get('created_at') else '',
+                }
+            )
+        return result
 
     def _error_payload(self, answer, mode, exc=None):
         usage = {'mode': mode}
@@ -122,6 +150,13 @@ class AIService:
                 latency_ms=self._elapsed_ms(started_at),
             )
             self._append_route_log(user=user, message=message, payload=payload, session_id=session_id)
+            payload['debug_trace'] = self._build_debug_trace(
+                user=user,
+                message=message,
+                payload=payload,
+                session_id=session_id,
+                latency_ms=self._elapsed_ms(started_at),
+            )
             return payload
         payload = {
             'answer': 'AI_SERVER_ENABLED=false ?????. RAG ??? ????? FastAPI AI ??? ?? ??? true? ?????.',
@@ -140,10 +175,114 @@ class AIService:
             latency_ms=self._elapsed_ms(started_at),
         )
         self._append_route_log(user=user, message=message, payload=payload, session_id=session_id)
+        payload['debug_trace'] = self._build_debug_trace(
+            user=user,
+            message=message,
+            payload=payload,
+            session_id=session_id,
+            latency_ms=self._elapsed_ms(started_at),
+        )
         return payload
 
     def _elapsed_ms(self, started_at):
         return max(0, int((time.monotonic() - started_at) * 1000))
+
+    def _build_debug_trace(self, user, message, payload, session_id=None, latency_ms=None):
+        usage = payload.get('usage') or {}
+        references = payload.get('references') or []
+        route_stage = usage.get('route_stage') or 'unknown'
+        tokens = {
+            key: usage.get(key)
+            for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')
+            if usage.get(key) is not None
+        }
+        return {
+            'version': 1,
+            'question': message,
+            'summary': {
+                'route_stage': route_stage,
+                'final_generator': usage.get('final_generator') or route_stage,
+                'intent': payload.get('intent') or 'unknown',
+                'query_type': payload.get('query_type') or 'UNKNOWN',
+                'answer_policy': payload.get('answer_policy') or '',
+                'latency_ms': latency_ms,
+                'used_db': bool(usage.get('used_db')),
+                'used_rag': bool(usage.get('used_rag')),
+                'used_llm': bool(usage.get('used_llm')),
+                'used_lora': bool(usage.get('used_lora')),
+            },
+            'steps': [
+                {
+                    'id': 'input',
+                    'label': '질문 입력',
+                    'status': 'done',
+                    'kind': 'input',
+                    'detail': {
+                        'question': message,
+                        'session_id': session_id,
+                        'user_id': getattr(user, 'id', None),
+                    },
+                },
+                {
+                    'id': 'parse',
+                    'label': '질문 파싱',
+                    'status': 'done',
+                    'kind': 'parse',
+                    'detail': {
+                        'intent': payload.get('intent') or 'unknown',
+                        'query_type': payload.get('query_type') or 'UNKNOWN',
+                        'answer_policy': payload.get('answer_policy') or '',
+                    },
+                },
+                {
+                    'id': 'routing',
+                    'label': '라우팅 결정',
+                    'status': 'done',
+                    'kind': 'routing',
+                    'detail': {
+                        'route_stage': route_stage,
+                        'final_generator': usage.get('final_generator') or route_stage,
+                        'used_db': bool(usage.get('used_db')),
+                        'used_rag': bool(usage.get('used_rag')),
+                        'used_llm': bool(usage.get('used_llm')),
+                        'used_lora': bool(usage.get('used_lora')),
+                        'llm_intent_used': bool(usage.get('llm_intent_used')),
+                    },
+                },
+                {
+                    'id': 'retrieval',
+                    'label': 'RAG / DB 조회',
+                    'status': 'done' if usage.get('used_rag') or usage.get('used_db') else 'skipped',
+                    'kind': 'retrieval',
+                    'detail': {
+                        'retrieved_count': usage.get('retrieved_count'),
+                        'fallback_retrieved_count': usage.get('fallback_retrieved_count'),
+                        'reference_count': len(references),
+                        'top_references': [
+                            {
+                                'title': ref.get('title') or '',
+                                'score': ref.get('score'),
+                                'source_type': ref.get('source_type') or '',
+                                'chunk_id': ref.get('chunk_id') or '',
+                            }
+                            for ref in references[:5]
+                        ],
+                    },
+                },
+                {
+                    'id': 'generation',
+                    'label': 'LLM / 포맷터 응답 생성',
+                    'status': 'done',
+                    'kind': 'generation',
+                    'detail': {
+                        'generator': usage.get('final_generator') or route_stage,
+                        'used_llm': bool(usage.get('used_llm')),
+                        'tokens': tokens,
+                        'answer_chars': len(payload.get('answer') or ''),
+                    },
+                },
+            ],
+        }
 
     def _annotate_route_metrics(self, payload):
         usage = dict(payload.get('usage') or {})
@@ -155,21 +294,26 @@ class AIService:
         used_rag = (
             route_stage in {'rag', 'rag_llm'}
             or answer_policy in {'RAG_GROUNDED'}
-            or (bool(references) and route_stage not in {'db', 'llm_intent_db', 'personal_db', 'personal_db_llm'})
+            or (bool(references) and route_stage not in {'db', 'llm_intent_db', 'personal_db', 'personal_db_llm', 'personal_db_lora'})
         )
-        used_db = route_stage in {'db', 'llm_intent_db', 'personal_db', 'personal_db_llm'}
+        used_db = route_stage in {'db', 'llm_intent_db', 'personal_db', 'personal_db_llm', 'personal_db_lora'}
+        used_lora = route_stage == 'lora' or mode in {'lora_reasoner', 'personal_context_lora'} or answer_policy in {'LORA_REASONER', 'PERSONAL_CONTEXT_LORA'}
         used_llm = (
-            used_llm_intent
+            used_lora
+            or used_llm_intent
             or route_stage in {'llm', 'rag_llm', 'personal_db_llm'}
             or bool(usage.get('total_tokens') or usage.get('prompt_tokens') or usage.get('completion_tokens'))
         )
+        final_generator = self._final_generator(route_stage, used_lora, used_llm, used_rag, used_db)
         usage.update(
             {
-                'route_metric_version': 1,
+                'route_metric_version': 2,
                 'route_stage': route_stage,
+                'final_generator': final_generator,
                 'used_db': used_db,
                 'used_rag': used_rag,
                 'used_llm': used_llm,
+                'used_lora': used_lora,
                 'llm_intent_used': used_llm_intent,
                 'llm_conversion': used_llm and route_stage not in {'db', 'personal_db'},
             }
@@ -181,6 +325,10 @@ class AIService:
             return 'error'
         if answer_policy == 'DISABLED':
             return 'disabled'
+        if answer_policy == 'PERSONAL_CONTEXT_LORA' or mode == 'personal_context_lora':
+            return 'personal_db_lora'
+        if answer_policy == 'LORA_REASONER' or mode == 'lora_reasoner':
+            return 'lora'
         if answer_policy.startswith('LLM_INTENT_') or answer_policy.startswith('SERVER_VERIFIED_'):
             return 'llm_intent_db' if 'SCHEDULE_DB' in answer_policy else 'llm_intent'
         if answer_policy.startswith('SCHEDULE_MEMORY') or mode == 'schedule_memory':
@@ -198,6 +346,23 @@ class AIService:
         if answer_policy in {'GENERAL_KNOWLEDGE_FALLBACK', 'GENERAL_ADVICE_FALLBACK', 'CAUTIOUS_FALLBACK'}:
             return 'llm'
         return 'unknown'
+
+    def _final_generator(self, route_stage, used_lora, used_llm, used_rag, used_db):
+        if used_lora:
+            return 'lora'
+        if route_stage in {'db', 'llm_intent_db', 'personal_db'} and not used_llm:
+            return 'server_db_formatter'
+        if used_rag and used_llm:
+            return 'rag_plus_llm'
+        if used_db and used_llm:
+            return 'db_plus_llm'
+        if used_llm:
+            return 'llm'
+        if used_rag:
+            return 'rag_no_context'
+        if used_db:
+            return 'server_db_formatter'
+        return route_stage or 'unknown'
 
     def _append_route_log(self, user, message, payload, session_id=None):
         try:
@@ -218,8 +383,10 @@ class AIService:
                 'used_db': usage.get('used_db', False),
                 'used_rag': usage.get('used_rag', False),
                 'used_llm': usage.get('used_llm', False),
+                'used_lora': usage.get('used_lora', False),
                 'llm_intent_used': usage.get('llm_intent_used', False),
                 'llm_conversion': usage.get('llm_conversion', False),
+                'final_generator': usage.get('final_generator', ''),
                 'retrieved_count': usage.get('retrieved_count'),
                 'fallback_retrieved_count': usage.get('fallback_retrieved_count'),
                 'prompt_tokens': usage.get('prompt_tokens'),
@@ -353,6 +520,13 @@ class AIService:
             'latency_ms': latency_ms,
             'answer_chars': len(answer),
             'mode': usage.get('mode', ''),
+            'route_stage': usage.get('route_stage', ''),
+            'final_generator': usage.get('final_generator', ''),
+            'used_db': usage.get('used_db', False),
+            'used_rag': usage.get('used_rag', False),
+            'used_llm': usage.get('used_llm', False),
+            'used_lora': usage.get('used_lora', False),
+            'llm_intent_used': usage.get('llm_intent_used', False),
             'answer_policy': policy,
         }
 

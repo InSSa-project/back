@@ -289,7 +289,7 @@ def _can_manage_calendar(user):
 
 
 def _user_profile_track(user):
-    profile = getattr(user, 'profile', None)
-    if profile is None:
-        return ''
-    return normalize_track_key(getattr(profile, 'track', None))
+    profile = getattr(user, 'profile', None) or getattr(user, 'userprofile', None)
+    raw_track = getattr(profile, 'track', None) if profile is not None else None
+    raw_track = raw_track or getattr(user, 'track', '')
+    return normalize_track_key(raw_track)

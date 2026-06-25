@@ -39,10 +39,14 @@ class ServerVerifiedIntentRouter:
             return IntentDecision(VerifiedRoute.CURRENT_DATE, reason='current_date_rule')
         if self._is_notice_question(text):
             return IntentDecision(VerifiedRoute.RAG, reason='notice_question')
+        if self._is_official_rule_question(text):
+            return IntentDecision(VerifiedRoute.RAG, reason='official_rule_question')
         if self._is_urgent_recommendation_question(text):
             return IntentDecision(VerifiedRoute.RECOMMENDED_SCHEDULE, reason='urgent_recommendation_rule', requires_personal_context=True)
         if self._is_recommendation_question(text):
             return IntentDecision(VerifiedRoute.RECOMMENDED_SCHEDULE, reason='recommendation_rule', requires_personal_context=True)
+        if self._is_project_explanation_question(text):
+            return IntentDecision(VerifiedRoute.RAG, reason='project_explanation_question')
         if self._is_weak_subject_question(text):
             return IntentDecision(VerifiedRoute.PERSONAL_SCORE, reason='weak_subject_rule', requires_personal_context=True)
         if self._is_personal_risk_question(text):
@@ -53,6 +57,14 @@ class ServerVerifiedIntentRouter:
             return IntentDecision(VerifiedRoute.PERSONAL_SCORE, reason='personal_score_rule', requires_personal_context=True)
         if self._is_important_context_question(text):
             return IntentDecision(VerifiedRoute.IMPORTANT_SCHEDULE, reason='important_context_rule', requires_personal_context=True)
+        if self._is_exam_timeline_question(text):
+            return IntentDecision(
+                VerifiedRoute.LLM_INTENT,
+                reason='exam_timeline_rule',
+                filters=['exam'],
+                exclude_filters=self._exclude_filters(text),
+                rank=0,
+            )
         if self._is_exam_upcoming_question(text):
             return IntentDecision(
                 VerifiedRoute.LLM_INTENT,
@@ -92,12 +104,78 @@ class ServerVerifiedIntentRouter:
         has_exam = self._contains_any(text, self._words('\uc2dc\ud5d8', '\ud3c9\uac00', '\uacfc\ubaa9\ud3c9\uac00', '\uc6d4\ub9d0\ud3c9\uac00'))
         has_upcoming = self._contains_any(compact, self._words('\uac00\uae4c\uc6b4', '\ub2e4\uac00\uc624\ub294', '\uace7', '\uc788\uc74c', '\uc788\ub0d0', '\uc788\uc5b4'))
         return has_exam and has_upcoming
+
+    def _is_exam_timeline_question(self, text: str) -> bool:
+        compact = text.replace(' ', '')
+        has_exam = self._contains_any(text, self._words('\uc2dc\ud5d8', '\ud3c9\uac00', '\uacfc\ubaa9\ud3c9\uac00', '\uc6d4\ub9d0\ud3c9\uac00'))
+        has_past = self._contains_any(compact, self._words('\uc9c0\uae08\uae4c\uc9c0', '\uc788\uc5c8\ub358', '\uc9c0\ub09c', '\uc774\uc804', '\uacfc\uac70'))
+        has_future = self._contains_any(compact, self._words('\uc55e\uc73c\ub85c', '\ub0a8\uc740', '\uc608\uc815', '\uc774\ud6c4'))
+        has_schedule = self._contains_any(text, self._words('\uc77c\uc815', '\uc2a4\ucf00\uc904', '\uc5b8\uc81c', '\ub0a0\uc9dc'))
+        return has_exam and has_past and has_future and has_schedule
     def _is_notice_question(self, text: str) -> bool:
         return self._contains_any(text, self._words('\\uacf5\\uc9c0', '\\uacf5\\uc9c0\\uc0ac\\ud56d', '\\uc548\\ub0b4', '\\uc54c\\ub9bc')) and self._contains_any(
             text,
             self._words('\\uc694\\uc57d', '\\uc815\\ub9ac', '\\uc54c\\ub824', '\\ubcf4\\uc5ec', '\\ud655\\uc778', '\\uc911\\uc694', '\\ucd5c\\uadfc'),
         )
 
+    def _is_official_rule_question(self, text: str) -> bool:
+        compact = text.replace(' ', '')
+        rule_subjects = self._words(
+            '\uacfc\ub77d', '\ubd88\ud569\uaca9', '\ud1f4\uc18c', '\uc911\ub3c4\ud1f4\uc18c',
+            '\uc218\ub8cc', '\uc7ac\uc2dc\ud5d8', '\ucd9c\uacb0', '\uc9c0\uac01', '\uacb0\uc11d',
+            '\uc870\ud1f4', '\uacf5\uac00', '\uc0ac\uc720\uacb0\uc11d',
+        )
+        rule_markers = self._words(
+            '\uae30\uc900', '\uc870\uac74', '\uaddc\uc815', '\uba87 \ubc88', '\uba87\ubc88',
+            '\uc5bc\ub9c8\ub098', '\uba87 \uc810', '\uba87\uc810', '\uc810\uc218', '\ud69f\uc218',
+            '\ud1b5\uacfc', '\ud569\uaca9', '\ubd88\ud569\uaca9', '\ucc98\ub9ac', '\ubd88\uc774\uc775',
+        )
+        advice_markers = self._words(
+            '\uc5b4\ub5a1\ud558\uc9c0', '\uc5b4\ub5bb\uac8c \ud558\uc9c0', '\uc5b4\ub5bb\uac8c \ud574',
+            '\ud68c\ubcf5', '\uacf5\ubd80', '\ubcf5\uad6c', '\uc900\ube44', '\uba58\ud0c8',
+            '\ud798\ub4e4', '\ubd88\uc548', '\ub9dd\ud588', '\ub9dd\ud568', '\uc6b0\uc6b8',
+        )
+
+        has_rule_subject = self._contains_any(text, rule_subjects)
+        has_rule_marker = self._contains_any(text, rule_markers)
+        has_compact_rule_marker = self._contains_any(
+            compact,
+            self._words(
+                '\uba87\ubc88\uc774\uba74', '\uba87\ubc88\ubd80\ud130', '\uc5bc\ub9c8\ub098',
+                '\uacfc\ub77d\uba87\ubc88', '\ud1f4\uc18c\uae30\uc900', '\uc218\ub8cc\uae30\uc900',
+                '\ud1b5\uacfc\uae30\uc900',
+            ),
+        )
+        asks_dropout_result = self._contains_any(text, self._words('\uacfc\ub77d', '\ubd88\ud569\uaca9')) and self._contains_any(
+            text,
+            self._words('\ud1f4\uc18c', '\uc911\ub3c4\ud1f4\uc18c', '\uc218\ub8cc'),
+        )
+        asks_advice = self._contains_any(text, advice_markers)
+
+        return has_rule_subject and (has_rule_marker or has_compact_rule_marker or asks_dropout_result) and not (
+            asks_advice and not (has_rule_marker or asks_dropout_result)
+        )
+
+
+    def _is_project_explanation_question(self, text: str) -> bool:
+        compact = text.replace(' ', '')
+        has_project = self._contains_any(
+            compact,
+            self._words('\ud504\ub85c\uc81d\ud2b8', '\uad00\ud1b5pjt', '\uad00\ud1b5\ud504\ub85c\uc81d\ud2b8', '\ucd5c\uc885\uad00\ud1b5'),
+        )
+        asks_explanation = self._contains_any(
+            compact,
+            self._words(
+                '\uc124\uba85', '\ubb50\uc57c', '\ubb34\uc5c7', '\uc5b4\ub5bb\uac8c', '\ubc29\ubc95', '\uac00\uc774\ub4dc',
+                '\uc8fc\uc758\uc0ac\ud56d', '\uc900\ube44', '\uc9c4\ud589', '\ud3c9\uac00\ubc29\uc2dd', '\uc81c\ucd9c\ubc29\ubc95',
+                '\ub0b4\uc6a9', '\uc815\ub9ac', '\uc54c\ub824\uc918', '\uc54c\ub824', '\ub300\ud574',
+            ),
+        )
+        asks_date_only = self._contains_any(
+            compact,
+            self._words('\uc77c\uc815', '\uc5b8\uc81c', '\ub0a0\uc9dc', '\uba87\uc77c', '\uac00\uae4c\uc6b4'),
+        )
+        return has_project and asks_explanation and not asks_date_only
 
     def _is_weak_subject_question(self, text: str) -> bool:
         compact = text.replace(' ', '')

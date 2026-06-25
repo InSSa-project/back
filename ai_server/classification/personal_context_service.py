@@ -2,7 +2,9 @@ import json
 import os
 from datetime import datetime
 
+from ai_server.core.config import get_settings
 from ai_server.optimization.response_limit import limit_answer
+from ai_server.reasoning.lora_reasoner import LoRAReasonerClient
 from ai_server.schemas.chat import ChatResponse
 from ai_server.prompts.loader import PromptLoader
 from ai_server.prompts.response_style import ResponseStyle
@@ -13,10 +15,11 @@ from .domain_intent_router import DomainIntent
 class PersonalContextAnswerService:
     """Answer from private DB context without placing personal data in RAG."""
 
-    def __init__(self, llm):
+    def __init__(self, llm, lora_reasoner=None):
         self.llm = llm
         self.prompt_loader = PromptLoader()
         self.response_style = ResponseStyle()
+        self.lora_reasoner = lora_reasoner or LoRAReasonerClient(get_settings())
 
     def answer(self, user_id: int, question: str, intent: str) -> ChatResponse:
         self._ensure_django_ready()
@@ -39,6 +42,10 @@ class PersonalContextAnswerService:
         if self._is_empty(intent, context):
             return self._empty_response(intent)
 
+        lora_response = self._try_lora_answer(question, intent, context)
+        if lora_response:
+            return lora_response
+
         llm_response = self.llm.complete(self._messages(question, intent, context))
         answer = llm_response.get('answer') or ''
         if self._is_llm_error(llm_response) or not answer.strip():
@@ -56,6 +63,8 @@ class PersonalContextAnswerService:
                 'mode': 'personal_context_llm',
                 'context_type': intent,
                 'rag_used': False,
+                'lora_attempted': True,
+                'lora_used': False,
             },
         )
 
@@ -66,6 +75,34 @@ class PersonalContextAnswerService:
 
         if not apps.ready:
             django.setup()
+
+    def _try_lora_answer(self, question: str, intent: str, context: dict) -> ChatResponse | None:
+        lora_result = self.lora_reasoner.maybe_answer(
+            question=question,
+            query_type=intent,
+            answer_policy='PERSONAL_CONTEXT_DB',
+            verified_context=_PrivateContext(intent, context),
+            force=True,
+        )
+        if not lora_result.used:
+            return None
+        answer, answer_usage = limit_answer(lora_result.answer)
+        return ChatResponse(
+            answer=answer,
+            intent=intent.lower(),
+            query_type=intent,
+            answer_policy='PERSONAL_CONTEXT_LORA',
+            references=[],
+            usage={
+                **answer_usage,
+                'mode': 'personal_context_lora',
+                'context_type': intent,
+                'rag_used': False,
+                'lora_attempted': True,
+                'lora_used': True,
+                'lora_reasoner_reason': lora_result.reason,
+            },
+        )
 
     def _context_for(self, intent: str, dashboard: dict) -> dict:
         score_state = self._score_state(dashboard)
@@ -259,3 +296,16 @@ class PersonalContextAnswerService:
             return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
         except ValueError:
             return None
+
+
+class _PrivateContext:
+    def __init__(self, intent: str, context: dict):
+        self.intent = intent
+        self.context = context
+
+    def to_prompt_text(self) -> str:
+        return '[Private DB Context]\n' + json.dumps(
+            {'intent': self.intent, 'context': self.context},
+            ensure_ascii=False,
+            default=str,
+        )

@@ -50,18 +50,29 @@ def generate_response(
     max_new_tokens: int = 256,
     temperature: float = 0.7,
     top_p: float = 0.9,
+    repetition_penalty: float = 1.15,
+    no_repeat_ngram_size: int = 4,
 ):
     inputs = tokenizer(prompt, return_tensors="pt")
     if next(model.parameters()).is_cuda:
         inputs = {k: v.cuda() for k, v in inputs.items()}
 
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        do_sample=True,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    eos_token_ids = [tokenizer.eos_token_id] if tokenizer.eos_token_id is not None else []
+    im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>") if hasattr(tokenizer, "convert_tokens_to_ids") else None
+    if isinstance(im_end_id, int) and im_end_id >= 0 and im_end_id not in eos_token_ids:
+        eos_token_ids.append(im_end_id)
+
+    with torch.inference_mode():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=temperature > 0,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            eos_token_id=eos_token_ids or tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    new_tokens = outputs[0][inputs["input_ids"].shape[-1] :]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True)

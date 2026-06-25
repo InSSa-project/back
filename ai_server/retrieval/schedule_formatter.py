@@ -211,7 +211,19 @@ class ScheduleAnswerFormatter:
             return None
 
     def _dedupe_title(self, title: str) -> str:
-        return re.sub(r'[\s.()_\-/~:\[\]]+', '', title).upper()
+        compact = re.sub(r'[\s.()_\-/~:\[\]]+', '', title).upper()
+        compact = compact.replace('PROJECT', 'PJT')
+        if '\uad00\ud1b5' in compact and ('PJT' in compact or '\ud504\ub85c\uc81d\ud2b8' in compact):
+            if '\uacbd\uc9c4\ub300\ud68c' in compact:
+                return 'PROJECT_PJT_CONTEST'
+            if 'OT' in compact:
+                return 'PROJECT_PJT_OT'
+            if '\uc81c\ucd9c' in compact or '\ub9c8\uac10' in compact:
+                return 'PROJECT_PJT_DEADLINE'
+            if '\ubc1c\ud45c' in compact:
+                return 'PROJECT_PJT_PRESENTATION'
+            return 'PROJECT_PJT_GENERIC'
+        return compact
 
     def _normalize_spaces(self, value: str) -> str:
         return re.sub(r'\s+', ' ', str(value or '')).strip()
