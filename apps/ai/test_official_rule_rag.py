@@ -1,6 +1,7 @@
 from django.test import SimpleTestCase
 
 from ai_server.classification.query_classifier import QueryClassifier, QueryType
+from ai_server.classification.server_verified_router import ServerVerifiedIntentRouter, VerifiedRoute
 from ai_server.pipelines.chat_pipeline import ChatPipeline
 from ai_server.rag.schemas.documents import RetrievedChunk
 from ai_server.rag.service import RAGService
@@ -8,6 +9,24 @@ from ai_server.schemas.chat import ChatRequest, UserContext
 
 
 class OfficialRuleRagRoutingTests(SimpleTestCase):
+    def test_server_verified_router_sends_rule_questions_to_rag(self):
+        router = ServerVerifiedIntentRouter()
+
+        self.assertEqual(
+            router.decide('우리 얼마나 과락하면 퇴소냐', classified=QueryType.SSAFY_OFFICIAL).route,
+            VerifiedRoute.RAG,
+        )
+        self.assertEqual(
+            router.decide('과락 몇 번이면 퇴소야?', classified=QueryType.SSAFY_OFFICIAL).route,
+            VerifiedRoute.RAG,
+        )
+
+    def test_server_verified_router_keeps_recovery_questions_out_of_rag(self):
+        router = ServerVerifiedIntentRouter()
+
+        self.assertNotEqual(router.decide('과락인데 어떡하지').route, VerifiedRoute.RAG)
+        self.assertNotEqual(router.decide('과락 맞았는데 어떻게 회복하지').route, VerifiedRoute.RAG)
+
     def test_fail_count_exit_question_is_official_rule_query(self):
         classifier = QueryClassifier()
 
