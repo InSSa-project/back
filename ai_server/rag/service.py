@@ -40,7 +40,7 @@ class RAGService:
         try:
             retrieved = self.retriever.retrieve(question, filters=filters or {})
             chunks = self.reranker.rerank(question, retrieved)
-            evaluation = self.evaluator.evaluate(chunks, query=question)
+            evaluation = self._evaluator_for_filters(filters or {}).evaluate(chunks, query=question)
             references = self.reference_tracker.from_chunks(chunks)
             return RAGSearchResult(chunks=chunks, evaluation=evaluation, references=references)
         except Exception as exc:
@@ -51,6 +51,11 @@ class RAGService:
                 evaluation=evaluation,
                 references=[],
             )
+
+    def _evaluator_for_filters(self, filters: dict):
+        if (filters or {}).get('source_type') == 'academic_rule':
+            return RetrievalEvaluator(threshold=0.02)
+        return self.evaluator
 
     def search_notices(self, question: str, parsed_query=None, limit: int = 4) -> RAGSearchResult:
         try:

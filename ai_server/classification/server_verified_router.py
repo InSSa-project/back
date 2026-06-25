@@ -55,6 +55,14 @@ class ServerVerifiedIntentRouter:
             return IntentDecision(VerifiedRoute.PERSONAL_SCORE, reason='personal_score_rule', requires_personal_context=True)
         if self._is_important_context_question(text):
             return IntentDecision(VerifiedRoute.IMPORTANT_SCHEDULE, reason='important_context_rule', requires_personal_context=True)
+        if self._is_exam_timeline_question(text):
+            return IntentDecision(
+                VerifiedRoute.LLM_INTENT,
+                reason='exam_timeline_rule',
+                filters=['exam'],
+                exclude_filters=self._exclude_filters(text),
+                rank=0,
+            )
         if self._is_exam_upcoming_question(text):
             return IntentDecision(
                 VerifiedRoute.LLM_INTENT,
@@ -94,6 +102,14 @@ class ServerVerifiedIntentRouter:
         has_exam = self._contains_any(text, self._words('\uc2dc\ud5d8', '\ud3c9\uac00', '\uacfc\ubaa9\ud3c9\uac00', '\uc6d4\ub9d0\ud3c9\uac00'))
         has_upcoming = self._contains_any(compact, self._words('\uac00\uae4c\uc6b4', '\ub2e4\uac00\uc624\ub294', '\uace7', '\uc788\uc74c', '\uc788\ub0d0', '\uc788\uc5b4'))
         return has_exam and has_upcoming
+
+    def _is_exam_timeline_question(self, text: str) -> bool:
+        compact = text.replace(' ', '')
+        has_exam = self._contains_any(text, self._words('\uc2dc\ud5d8', '\ud3c9\uac00', '\uacfc\ubaa9\ud3c9\uac00', '\uc6d4\ub9d0\ud3c9\uac00'))
+        has_past = self._contains_any(compact, self._words('\uc9c0\uae08\uae4c\uc9c0', '\uc788\uc5c8\ub358', '\uc9c0\ub09c', '\uc774\uc804', '\uacfc\uac70'))
+        has_future = self._contains_any(compact, self._words('\uc55e\uc73c\ub85c', '\ub0a8\uc740', '\uc608\uc815', '\uc774\ud6c4'))
+        has_schedule = self._contains_any(text, self._words('\uc77c\uc815', '\uc2a4\ucf00\uc904', '\uc5b8\uc81c', '\ub0a0\uc9dc'))
+        return has_exam and has_past and has_future and has_schedule
     def _is_notice_question(self, text: str) -> bool:
         return self._contains_any(text, self._words('\\uacf5\\uc9c0', '\\uacf5\\uc9c0\\uc0ac\\ud56d', '\\uc548\\ub0b4', '\\uc54c\\ub9bc')) and self._contains_any(
             text,

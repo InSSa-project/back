@@ -1,115 +1,85 @@
-﻿from collections import Counter
+from collections import Counter
 
 from django.core.management.base import BaseCommand
 
 from schedules.models import ScheduleEvent
-from sync.models import RawSsafyData
-from sync.services.tracks import COMMON_TRACK_KEY, canonical_track_keys, normalize_track_key, track_key_from_text
-
-
-CANONICAL = set(canonical_track_keys())
+from schedules.services import infer_schedule_event_track_metadata
 
 
 class Command(BaseCommand):
-    help = 'Backfill ScheduleEvent track metadata from event/source titles.'
+    help = 'Backfill ScheduleEvent track metadata from event/source titles and common schedule signals.'
 
     def add_arguments(self, parser):
         parser.add_argument('--apply', action='store_true', help='Write changes. Default is dry-run.')
-        parser.add_argument('--override', action='store_true', help='Override existing non-common track metadata.')
+        parser.add_argument('--override', action='store_true', help='Override existing canonical track metadata.')
         parser.add_argument('--limit', type=int, default=0, help='Limit scanned events for inspection.')
 
     def handle(self, *args, **options):
-        apply = options['apply']
+        apply_changes = options['apply']
         override = options['override']
         limit = options['limit']
 
-        qs = ScheduleEvent.objects.select_related('raw_data').order_by('id')
+        queryset = ScheduleEvent.objects.select_related('raw_data').order_by('id')
         if limit:
-            qs = qs[:limit]
+            queryset = queryset[:limit]
 
-        raw_cache = {}
         scanned = 0
         changed = 0
         skipped_existing = 0
+        unresolved = 0
         inferred_counter = Counter()
+        reason_counter = Counter()
         examples = []
 
-        for event in qs:
+        for event in queryset:
             scanned += 1
-            metadata = dict(event.metadata_json or {})
-            audience = dict(metadata.get('audience') or {})
-            current_track = normalize_track_key(
-                metadata.get('track_key')
-                or audience.get('track_key')
-                or metadata.get('track')
-                or audience.get('track')
-            )
+            before = dict(event.metadata_json or {})
+            metadata, should_update, info = infer_schedule_event_track_metadata(event, override=override)
 
-            if current_track in CANONICAL and not override:
+            reason = info.get('reason') or 'unknown'
+            track_key = info.get('track_key') or '-'
+            reason_counter[reason] += 1
+            if reason == 'existing_canonical':
                 skipped_existing += 1
+            if reason == 'unresolved':
+                unresolved += 1
+
+            if not should_update or metadata == before:
                 continue
 
-            inferred = _infer_event_track(event, metadata, raw_cache)
-            if inferred not in CANONICAL:
-                continue
-
-            if current_track == inferred and metadata.get('track_key') == inferred and audience.get('track_key') == inferred:
-                continue
-
-            inferred_counter[inferred] += 1
             changed += 1
+            inferred_counter[track_key] += 1
             if len(examples) < 20:
-                examples.append((event.id, event.title, current_track or '-', inferred))
+                examples.append((event.id, event.title, _metadata_track(before) or '-', track_key, reason))
 
-            if apply:
-                metadata['track_key'] = inferred
-                metadata['track'] = inferred
-                metadata['is_common'] = inferred == COMMON_TRACK_KEY
-                audience['track_key'] = inferred
-                audience['track'] = inferred
-                metadata['audience'] = audience
+            if apply_changes:
                 event.metadata_json = metadata
                 event.save(update_fields=['metadata_json', 'updated_at'])
 
-        mode = 'APPLY' if apply else 'DRY-RUN'
+        mode = 'APPLY' if apply_changes else 'DRY-RUN'
         self.stdout.write(f'mode={mode}')
         self.stdout.write(f'scanned={scanned}')
         self.stdout.write(f'changed={changed}')
         self.stdout.write(f'skipped_existing={skipped_existing}')
-        self.stdout.write('by_track=' + ', '.join(f'{key}:{value}' for key, value in sorted(inferred_counter.items())))
-        for event_id, title, before, after in examples:
+        self.stdout.write(f'unresolved={unresolved}')
+        self.stdout.write('by_track=' + _format_counter(inferred_counter))
+        self.stdout.write('by_reason=' + _format_counter(reason_counter))
+        for event_id, title, before, after, reason in examples:
             safe_title = str(title or '').encode('unicode_escape').decode('ascii')
-            self.stdout.write(f'example id={event_id} before={before} after={after} title={safe_title}')
+            self.stdout.write(f'example id={event_id} before={before} after={after} reason={reason} title={safe_title}')
 
 
-def _infer_event_track(event, metadata, raw_cache):
-    candidates = [
-        getattr(event, 'title', ''),
-        metadata.get('source_title', ''),
-        metadata.get('raw_title', ''),
-    ]
-    raw_data = getattr(event, 'raw_data', None) or _raw_data_from_metadata(metadata, raw_cache)
-    if raw_data is not None:
-        candidates.extend([
-            getattr(raw_data, 'title', ''),
-            (getattr(raw_data, 'metadata_json', None) or {}).get('title', ''),
-        ])
-
-    for candidate in candidates:
-        inferred = track_key_from_text(candidate)
-        if inferred in CANONICAL:
-            return inferred
-    return ''
+def _metadata_track(metadata):
+    audience = metadata.get('audience') or {}
+    return (
+        metadata.get('track_key')
+        or audience.get('track_key')
+        or metadata.get('track')
+        or audience.get('track')
+    )
 
 
-def _raw_data_from_metadata(metadata, raw_cache):
-    raw_data_id = metadata.get('raw_data_id')
-    if not raw_data_id:
-        return None
-    try:
-        raw_data_id = int(raw_data_id)
-    except (TypeError, ValueError):
-        return None
-    if raw_data_id not in raw_cache:
-        raw_cache[raw_data_id] = RawSsafyData.objects.filter(pk=raw_data_id).first()
-    return raw_cache[raw_data_id]
+def _format_counter(counter):
+    if not counter:
+        return ''
+    return ', '.join(f'{key}:{value}' for key, value in sorted(counter.items()))

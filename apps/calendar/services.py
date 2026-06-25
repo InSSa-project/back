@@ -16,6 +16,7 @@ COMMON_TRACK_VALUES = {'', 'common', 'all', 'global', '전체', '공통'}
 
 class CalendarService:
     def list_events(self, user, start=None, end=None, track=None, event_type=None):
+        effective_track = track or _default_user_track(user)
         queryset = ScheduleEvent.objects.select_related('raw_data').all()
         if getattr(user, 'is_authenticated', False):
             queryset = queryset.filter(Q(owner__isnull=True) | Q(owner=user))
@@ -34,8 +35,8 @@ class CalendarService:
             queryset = queryset.filter(event_type=str(event_type).strip())
 
         events = filter_calendar_visible_events(queryset.order_by('start_at', 'id'))
-        if track:
-            events = [event for event in events if _matches_track(event, track)]
+        if effective_track:
+            events = [event for event in events if _matches_track(event, effective_track)]
         return events
 
 
@@ -70,6 +71,15 @@ def _matches_track(event, expected):
     if _is_common_event(metadata, event_track):
         return True
     return bool(expected_track) and event_track == expected_track
+
+
+def _default_user_track(user):
+    if not getattr(user, 'is_authenticated', False):
+        return ''
+    profile = getattr(user, 'profile', None) or getattr(user, 'userprofile', None)
+    raw_track = getattr(profile, 'track', None) if profile is not None else None
+    raw_track = raw_track or getattr(user, 'track', '')
+    return normalize_track_key(raw_track)
 
 
 def _is_common_event(metadata, event_track):
