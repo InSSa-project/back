@@ -8,6 +8,9 @@ ALLOWED_PROFILE_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png'}
 
 
 class UserSerializer(serializers.ModelSerializer):
+    track = serializers.SerializerMethodField()
+    can_manage_calendar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -19,10 +22,19 @@ class UserSerializer(serializers.ModelSerializer):
             'track',
             'generation',
             'profile_image',
+            'can_manage_calendar',
             'created_at',
             'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_track(self, user):
+        profile = getattr(user, 'profile', None)
+        profile_track = getattr(profile, 'track', None) if profile is not None else None
+        return profile_track or user.track or ''
+
+    def get_can_manage_calendar(self, user):
+        return bool(getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
 
 
 class SignupSerializer(serializers.Serializer):
