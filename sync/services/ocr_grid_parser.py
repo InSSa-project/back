@@ -1,6 +1,8 @@
 import re
-from dataclasses import dataclass
-from datetime import date
+import unicodedata
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from difflib import SequenceMatcher
 
 
 DEFAULT_YEAR = 2026
@@ -12,12 +14,16 @@ DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})$')
 DATE_HEADER_PATTERN = re.compile(r'^(?:(?P<month>[1-9]|1[0-2])\s*월\s*)?(?P<day>\d{1,2})\s*일(?:\s*\([^)]*\))?$')
 INLINE_DAY_PATTERN = re.compile(r'^(?P<day>\d{1,2})\s+(?P<title>.+)$')
 TIME_TOKEN_PATTERN = r'\d{1,2}\s*:\s*\d{2}'
+OCR_TIME_FRAGMENT_PATTERN = r'\d{1,2}\s*(?:~|-)\s*\d{1,2}'
 TIME_ONLY_PATTERN = re.compile(
-    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*$',
+    rf'^\s*(?:{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?|{OCR_TIME_FRAGMENT_PATTERN})\s*$',
     re.IGNORECASE,
 )
+BARE_NUMBER_TITLE_PATTERN = re.compile(r'^\s*\d{1,2}\s*$')
+NUMERIC_FRAGMENT_TITLE_PATTERN = re.compile(r'^\s*\d{1,2}\s*(?:[-:~]\s*\d{1,2})?\s*$')
+LIVE_BROADCAST_PREFIX = '[Live 방송]'
 LEADING_TIME_RANGE_PATTERN = re.compile(
-    rf'^\s*{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?\s*',
+    rf'^\s*(?:{TIME_TOKEN_PATTERN}(?:\s*(?:~|-|부터|to)?\s*{TIME_TOKEN_PATTERN})?|{OCR_TIME_FRAGMENT_PATTERN})\s*:?\s*',
     re.IGNORECASE,
 )
 EVENT_KEYWORDS = [
@@ -106,6 +112,7 @@ class GridParseDebug:
     filtered_candidates: list = None
     review_required_candidate_count: int = 0
     review_required_candidates: list = None
+    metadata_json: dict = field(default_factory=dict)
 
     def as_dict(self):
         return {
@@ -121,6 +128,7 @@ class GridParseDebug:
             'filtered_candidates': self.filtered_candidates or [],
             'review_required_candidate_count': self.review_required_candidate_count,
             'review_required_candidates': self.review_required_candidates or [],
+            **(self.metadata_json or {}),
         }
 
 
@@ -146,6 +154,7 @@ def parse_grid_schedule_candidates(ocr_boxes, source_title=''):
     candidates = []
     all_cells = []
     all_section_boxes = []
+    coverage_by_source = []
     timetable_mode = _looks_like_timetable(source_title)
     for month, section_boxes in month_sections:
         cells = _build_date_cells(month, section_boxes, timetable_mode=timetable_mode)
@@ -153,11 +162,31 @@ def parse_grid_schedule_candidates(ocr_boxes, source_title=''):
         all_section_boxes.extend(section_boxes)
         debug.date_cell_count += len(cells)
         if timetable_mode:
-            candidates.extend(_assign_timetable_events_to_cells(section_boxes, cells, source_title=source_title))
+            section_candidates = _assign_timetable_events_to_cells(section_boxes, cells, source_title=source_title)
+            candidates.extend(section_candidates)
+            coverage_by_source.extend(_timetable_coverage_for_cells(cells, section_candidates, section_boxes))
         else:
             candidates.extend(_assign_events_to_cells(section_boxes, cells))
 
     candidates = _dedupe_candidates(candidates)
+    if timetable_mode:
+        coverage_by_source = _refresh_timetable_coverage_counts(coverage_by_source, candidates)
+        coverage_by_source = _ensure_source_week_coverage(coverage_by_source, source_title)
+        coverage_warnings = _timetable_coverage_warnings(coverage_by_source)
+        debug.metadata_json = {
+            'coverage': coverage_by_source,
+            'coverage_warnings': coverage_warnings,
+            'missing_weekday_dates': [
+                item['date']
+                for item in coverage_by_source
+                if item.get('warning') == 'non_holiday_weekday_empty'
+            ],
+            'second_pass_attempted_dates': [
+                item['date']
+                for item in coverage_by_source
+                if item.get('second_pass_attempted')
+            ],
+        }
     if timetable_mode:
         filtered_candidates = []
     else:
@@ -315,6 +344,42 @@ def _has_il_following(box, boxes):
     return False
 
 
+def _looks_like_timetable_day_header(box, boxes):
+    weekday_boxes = [
+        other for other in boxes
+        if (
+            str(other.get('text') or '').strip().upper() in WEEKDAY_HEADERS
+            or str(other.get('text') or '').strip() in KOREAN_WEEKDAY_HEADERS
+        )
+        and not _is_date_token_fragment(other, boxes)
+    ]
+    if not weekday_boxes:
+        return False
+    nearest_weekday = min(weekday_boxes, key=lambda other: abs(other['cx'] - box['cx']))
+    horizontally_aligned = abs(nearest_weekday['cx'] - box['cx']) <= 55
+    below_weekday = 0 <= box['y1'] - nearest_weekday['y2'] <= 80
+    return horizontally_aligned and below_weekday
+
+
+def _is_date_token_fragment(box, boxes):
+    text = str(box.get('text') or '').strip()
+    if text.upper() in WEEKDAY_HEADERS:
+        return False
+    if text not in KOREAN_WEEKDAY_HEADERS and text not in {'월', '일'}:
+        return False
+    for other in boxes:
+        if other is box:
+            continue
+        other_text = str(other.get('text') or '').strip()
+        same_line = abs(other['cy'] - box['cy']) <= max(18, box['y2'] - box['y1'])
+        if not same_line:
+            continue
+        nearby = -35 <= other['x1'] - box['x2'] <= 35 or -35 <= box['x1'] - other['x2'] <= 35
+        if nearby and (DAY_PATTERN.match(other_text) or other_text in {'월', '일'}):
+            return True
+    return False
+
+
 def _dedupe_month_headers(month_headers):
     seen = set()
     deduped = []
@@ -340,7 +405,7 @@ def _build_date_cells(month, boxes, timetable_mode=False):
         # In timetable mode, a bare digit (DAY_PATTERN) must be followed by '일'
         # to qualify as a date header. This prevents time-slot digits ("9" in "9:00")
         # and numbered-item digits ("1" in "1부") from creating spurious row splits.
-        if timetable_mode and DAY_PATTERN.match(text) and not _has_il_following(box, boxes):
+        if timetable_mode and DAY_PATTERN.match(text) and not _has_il_following(box, boxes) and not _looks_like_timetable_day_header(box, boxes):
             continue
         day_boxes.append((day, box))
 
@@ -448,25 +513,182 @@ def _assign_events_to_cells(boxes, cells):
 
 def _assign_timetable_events_to_cells(boxes, cells, source_title=''):
     candidates = []
+    candidates_by_date = {}
     for cell in cells:
         for title, row_boxes in _timetable_titles_from_cell(boxes, cell, source_title=source_title):
             row_rect = _boxes_rect(row_boxes)
-            candidates.append(
-                GridScheduleCandidate(
-                    title=title,
-                    event_date=cell['date'],
-                    event_type=_event_type(title),
-                    description='SSAFY OCR 시간표 셀에서 추출한 일정',
-                    source_text=' '.join(box['text'] for box in row_boxes),
-                    source_box_count=len(row_boxes),
-                    row_index=cell.get('row_index'),
-                    col_index=cell.get('col_index'),
-                    confidence=_average_confidence(row_boxes),
-                    overlap_ratio=_overlap_ratio(row_rect, cell),
-                    reason='timetable_cell_text',
-                )
+            candidate = _build_timetable_candidate(
+                title=title,
+                row_boxes=row_boxes,
+                row_rect=row_rect,
+                cell=cell,
+                reason='timetable_cell_text',
             )
+            candidates.append(candidate)
+            candidates_by_date.setdefault(cell['date'], []).append(candidate)
+
+    for cell in cells:
+        if cell['date'].weekday() >= 5 or candidates_by_date.get(cell['date']):
+            continue
+        if _cell_contains_holiday_marker(boxes, cell):
+            continue
+        expanded_cell = {**cell, 'x1': cell['x1'] - 35, 'x2': cell['x2'] + 35}
+        for title, row_boxes in _timetable_titles_from_cell(boxes, expanded_cell, source_title=source_title):
+            row_rect = _boxes_rect(row_boxes)
+            candidate = _build_timetable_candidate(
+                title=title,
+                row_boxes=row_boxes,
+                row_rect=row_rect,
+                cell=cell,
+                reason='timetable_cell_text_second_pass',
+            )
+            candidates.append(candidate)
+            candidates_by_date.setdefault(cell['date'], []).append(candidate)
     return candidates
+
+
+def _build_timetable_candidate(title, row_boxes, row_rect, cell, reason):
+    return GridScheduleCandidate(
+        title=title,
+        event_date=cell['date'],
+        event_type=_event_type(title),
+        description='SSAFY OCR 시간표 셀에서 추출한 일정',
+        source_text=' '.join(box['text'] for box in row_boxes),
+        source_box_count=len(row_boxes),
+        row_index=cell.get('row_index'),
+        col_index=cell.get('col_index'),
+        confidence=_average_confidence(row_boxes),
+        overlap_ratio=_overlap_ratio(row_rect, cell),
+        reason=reason,
+    )
+
+
+def _cell_contains_holiday_marker(boxes, cell):
+    cell_text = ' '.join(
+        box['text']
+        for box in boxes
+        if _timetable_box_belongs_to_cell(box, cell)
+    )
+    compact = _compact_text(cell_text)
+    return any(keyword in compact for keyword in HOLIDAY_COMPACT_KEYWORDS)
+
+
+def _timetable_coverage_for_cells(cells, candidates, boxes):
+    coverage = []
+    for cell in sorted(cells, key=lambda item: (item['date'], item.get('col_index') or 0)):
+        if cell['date'].weekday() >= 5:
+            continue
+        event_count = len([candidate for candidate in candidates if candidate.event_date == cell['date']])
+        is_holiday = _cell_contains_holiday_marker(boxes, cell)
+        second_pass_attempted = any(
+            candidate.event_date == cell['date'] and candidate.reason == 'timetable_cell_text_second_pass'
+            for candidate in candidates
+        )
+        warning = 'non_holiday_weekday_empty' if event_count == 0 and not is_holiday else ''
+        coverage.append(
+            {
+                'date': cell['date'].isoformat(),
+                'event_count': event_count,
+                'row_index': cell.get('row_index'),
+                'col_index': cell.get('col_index'),
+                'is_holiday': is_holiday,
+                'second_pass_attempted': bool(second_pass_attempted or warning),
+                'warning': warning,
+            }
+        )
+    return coverage
+
+
+def _refresh_timetable_coverage_counts(coverage, candidates):
+    candidate_counts = {}
+    second_pass_dates = set()
+    for candidate in candidates:
+        key = candidate.event_date.isoformat()
+        candidate_counts[key] = candidate_counts.get(key, 0) + 1
+        if candidate.reason == 'timetable_cell_text_second_pass':
+            second_pass_dates.add(key)
+
+    refreshed = []
+    seen_dates = set()
+    for item in coverage:
+        if item['date'] in seen_dates:
+            continue
+        seen_dates.add(item['date'])
+        event_count = candidate_counts.get(item['date'], 0)
+        warning = 'non_holiday_weekday_empty' if event_count == 0 and not item.get('is_holiday') else ''
+        refreshed.append(
+            {
+                **item,
+                'event_count': event_count,
+                'second_pass_attempted': bool(item.get('second_pass_attempted') or item['date'] in second_pass_dates or warning),
+                'warning': warning,
+            }
+        )
+    return refreshed
+
+
+def _timetable_coverage_warnings(coverage):
+    return [
+        {
+            'date': item['date'],
+            'warning': item['warning'],
+            'second_pass_attempted': bool(item.get('second_pass_attempted')),
+        }
+        for item in coverage
+        if item.get('warning')
+    ]
+
+
+def _ensure_source_week_coverage(coverage, source_title):
+    expected_dates = _expected_weekday_dates_from_source_title(source_title)
+    if not expected_dates:
+        return coverage
+    by_date = {item['date']: item for item in coverage}
+    holiday_dates = _holiday_dates_for_year(DEFAULT_YEAR)
+    for expected_date in expected_dates:
+        key = expected_date.isoformat()
+        if key in by_date:
+            continue
+        is_holiday = expected_date in holiday_dates
+        by_date[key] = {
+            'date': key,
+            'event_count': 0,
+            'row_index': None,
+            'col_index': None,
+            'is_holiday': is_holiday,
+            'second_pass_attempted': not is_holiday,
+            'warning': '' if is_holiday else 'non_holiday_weekday_empty',
+            'coverage_source': 'source_title_week',
+        }
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def _expected_weekday_dates_from_source_title(source_title):
+    match = re.search(r'(?P<month>\d{1,2})\s*월\s*(?P<week>\d{1,2})\s*주차', str(source_title or ''))
+    if not match:
+        return []
+    month = int(match.group('month'))
+    week = int(match.group('week'))
+    try:
+        first_day = date(DEFAULT_YEAR, month, 1)
+    except ValueError:
+        return []
+    first_monday = first_day + timedelta(days=(7 - first_day.weekday()) % 7)
+    monday = first_monday + timedelta(days=(week - 1) * 7)
+    return [
+        monday + timedelta(days=offset)
+        for offset in range(5)
+        if (monday + timedelta(days=offset)).month == month
+    ]
+
+
+def _holiday_dates_for_year(year):
+    try:
+        from sync.management.commands.seed_korean_holidays import get_korean_holidays
+
+        return {holiday_date for _title, holiday_date in get_korean_holidays(year)}
+    except Exception:
+        return set()
 
 
 def _event_titles_from_cell(boxes, cell):
@@ -487,16 +709,99 @@ def _event_titles_from_cell(boxes, cell):
 def _timetable_titles_from_cell(boxes, cell, source_title=''):
     cell_boxes = [
         box for box in boxes
-        if _overlap_ratio(_box_rect(box), cell) >= 0.5
-        and not _is_structural_box(box)
+        if _timetable_box_belongs_to_cell(box, cell)
+        and (not _is_structural_box(box) or _is_embedded_timetable_number_box(box, boxes, cell))
     ]
+    if not cell_boxes:
+        return []
+
     titles = []
-    for row in _group_rows(cell_boxes):
-        phrase = ' '.join(box['text'] for box in sorted(row, key=lambda item: item['x1']))
+    for block in _timetable_cell_blocks(cell_boxes):
+        ordered_boxes = _sort_boxes_in_reading_order(block)
+        phrase = ' '.join(box['text'] for box in ordered_boxes)
         title = _clean_timetable_title(phrase, source_title=source_title)
         if title:
-            titles.append((title, row))
+            titles.append((title, ordered_boxes))
     return titles
+
+
+def _sort_boxes_in_reading_order(boxes):
+    ordered = []
+    for row in _group_rows(boxes):
+        ordered.extend(sorted(row, key=lambda item: item['x1']))
+    return ordered
+
+
+def _timetable_box_belongs_to_cell(box, cell):
+    if _overlap_area(_box_rect(box), cell) <= 0:
+        return False
+    return cell['x1'] - 10 <= box['x1'] <= cell['x2']
+
+
+def _timetable_cell_blocks(boxes):
+    blocks = []
+    for row in _group_rows(boxes):
+        if not blocks:
+            blocks.append(list(row))
+            continue
+        if _should_start_new_timetable_block(blocks[-1], row):
+            blocks.append(list(row))
+        else:
+            blocks[-1].extend(row)
+    return blocks
+
+
+def _should_start_new_timetable_block(previous_boxes, next_row):
+    previous_phrase = _timetable_phrase(previous_boxes)
+    next_phrase = _timetable_phrase(next_row)
+    previous_clean = _clean_timetable_title(previous_phrase)
+    next_clean = _clean_timetable_title(next_phrase)
+    gap = min(box['y1'] for box in next_row) - max(box['y2'] for box in previous_boxes)
+
+    if gap > 24:
+        return True
+    if _starts_new_timetable_item(next_phrase):
+        return bool(previous_clean)
+    if _continues_timetable_item(previous_phrase, next_phrase):
+        return False
+    if not previous_clean:
+        return False
+    if previous_clean and next_clean:
+        return True
+    return False
+
+
+def _timetable_phrase(boxes):
+    return ' '.join(box['text'] for box in _sort_boxes_in_reading_order(boxes))
+
+
+def _starts_new_timetable_item(text):
+    compact = _compact_text(text)
+    return (
+        compact in TIMETABLE_LUNCH_COMPACTS
+        or _is_time_only_text(text)
+        or str(text or '').lstrip().startswith('[실습')
+    )
+
+
+def _continues_timetable_item(previous_text, next_text):
+    previous = str(previous_text or '').strip()
+    next_value = str(next_text or '').strip()
+    if not next_value:
+        return False
+    if _is_live_broadcast_only(previous) or _is_live_broadcast_only(next_value):
+        return True
+    if previous.endswith((':', '(', '[', '/', '&', '-', '"')):
+        return True
+    if previous.endswith('및'):
+        return True
+    if next_value.startswith(('&', '/', ')', ']', '"')):
+        return True
+    if previous.count('"') % 2 == 1:
+        return True
+    if re.match(r'^[a-z]', next_value):
+        return True
+    return False
 
 
 def _overlapping_cells(rect, cells):
@@ -508,6 +813,26 @@ def _overlapping_cells(rect, cells):
             continue
         matches.append((cell, area / box_area))
     return sorted(matches, key=lambda item: (-item[1], item[0]['date']))
+
+
+def _is_embedded_timetable_number_box(box, boxes, cell):
+    text = str(box.get('text') or '').strip()
+    if not DAY_PATTERN.fullmatch(text):
+        return False
+    if box['cy'] <= cell['y1'] + 80:
+        return False
+    for other in boxes:
+        if other is box:
+            continue
+        if not _timetable_box_belongs_to_cell(other, cell):
+            continue
+        if _is_structural_box(other):
+            continue
+        same_row = abs(other['cy'] - box['cy']) <= max(18, box['y2'] - box['y1'])
+        nearby = -15 <= other['x1'] - box['x2'] <= 35 or -15 <= box['x1'] - other['x2'] <= 35
+        if same_row and nearby:
+            return True
+    return False
 
 
 def _overlap_ratio(rect, cell):
@@ -638,12 +963,16 @@ def _clean_timetable_title(text, source_title=''):
     inline_match = INLINE_DAY_PATTERN.match(text)
     if inline_match:
         text = inline_match.group('title').strip(' :-|()~')
+    text, has_live_broadcast = _extract_live_broadcast(text)
     text = _remove_leading_time_range(text)
     text = _remove_timetable_noise_prefixes(text)
     text = _normalize_timetable_spacing(text)
+    text = _normalize_timetable_special_title(text)
     if not text:
         return ''
     compact = _compact_text(text)
+    if _is_numeric_fragment_title(text):
+        return ''
     if _is_time_only_text(text):
         return ''
     if _is_timetable_header_only(text):
@@ -656,41 +985,72 @@ def _clean_timetable_title(text, source_title=''):
         return ''
     if len(compact) <= 1:
         return ''
-    return _prefix_timetable_title(text)[:255]
+    if has_live_broadcast:
+        text = f'{LIVE_BROADCAST_PREFIX} {_strip_live_broadcast(text)}'
+    return _prefix_timetable_title(_normalize_timetable_spacing(text))[:255]
+
+
+def _normalize_timetable_special_title(text):
+    normalized = str(text or '').strip(' :-|()~')
+    normalized = re.sub(r'^[\s:;\-|]+', '', normalized)
+    normalized = normalized.strip('[]')
+    normalized = _restore_live_broadcast_text(normalized)
+    normalized = _normalize_timetable_spacing(normalized)
+    normalized = re.sub(r'^\s*Live\s+', '', normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r'^\s*시간\s+', '', normalized)
+    normalized = re.sub(r'\b\d{1,2}\s*:\s*\d{2}\s*(?:~|-|부터|to)\s*\d{1,2}\s*:\s*\d{2}\b', ' ', normalized, flags=re.IGNORECASE)
+    normalized = _normalize_timetable_spacing(normalized)
+    normalized = re.sub(r'월말\s+평가', '월말평가', normalized)
+    normalized = re.sub(r'싸피\s+레이스', '싸피레이스', normalized)
+    normalized = re.sub(r'(?<=\d)\s+학기', '학기', normalized)
+    normalized = re.sub(
+        r'(?i)^(관통\s*PJT|관통\s*프로젝트)\s*:?\s*(관통\s*프로젝트\s+Overview)$',
+        r'\2',
+        normalized,
+    )
+    compact = _compact_text(normalized)
+    if compact in {'관통PJT', '관통프로젝트'}:
+        return ''
+    if _is_practice_qna_compact(compact):
+        prefix = _practice_qna_prefix(normalized)
+        return f'{prefix}: 실습 및 QnA' if prefix else '실습 및 QnA'
+    return normalized
 
 
 def _remove_timetable_noise_prefixes(text):
-    text = re.sub(r'^\s*\[\s*LIVE\s*방송\s*\]\s*', '', str(text or ''), flags=re.IGNORECASE)
-    text = re.sub(r'^\s*\[?\s*LIVE\s*방송\s*\]?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^\s*\[\s*학습\s*\]\s*', '', str(text or ''), flags=re.IGNORECASE)
+    text = re.sub(r'^\s*Live\s+', '', text, flags=re.IGNORECASE)
     return text.strip(' :-|()~')
 
 
 def _normalize_timetable_spacing(text):
     text = re.sub(r'\s+', ' ', str(text or '').replace('\n', ' ')).strip()
+    text = re.sub(r'\s*"\s*', ' ', text)
     text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
+    text = re.sub(r'(?<=\d)\s*:\s*:\s*(?=\d)', ':', text)
     text = re.sub(r'\s*:\s*', ': ', text)
+    text = re.sub(r':\s*[-~]+\s*', ': ', text)
     text = re.sub(r'\s*/\s*', ' / ', text)
     text = re.sub(r'\[\s*', '[', text)
     text = re.sub(r'\s*\]', ']', text)
-    text = re.sub(r'\s*&\s*', '&', text)
+    text = re.sub(r'(?<=[A-Za-z0-9가-힣])\s*-\s+(?=[A-Za-z가-힣])', ' ', text)
+    text = re.sub(r'\s*&\s*', ' & ', text)
+    text = re.sub(r'\bQ\s*&\s*A\b', 'Q&A', text, flags=re.IGNORECASE)
     text = re.sub(r'\b(JS|Django)\s+(?=[A-Za-z])', r'\1: ', text)
+    text = re.sub(r'\b([A-Za-z][A-Za-z0-9 /]*)\s*:\s*\1\s*:\s*', r'\1: ', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text)
     text = re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', text)
     return text.strip(' :-|')
 
 
 def _prefix_timetable_title(text):
-    if _has_timetable_non_learning_marker(text):
-        return text
-    if text.startswith('[학습]'):
-        return text
-    return f'[학습] {text}'
+    return str(text or '').strip()
 
 
 def _has_timetable_non_learning_marker(text):
     normalized = str(text or '').strip()
     compact = _compact_text(normalized)
-    if normalized.startswith('[실습 및 Q&A]'):
+    if normalized.startswith('[실습'):
         return True
     if any(keyword in compact for keyword in ['과목평가', '월말평가', '역량테스트']):
         return True
@@ -705,8 +1065,64 @@ def _is_time_only_text(text):
     return bool(TIME_ONLY_PATTERN.match(_normalize_time_text(text)))
 
 
+def _is_numeric_fragment_title(text):
+    normalized = _normalize_time_text(text)
+    return bool(
+        BARE_NUMBER_TITLE_PATTERN.fullmatch(normalized)
+        or NUMERIC_FRAGMENT_TITLE_PATTERN.fullmatch(normalized)
+        or TIME_ONLY_PATTERN.fullmatch(normalized)
+    )
+
+
+def _extract_live_broadcast(text):
+    restored = _restore_live_broadcast_text(text)
+    has_live_broadcast = LIVE_BROADCAST_PREFIX.lower() in restored.lower()
+    return _strip_live_broadcast(restored), has_live_broadcast
+
+
+def _restore_live_broadcast_text(text):
+    value = str(text or '')
+    value = re.sub(r'방송\]\s*\[\s*Live\s*방송', LIVE_BROADCAST_PREFIX, value, flags=re.IGNORECASE)
+    value = re.sub(r'\[\s*Live\s*방송\s*\]?', LIVE_BROADCAST_PREFIX, value, flags=re.IGNORECASE)
+    value = re.sub(r'(?<!\[)\bLive\s*방송\s*\]', LIVE_BROADCAST_PREFIX, value, flags=re.IGNORECASE)
+    value = re.sub(r'(?:\s*\[Live\s*방송\]\s*){2,}', f' {LIVE_BROADCAST_PREFIX} ', value, flags=re.IGNORECASE)
+    return _normalize_timetable_spacing(value)
+
+
+def _strip_live_broadcast(text):
+    value = _restore_live_broadcast_text(text)
+    value = re.sub(r'\s*\[Live\s*방송\]\s*', ' ', value, flags=re.IGNORECASE)
+    return _normalize_timetable_spacing(value)
+
+
+def _is_live_broadcast_only(text):
+    return not _strip_live_broadcast(text) and LIVE_BROADCAST_PREFIX.lower() in _restore_live_broadcast_text(text).lower()
+
+
+def _is_practice_qna_compact(compact):
+    normalized = str(compact or '').upper()
+    return (
+        ('실습' in normalized and ('Q&A' in normalized or 'QNA' in normalized))
+        or normalized in {'Q&A', 'QNA', '&A'}
+        or ('Q&A' in normalized and normalized.count('실습') >= 1)
+    )
+
+
+def _practice_qna_prefix(title):
+    text = _strip_live_broadcast(title)
+    if re.match(r'^\s*\[?\s*실습\s*(?:및)?\s*(?:Q\s*&\s*A|QNA)', text, flags=re.IGNORECASE):
+        return ''
+    text = re.sub(r'[\[\]]', ' ', text)
+    text = re.sub(r'\bQ\s*&\s*A\b|\bQNA\b|실습\s*(?:및)?\s*Q\s*&\s*A|실습\s*(?:및)?\s*QNA', '', text, flags=re.IGNORECASE)
+    text = _normalize_timetable_spacing(text).strip(' :-|')
+    if re.search(r'관통\s*PJT|관통\s*프로젝트', text, flags=re.IGNORECASE):
+        return '관통 PJT'
+    return text[:80].strip(' :-|')
+
+
 def _normalize_time_text(text):
-    return re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', str(text or '').strip())
+    value = re.sub(r'(?<=\d)\s*:\s*:\s*(?=\d)', ':', str(text or '').strip())
+    return re.sub(r'(?<=\d)\s*:\s*(?=\d)', ':', value)
 
 
 def _is_timetable_header_only(text):
@@ -838,17 +1254,108 @@ def _dedupe_day_boxes(day_boxes):
 
 
 def _dedupe_candidates(candidates):
-    seen = set()
+    seen = {}
     deduped = []
     for candidate in candidates:
         if _is_weekend_false_positive(candidate):
             continue
-        key = (candidate.title, candidate.event_date, candidate.event_type)
-        if key in seen:
+        key = _candidate_dedupe_key(candidate)
+        existing_index = seen.get(key)
+        if existing_index is not None:
+            deduped[existing_index] = _merge_duplicate_candidate(deduped[existing_index], candidate)
             continue
-        seen.add(key)
+        similar_index = _similar_timetable_candidate_index(candidate, deduped)
+        if similar_index is not None:
+            deduped[similar_index] = _merge_duplicate_candidate(deduped[similar_index], candidate)
+            seen[_candidate_dedupe_key(deduped[similar_index])] = similar_index
+            continue
+        seen[key] = len(deduped)
         deduped.append(candidate)
     return deduped
+
+
+def _candidate_dedupe_key(candidate):
+    parser_reason = str(getattr(candidate, 'reason', '') or '')
+    if parser_reason.startswith('timetable_cell_text'):
+        return (
+            candidate.event_date,
+            _timetable_title_compare_key(candidate.title),
+            candidate.event_type,
+        )
+    return (candidate.title, candidate.event_date, candidate.event_type)
+
+
+def _timetable_title_compare_key(title):
+    text = unicodedata.normalize('NFKC', str(title or ''))
+    text = _strip_live_broadcast(text)
+    text = text.casefold()
+    text = re.sub(r'\bq\s*&\s*a\b|\bqna\b|\bq\s+and\s+a\b', 'qna', text, flags=re.IGNORECASE)
+    text = re.sub(r'실습\s*(?:및)?\s*qna|qna\s*실습\s*qna', '실습qna', text, flags=re.IGNORECASE)
+    text = re.sub(r'[\[\]():;,.|~"\'`]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'관통\s*pjt\s+실습qna', '관통 pjt 실습qna', text, flags=re.IGNORECASE)
+    return re.sub(r'\s+', '', text)
+
+
+def _similar_timetable_candidate_index(candidate, deduped):
+    if not str(candidate.reason or '').startswith('timetable_cell_text'):
+        return None
+    candidate_key = _timetable_title_compare_key(candidate.title)
+    if '실습qna' not in candidate_key:
+        return None
+    for index, existing in enumerate(deduped):
+        if existing.event_date != candidate.event_date:
+            continue
+        if not str(existing.reason or '').startswith('timetable_cell_text'):
+            continue
+        existing_key = _timetable_title_compare_key(existing.title)
+        if '실습qna' not in existing_key:
+            continue
+        candidate_prefix = _practice_qna_prefix(candidate.title)
+        existing_prefix = _practice_qna_prefix(existing.title)
+        if not candidate_prefix or not existing_prefix or candidate_prefix == existing_prefix:
+            return index
+        if SequenceMatcher(None, candidate_key, existing_key).ratio() >= 0.86:
+            return index
+    return None
+
+
+def _merge_duplicate_candidate(existing, incoming):
+    live_broadcast = (
+        LIVE_BROADCAST_PREFIX.lower() in _restore_live_broadcast_text(existing.title).lower()
+        or LIVE_BROADCAST_PREFIX.lower() in _restore_live_broadcast_text(incoming.title).lower()
+    )
+    title = _choose_timetable_representative_title(existing.title, incoming.title)
+    if live_broadcast:
+        title = f'{LIVE_BROADCAST_PREFIX} {_strip_live_broadcast(title)}'
+    source_texts = [existing.source_text, incoming.source_text]
+    return GridScheduleCandidate(
+        title=_normalize_timetable_spacing(title),
+        event_date=existing.event_date,
+        event_type=existing.event_type,
+        description=existing.description,
+        source_text=' | '.join(value for value in source_texts if value),
+        end_date=existing.end_date or incoming.end_date,
+        source_box_count=(existing.source_box_count or 0) + (incoming.source_box_count or 0),
+        row_index=existing.row_index,
+        col_index=existing.col_index,
+        confidence=existing.confidence if existing.confidence is not None else incoming.confidence,
+        overlap_ratio=existing.overlap_ratio if existing.overlap_ratio is not None else incoming.overlap_ratio,
+        reason=existing.reason if existing.reason == incoming.reason else f'{existing.reason}+{incoming.reason}',
+    )
+
+
+def _choose_timetable_representative_title(first, second):
+    first_clean = _strip_live_broadcast(first)
+    second_clean = _strip_live_broadcast(second)
+    first_key = _timetable_title_compare_key(first_clean)
+    second_key = _timetable_title_compare_key(second_clean)
+    if '실습qna' in first_key or '실습qna' in second_key:
+        first_prefix = _practice_qna_prefix(first_clean)
+        second_prefix = _practice_qna_prefix(second_clean)
+        prefix = first_prefix if len(first_prefix) >= len(second_prefix) else second_prefix
+        return f'{prefix}: 실습 및 QnA' if prefix else '실습 및 QnA'
+    return first_clean if len(first_clean) >= len(second_clean) else second_clean
 
 
 def _filter_exam_false_positives(candidates):

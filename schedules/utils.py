@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from difflib import SequenceMatcher
 
 
@@ -41,12 +42,14 @@ DATE_FRAGMENT_PATTERN = re.compile(
 
 
 def normalize_event_title_for_dedupe(title):
-    text = _normalize_spaces(title)
+    text = unicodedata.normalize('NFKC', _normalize_spaces(title))
     text = COMPARISON_PREFIX_PATTERN.sub('', text)
+    text = LIVE_BROADCAST_PATTERN.sub('', text)
     text = STATUS_PAREN_PATTERN.sub('', text)
     text = DANGLING_SHORT_PAREN_PATTERN.sub('', text)
     for phrase in WRAPPER_PHRASES:
         text = text.replace(phrase, ' ')
+    text = _normalize_qna_for_compare(text)
     text = _normalize_spaces(text)
     return _compact_for_compare(text)
 
@@ -177,6 +180,14 @@ def _has_wrapper_phrase(title):
 
 def _normalize_spaces(value):
     return re.sub(r'\s+', ' ', str(value or '')).strip()
+
+
+def _normalize_qna_for_compare(value):
+    text = str(value or '')
+    text = re.sub(r'\bQ\s*&\s*A\b|\bQNA\b|\bQ\s+AND\s+A\b', 'QnA', text, flags=re.IGNORECASE)
+    text = re.sub(r'실습\s*(?:및)?\s*QnA|QnA\s*실습\s*QnA', '실습 및 QnA', text, flags=re.IGNORECASE)
+    text = re.sub(r'관통\s*PJT\s+실습\s*및\s*QnA', '관통 PJT: 실습 및 QnA', text, flags=re.IGNORECASE)
+    return text
 
 
 def _compact_for_compare(value):
