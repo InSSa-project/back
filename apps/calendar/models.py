@@ -64,13 +64,23 @@ class ScheduleEvent(models.Model):
 
 class UserScheduleEvent(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='user_schedule_events')
-    schedule_event = models.ForeignKey(ScheduleEvent, on_delete=models.CASCADE, related_name='user_schedule_events')
+    schedule_event = models.ForeignKey('schedules.ScheduleEvent', on_delete=models.CASCADE, related_name='user_schedule_events')
     is_done = models.BooleanField(default=False)
     memo = models.TextField(blank=True)
+    override_title = models.CharField(max_length=255, null=True, blank=True)
+    override_description = models.TextField(null=True, blank=True)
+    override_event_type = models.CharField(max_length=50, null=True, blank=True)
+    override_start_at = models.DateTimeField(null=True, blank=True)
+    override_end_at = models.DateTimeField(null=True, blank=True)
+    override_is_all_day = models.BooleanField(null=True, blank=True)
+    is_hidden = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        indexes = [
+            models.Index(fields=['user', 'is_hidden']),
+        ]
         constraints = [
             models.UniqueConstraint(fields=['user', 'schedule_event'], name='unique_user_schedule_event'),
         ]

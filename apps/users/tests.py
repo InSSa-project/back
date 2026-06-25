@@ -84,6 +84,18 @@ class UserProfileApiTests(TestCase):
         self.assertEqual(payload['notification_email'], 'user-a@example.com')
         self.assertTrue(UserProfile.objects.filter(user=self.user).exists())
 
+    def test_me_includes_profile_track_and_calendar_admin_flag(self):
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        UserProfile.objects.create(user=self.user, track=UserProfile.TRACK_DATA)
+
+        response = self.client.get(reverse('users-me'), **self._auth(self.user))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['data']
+        self.assertEqual(payload['track'], UserProfile.TRACK_DATA)
+        self.assertTrue(payload['can_manage_calendar'])
+
     def test_patch_profile_saves_ssafy_fields(self):
         response = self.client.patch(
             reverse('users-me-profile'),

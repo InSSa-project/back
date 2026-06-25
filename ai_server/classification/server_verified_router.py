@@ -39,6 +39,8 @@ class ServerVerifiedIntentRouter:
             return IntentDecision(VerifiedRoute.CURRENT_DATE, reason='current_date_rule')
         if self._is_notice_question(text):
             return IntentDecision(VerifiedRoute.RAG, reason='notice_question')
+        if self._is_official_rule_question(text):
+            return IntentDecision(VerifiedRoute.RAG, reason='official_rule_question')
         if self._is_urgent_recommendation_question(text):
             return IntentDecision(VerifiedRoute.RECOMMENDED_SCHEDULE, reason='urgent_recommendation_rule', requires_personal_context=True)
         if self._is_recommendation_question(text):
@@ -114,6 +116,44 @@ class ServerVerifiedIntentRouter:
         return self._contains_any(text, self._words('\\uacf5\\uc9c0', '\\uacf5\\uc9c0\\uc0ac\\ud56d', '\\uc548\\ub0b4', '\\uc54c\\ub9bc')) and self._contains_any(
             text,
             self._words('\\uc694\\uc57d', '\\uc815\\ub9ac', '\\uc54c\\ub824', '\\ubcf4\\uc5ec', '\\ud655\\uc778', '\\uc911\\uc694', '\\ucd5c\\uadfc'),
+        )
+
+    def _is_official_rule_question(self, text: str) -> bool:
+        compact = text.replace(' ', '')
+        rule_subjects = self._words(
+            '\uacfc\ub77d', '\ubd88\ud569\uaca9', '\ud1f4\uc18c', '\uc911\ub3c4\ud1f4\uc18c',
+            '\uc218\ub8cc', '\uc7ac\uc2dc\ud5d8', '\ucd9c\uacb0', '\uc9c0\uac01', '\uacb0\uc11d',
+            '\uc870\ud1f4', '\uacf5\uac00', '\uc0ac\uc720\uacb0\uc11d',
+        )
+        rule_markers = self._words(
+            '\uae30\uc900', '\uc870\uac74', '\uaddc\uc815', '\uba87 \ubc88', '\uba87\ubc88',
+            '\uc5bc\ub9c8\ub098', '\uba87 \uc810', '\uba87\uc810', '\uc810\uc218', '\ud69f\uc218',
+            '\ud1b5\uacfc', '\ud569\uaca9', '\ubd88\ud569\uaca9', '\ucc98\ub9ac', '\ubd88\uc774\uc775',
+        )
+        advice_markers = self._words(
+            '\uc5b4\ub5a1\ud558\uc9c0', '\uc5b4\ub5bb\uac8c \ud558\uc9c0', '\uc5b4\ub5bb\uac8c \ud574',
+            '\ud68c\ubcf5', '\uacf5\ubd80', '\ubcf5\uad6c', '\uc900\ube44', '\uba58\ud0c8',
+            '\ud798\ub4e4', '\ubd88\uc548', '\ub9dd\ud588', '\ub9dd\ud568', '\uc6b0\uc6b8',
+        )
+
+        has_rule_subject = self._contains_any(text, rule_subjects)
+        has_rule_marker = self._contains_any(text, rule_markers)
+        has_compact_rule_marker = self._contains_any(
+            compact,
+            self._words(
+                '\uba87\ubc88\uc774\uba74', '\uba87\ubc88\ubd80\ud130', '\uc5bc\ub9c8\ub098',
+                '\uacfc\ub77d\uba87\ubc88', '\ud1f4\uc18c\uae30\uc900', '\uc218\ub8cc\uae30\uc900',
+                '\ud1b5\uacfc\uae30\uc900',
+            ),
+        )
+        asks_dropout_result = self._contains_any(text, self._words('\uacfc\ub77d', '\ubd88\ud569\uaca9')) and self._contains_any(
+            text,
+            self._words('\ud1f4\uc18c', '\uc911\ub3c4\ud1f4\uc18c', '\uc218\ub8cc'),
+        )
+        asks_advice = self._contains_any(text, advice_markers)
+
+        return has_rule_subject and (has_rule_marker or has_compact_rule_marker or asks_dropout_result) and not (
+            asks_advice and not (has_rule_marker or asks_dropout_result)
         )
 
 
