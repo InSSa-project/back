@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import types
 from datetime import timedelta
@@ -468,11 +469,11 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(summary.created_count, 6)
         self.assertEqual(summary.wrapper_skip_count, 0)
         self.assertEqual(may_count, 6)
-        self.assertIn('Django: DRF 1', titles)
-        self.assertIn('Django: DRF 2', titles)
+        self.assertIn('[Live 방송] Django: DRF 1', titles)
+        self.assertIn('[Live 방송] Django: DRF 2', titles)
         self.assertIn('JS: DOM', titles)
         self.assertIn('JS: Basic Syntax 1', titles)
-        self.assertIn('실습 및 Q&A', titles)
+        self.assertIn('실습 및 QnA', titles)
         self.assertNotIn('중식', titles)
         self.assertIn('과목평가 9', titles)
         self.assertNotIn(source_title, titles)
@@ -491,8 +492,9 @@ class SampleNoticeImportTests(TestCase):
         first_output = StringIO()
         second_output = StringIO()
 
-        call_command('reparse_timetable_events', '--raw-id', raw_data.id, '--dry-run', stdout=dry_run_output)
+        call_command('reparse_timetable_events', '--raw-id', raw_data.id, '--dry-run', '--show-coverage', stdout=dry_run_output)
         self.assertIn('dry_run=true', dry_run_output.getvalue())
+        self.assertIn('2026-05-12: 1 events', dry_run_output.getvalue())
         self.assertEqual(ScheduleEvent.objects.count(), 0)
 
         call_command('reparse_timetable_events', '--raw-id', raw_data.id, '--confirm', stdout=first_output)
@@ -3181,7 +3183,7 @@ class SampleNoticeImportTests(TestCase):
             ocr_boxes=_timetable_multiline_ocr_boxes(),
         )
 
-        self.assertEqual([schedule.title for schedule in schedules], ['Django: DRF 1'])
+        self.assertEqual([schedule.title for schedule in schedules], ['[Live 방송] Django: DRF 1'])
 
     def test_timetable_grid_merges_multiline_boxes_in_same_cell(self):
         source_title = '[학습] 5월 2주차 Data 트랙 시간표'
@@ -3203,7 +3205,7 @@ class SampleNoticeImportTests(TestCase):
 
         self.assertEqual(
             [schedule.title for schedule in schedules],
-            ['데이터엔지니어링활용2: Elasticsearch analyzer & mapping'],
+            ['[Live 방송] 데이터엔지니어링활용2: Elasticsearch analyzer & mapping'],
         )
         self.assertEqual(schedules[0].description, '')
         self.assertEqual(grid_debug.candidates[0]['source_box_count'], 4)
@@ -3235,7 +3237,7 @@ class SampleNoticeImportTests(TestCase):
             ocr_boxes=_timetable_time_prefixed_class_ocr_boxes(),
         )
 
-        self.assertEqual([schedule.title for schedule in schedules], ['JS: Basic Syntax1'])
+        self.assertEqual([schedule.title for schedule in schedules], ['[Live 방송] JS: Basic Syntax1'])
 
     def test_timetable_grid_uses_date_header_boxes_for_mapping(self):
         schedules, _grid_debug = parse_schedule_candidates_with_debug(
@@ -3247,8 +3249,8 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(
             [(schedule.start_at.date().isoformat(), schedule.title) for schedule in schedules],
             [
-                ('2026-05-11', 'Django: DRF 1'),
-                ('2026-05-12', 'Django: DRF 2'),
+                ('2026-05-11', '[Live 방송] Django: DRF 1'),
+                ('2026-05-12', '[Live 방송] Django: DRF 2'),
                 ('2026-05-13', 'JS: DOM'),
                 ('2026-05-14', 'JS: Basic Syntax 1'),
                 ('2026-05-15', '과목평가 9'),
@@ -3262,7 +3264,7 @@ class SampleNoticeImportTests(TestCase):
             ocr_boxes=_timetable_practice_marker_ocr_boxes(),
         )
 
-        self.assertEqual([schedule.title for schedule in schedules], ['실습 및 Q&A'])
+        self.assertEqual([schedule.title for schedule in schedules], ['실습 및 QnA'])
 
     def test_python_june_second_week_monday_titles_are_normalized(self):
         schedules, _grid_debug = parse_schedule_candidates_with_debug(
@@ -3274,12 +3276,71 @@ class SampleNoticeImportTests(TestCase):
         self.assertEqual(
             [(timezone.localdate(schedule.start_at).isoformat(), schedule.title) for schedule in schedules],
             [
-                ('2026-06-08', 'Vue: State Management'),
-                ('2026-06-08', '실습 및 Q&A'),
+                ('2026-06-08', '[Live 방송] Vue: State Management'),
+                ('2026-06-08', '실습 및 QnA'),
             ],
         )
         self.assertNotIn('00-12', {schedule.title for schedule in schedules})
         self.assertNotIn('00-15', {schedule.title for schedule in schedules})
+
+    def test_meister_june_fourth_week_timetable_merges_cells_and_keeps_all_weekdays(self):
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n6월\n22\n23\n24\n25\n26\n관통 PJT\n실습 QnA',
+            default_title='[학습] 6월 4주차 마이스터고 트랙 시간표',
+            ocr_boxes=_meister_june_fourth_week_ocr_boxes(),
+        )
+
+        result = [
+            (timezone.localdate(schedule.start_at).isoformat(), schedule.title)
+            for schedule in schedules
+        ]
+
+        self.assertEqual(
+            result,
+            [
+                ('2026-06-22', '[Live 방송] 관통 프로젝트 Overview'),
+                ('2026-06-22', '관통 PJT: 실습 및 QnA'),
+                ('2026-06-23', '관통 PJT: 실습 및 QnA'),
+                ('2026-06-24', '관통 PJT: 실습 및 QnA'),
+                ('2026-06-25', '관통 PJT: 실습 및 QnA'),
+                ('2026-06-26', '[Live 방송] 관통 PJT OT'),
+                ('2026-06-26', '월말평가 6'),
+                ('2026-06-26', '[Live 방송] 싸피레이스 코딩 및 2학기 안내'),
+                ('2026-06-26', 'SSAFY Day'),
+            ],
+        )
+        self.assertFalse(any(re.fullmatch(r'\d{1,2}\s*[-:]\s*\d{1,2}', schedule.title) for schedule in schedules))
+        self.assertEqual(
+            {item['date']: item['event_count'] for item in grid_debug.metadata_json['coverage']},
+            {
+                '2026-06-22': 2,
+                '2026-06-23': 1,
+                '2026-06-24': 1,
+                '2026-06-25': 1,
+                '2026-06-26': 4,
+            },
+        )
+        self.assertEqual(grid_debug.metadata_json['coverage_warnings'], [])
+
+    def test_timetable_coverage_warns_for_empty_non_holiday_weekday(self):
+        boxes = _meister_june_fourth_week_ocr_boxes()
+        boxes = [box for box in boxes if not (500 <= box['x1'] <= 560 and box['y1'] > 120)]
+
+        schedules, grid_debug = parse_schedule_candidates_with_debug(
+            '[OCR_TEXT]\n6월\n22\n23\n24\n25\n26',
+            default_title='[학습] 6월 4주차 마이스터고 트랙 시간표',
+            ocr_boxes=boxes,
+        )
+
+        self.assertTrue(schedules)
+        self.assertIn(
+            {
+                'date': '2026-06-26',
+                'warning': 'non_holiday_weekday_empty',
+                'second_pass_attempted': True,
+            },
+            grid_debug.metadata_json['coverage_warnings'],
+        )
 
     def test_timetable_grid_rejects_notice_title_as_cell_title(self):
         source_title = '[학습] 5월 2주차 Data 트랙 시간표'
@@ -5348,6 +5409,46 @@ def _timetable_python_june_8_ocr_boxes():
         {'text': '00-15', 'x1': 28, 'y1': 252, 'x2': 72, 'y2': 270, 'confidence': 0.98},
         {'text': '[실습 및 Q&A]', 'x1': 105, 'y1': 252, 'x2': 225, 'y2': 270, 'confidence': 0.98},
     ]
+
+
+def _meister_june_fourth_week_ocr_boxes():
+    boxes = [
+        {'text': '6월', 'x1': 20, 'y1': 20, 'x2': 52, 'y2': 40},
+        {'text': 'MON', 'x1': 110, 'y1': 60, 'x2': 140, 'y2': 80},
+        {'text': 'TUE', 'x1': 210, 'y1': 60, 'x2': 240, 'y2': 80},
+        {'text': 'WED', 'x1': 310, 'y1': 60, 'x2': 340, 'y2': 80},
+        {'text': 'THU', 'x1': 410, 'y1': 60, 'x2': 440, 'y2': 80},
+        {'text': 'FRI', 'x1': 510, 'y1': 60, 'x2': 540, 'y2': 80},
+    ]
+    for day, x in [(22, 110), (23, 210), (24, 310), (25, 410), (26, 510)]:
+        boxes.append({'text': str(day), 'x1': x, 'y1': 100, 'x2': x + 18, 'y2': 120})
+
+    boxes.extend(
+        [
+            {'text': '방송] [Live 방송', 'x1': 105, 'y1': 132, 'x2': 230, 'y2': 150, 'confidence': 0.98},
+            {'text': '관통 PJT:', 'x1': 105, 'y1': 154, 'x2': 185, 'y2': 172, 'confidence': 0.98},
+            {'text': '관통 프로젝트 Overview', 'x1': 105, 'y1': 176, 'x2': 285, 'y2': 194, 'confidence': 0.98},
+            {'text': '30-13', 'x1': 105, 'y1': 224, 'x2': 155, 'y2': 242, 'confidence': 0.98},
+            {'text': '관통 PJT:', 'x1': 105, 'y1': 246, 'x2': 185, 'y2': 264, 'confidence': 0.98},
+            {'text': 'Q&A] [실습 Q&A', 'x1': 105, 'y1': 268, 'x2': 245, 'y2': 286, 'confidence': 0.98},
+            {'text': '00-14', 'x1': 105, 'y1': 290, 'x2': 155, 'y2': 308, 'confidence': 0.98},
+            {'text': '관통 PJT 실습 Q&A', 'x1': 205, 'y1': 132, 'x2': 345, 'y2': 150, 'confidence': 0.98},
+            {'text': '[실습 및 Q&A]', 'x1': 205, 'y1': 174, 'x2': 325, 'y2': 192, 'confidence': 0.98},
+            {'text': '관통 PJT:', 'x1': 305, 'y1': 132, 'x2': 385, 'y2': 150, 'confidence': 0.98},
+            {'text': '실습 및 QnA', 'x1': 305, 'y1': 154, 'x2': 415, 'y2': 172, 'confidence': 0.98},
+            {'text': '관통 PJT:', 'x1': 405, 'y1': 132, 'x2': 485, 'y2': 150, 'confidence': 0.98},
+            {'text': '실습 Q&A', 'x1': 405, 'y1': 154, 'x2': 495, 'y2': 172, 'confidence': 0.98},
+            {'text': '[Live 방송', 'x1': 505, 'y1': 132, 'x2': 590, 'y2': 150, 'confidence': 0.98},
+            {'text': '관통 PJT OT', 'x1': 505, 'y1': 154, 'x2': 605, 'y2': 172, 'confidence': 0.98},
+            {'text': '월말평가', 'x1': 505, 'y1': 210, 'x2': 585, 'y2': 228, 'confidence': 0.98},
+            {'text': '6', 'x1': 588, 'y1': 210, 'x2': 600, 'y2': 228, 'confidence': 0.98},
+            {'text': 'Live 방송]', 'x1': 505, 'y1': 264, 'x2': 590, 'y2': 282, 'confidence': 0.98},
+            {'text': '싸피레이스 코딩 및', 'x1': 505, 'y1': 286, 'x2': 660, 'y2': 304, 'confidence': 0.98},
+            {'text': '2학기 안내', 'x1': 505, 'y1': 308, 'x2': 600, 'y2': 326, 'confidence': 0.98},
+            {'text': 'SSAFY Day', 'x1': 505, 'y1': 370, 'x2': 590, 'y2': 388, 'confidence': 0.98},
+        ]
+    )
+    return boxes
 
 
 def _timetable_noise_ocr_boxes():

@@ -3,7 +3,7 @@ from django.core.management.base import BaseCommand, CommandError
 from schedules.models import ScheduleEvent
 from sync.models import RawSsafyData
 from sync.services.reparse_service import reparse_raw_data_to_events
-from sync.services.schedule_parser import parse_schedule_candidates
+from sync.services.schedule_parser import parse_schedule_candidates_with_debug
 from sync.services.tracks import normalize_track_key, track_key_from_text
 
 
@@ -14,6 +14,8 @@ class Command(BaseCommand):
         parser.add_argument('--raw-id', type=int, help='Only reparse one RawSsafyData id.')
         parser.add_argument('--track', help='Only reparse timetable notices for one canonical track.')
         parser.add_argument('--source-title', help='Only reparse rows whose title contains this text.')
+        parser.add_argument('--show-coverage', action='store_true', help='Print per-date timetable coverage.')
+        parser.add_argument('--fail-on-empty-weekday', action='store_true', help='Exit with an error if a non-holiday weekday has no parsed events.')
         parser.add_argument('--dry-run', action='store_true', help='Print counts without writing changes.')
         parser.add_argument(
             '--confirm',
@@ -67,6 +69,7 @@ class Command(BaseCommand):
                 f'skipped_count={summary.skipped_count}\n'
                 f'replaced_event_count={summary.replaced_event_count}\n'
                 f'protected_event_count={summary.protected_event_count}\n'
+                f'coverage_warning_count={summary.coverage_warning_count}\n'
                 f'failed_count={summary.failed_count}\n'
                 f'dry_run={str(dry_run).lower()}'
             )
@@ -75,8 +78,25 @@ class Command(BaseCommand):
             self.stdout.write(f'raw_id={item["raw_id"]} source_title={item["source_title"]}')
             self.stdout.write(f'  existing_titles={item["existing_titles"]}')
             self.stdout.write(f'  parsed_titles={item["parsed_titles"]}')
+            if options.get('show_coverage'):
+                self.stdout.write(f'  track={item["track"]}')
+                for coverage in item["coverage"]:
+                    warning_suffix = f' warning={coverage["warning"]}' if coverage.get('warning') else ''
+                    second_pass_suffix = ' second_pass=true' if coverage.get('second_pass_attempted') else ''
+                    self.stdout.write(
+                        f'  {coverage["date"]}: {coverage["event_count"]} events{second_pass_suffix}{warning_suffix}'
+                    )
+        if summary.coverage_warnings:
+            self.stdout.write(self.style.WARNING('coverage warnings:'))
+            for warning in summary.coverage_warnings:
+                self.stdout.write(
+                    f'- raw_id={warning["raw_data_id"]} date={warning["date"]} '
+                    f'warning={warning["warning"]} source_title={warning["source_title"]}'
+                )
         if dry_run:
             self.stdout.write(self.style.WARNING('Run again with --confirm to write changes.'))
+        if options.get('fail_on_empty_weekday') and summary.coverage_warning_count:
+            raise CommandError('Timetable coverage has non-holiday weekday gaps.')
 
 
 def _is_timetable_raw_data(raw_data):
@@ -109,20 +129,21 @@ def _preview_reparse_titles(queryset, limit=3):
             .order_by('start_at', 'id')
             .values_list('title', flat=True)[:12]
         )
-        parsed_titles = [
-            schedule.title
-            for schedule in parse_schedule_candidates(
-                raw_data.raw_text,
-                default_title=raw_data.title,
-                ocr_boxes=raw_data.ocr_boxes,
-            )[:12]
-        ]
+        parsed_schedules, grid_debug = parse_schedule_candidates_with_debug(
+            raw_data.raw_text,
+            default_title=raw_data.title,
+            ocr_boxes=raw_data.ocr_boxes,
+        )
+        parsed_titles = [schedule.title for schedule in parsed_schedules[:12]]
+        metadata = getattr(grid_debug, 'metadata_json', {}) or {}
         preview.append(
             {
                 'raw_id': raw_data.id,
                 'source_title': raw_data.title,
+                'track': _raw_data_track(raw_data),
                 'existing_titles': existing_titles,
                 'parsed_titles': parsed_titles,
+                'coverage': metadata.get('coverage') or [],
             }
         )
     return preview

@@ -1,6 +1,6 @@
 from datetime import datetime, time
 
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Prefetch, Q, When
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
@@ -22,18 +22,35 @@ class ProfileIncompleteError(Exception):
 
 class CalendarService:
     def list_events(self, user, start=None, end=None, track=None, event_type=None):
+        start_at = _parse_boundary(start, is_end=False)
+        end_at = _parse_boundary(end, is_end=True)
+
         queryset = ScheduleEvent.objects.select_related('raw_data').all()
+        if getattr(user, 'is_authenticated', False):
+            queryset = queryset.prefetch_related(
+                Prefetch(
+                    'user_schedule_events',
+                    queryset=UserScheduleEvent.objects.filter(user=user),
+                    to_attr='_calendar_user_links',
+                )
+            )
+        queryset = _with_calendar_ordering(queryset)
+
         if getattr(user, 'is_authenticated', False):
             queryset = queryset.filter(
                 Q(owner__isnull=True) | Q(owner=user) | Q(user_schedule_events__user=user)
             ).distinct()
+            queryset = queryset.exclude(user_schedule_events__user=user, user_schedule_events__is_hidden=True)
         else:
             queryset = queryset.filter(owner__isnull=True)
 
-        start_at = _parse_boundary(start, is_end=False)
-        end_at = _parse_boundary(end, is_end=True)
+        queryset = queryset.filter(_range_query(start_at, end_at, user))
+        queryset = queryset.filter(_track_scope_query(user, track))
+        if event_type:
+            queryset = queryset.filter(_event_type_query(str(event_type).strip(), user))
+        queryset = queryset.distinct()
 
-        events = filter_calendar_visible_events(queryset.order_by('start_at', 'id'))
+        events = filter_calendar_visible_events(queryset)
         events = self._filter_events_by_calendar_scope(events, user, track)
         events = [event for event in events if not is_event_hidden_for_user(event, user)]
         return [
@@ -76,10 +93,91 @@ def _parse_boundary(value, is_end):
     return timezone.make_aware(datetime.combine(parsed_date, boundary_time), timezone.get_current_timezone())
 
 
+def _range_query(range_start, range_end, user):
+    base = Q()
+    if range_end is not None:
+        base &= Q(start_at__lte=range_end)
+    if range_start is not None:
+        base &= Q(end_at__gte=range_start)
+
+    override = Q()
+    if getattr(user, 'is_authenticated', False) and (range_start is not None or range_end is not None):
+        override = Q(user_schedule_events__user=user)
+        if range_end is not None:
+            override &= Q(user_schedule_events__override_start_at__lte=range_end)
+        if range_start is not None:
+            override &= Q(user_schedule_events__override_end_at__gte=range_start)
+
+    if override:
+        return base | override
+    return base
+
+
+def _event_type_query(event_type, user):
+    query = Q(event_type=event_type)
+    if getattr(user, 'is_authenticated', False):
+        query |= Q(user_schedule_events__user=user, user_schedule_events__override_event_type=event_type)
+    return query
+
+
+def _track_scope_query(user, requested_track):
+    if _can_manage_calendar(user):
+        admin_track = normalize_track_key(requested_track)
+        if not admin_track or admin_track in ALL_TRACK_VALUES:
+            return Q()
+        if admin_track not in canonical_track_keys():
+            return Q(pk__in=[])
+        return _metadata_track_query(admin_track, user)
+
+    user_track = _user_profile_track(user)
+    if not user_track:
+        raise ProfileIncompleteError()
+    return _metadata_track_query(user_track, user)
+
+
+def _metadata_track_query(track_key, user):
+    common_query = (
+        Q(metadata_json__is_common=True)
+        | Q(metadata_json__track_key__in=list(COMMON_TRACK_VALUES))
+        | Q(metadata_json__track__in=list(COMMON_TRACK_VALUES))
+        | Q(metadata_json__audience__track_key__in=list(COMMON_TRACK_VALUES))
+        | Q(metadata_json__audience__track__in=list(COMMON_TRACK_VALUES))
+        | Q(metadata_json={})
+        | (
+            Q(metadata_json__track_key__isnull=True)
+            & Q(metadata_json__track__isnull=True)
+            & Q(metadata_json__audience__track_key__isnull=True)
+            & Q(metadata_json__audience__track__isnull=True)
+        )
+    )
+    track_query = (
+        Q(metadata_json__track_key=track_key)
+        | Q(metadata_json__track=track_key)
+        | Q(metadata_json__audience__track_key=track_key)
+        | Q(metadata_json__audience__track=track_key)
+    )
+    owned_or_linked = Q()
+    if getattr(user, 'is_authenticated', False):
+        owned_or_linked = Q(owner=user) | Q(user_schedule_events__user=user)
+    return common_query | track_query | owned_or_linked
+
+
+def _with_calendar_ordering(queryset):
+    return queryset.annotate(
+        _event_type_priority=Case(
+            When(event_type__in=['exam', 'monthly_test', 'subject_test', 'MONTHLY_TEST', 'SUBJECT_TEST'], then=1),
+            When(event_type__in=['project', 'PROJECT'], then=2),
+            When(event_type__in=['personal', 'PERSONAL'], then=3),
+            default=4,
+            output_field=IntegerField(),
+        )
+    ).order_by('start_at', 'is_all_day', '_event_type_priority', 'title', 'id')
+
+
 def _matches_track(event, expected, user=None):
     if user is not None and event.owner_id == getattr(user, 'id', None):
         return True
-    if user is not None and UserScheduleEvent.objects.filter(user=user, schedule_event=event).exists():
+    if user is not None and user_schedule_link(event, user) is not None:
         return True
 
     expected_track = normalize_track_key(expected)
@@ -118,6 +216,11 @@ def user_schedule_link(event, user):
         return None
     if event.owner_id == getattr(user, 'id', None):
         return None
+    prefetched_links = getattr(event, '_calendar_user_links', None)
+    if prefetched_links is not None:
+        link = prefetched_links[0] if prefetched_links else None
+        event._calendar_user_link = link
+        return link
     cached = getattr(event, '_calendar_user_link', None)
     if cached is not None and getattr(cached, 'user_id', None) == getattr(user, 'id', None):
         return cached

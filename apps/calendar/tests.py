@@ -2,6 +2,8 @@ import json
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -163,6 +165,73 @@ class CalendarApiTests(TestCase):
         self.assertFalse(item['is_user_override'])
         self.assertTrue(item['is_global'])
         self.assertFalse(item['is_common'])
+
+    def test_calendar_monthly_query_prefetches_user_overrides_without_n_plus_one(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))
+        first_event = ScheduleEvent.objects.create(
+            title='Python schedule 0',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
+        )
+        UserScheduleEvent.objects.create(user=self.user, schedule_event=first_event, override_title='My Python schedule 0')
+
+        with CaptureQueriesContext(connection) as single_event_queries:
+            single_response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
+
+        for index in range(1, 25):
+            event = ScheduleEvent.objects.create(
+                title=f'Python schedule {index}',
+                start_at=start_at + timedelta(days=index % 20, hours=index % 4),
+                end_at=start_at + timedelta(days=index % 20, hours=(index % 4) + 1),
+                event_type='study',
+                source_type='notice',
+                metadata_json={'track_key': 'python'},
+            )
+            UserScheduleEvent.objects.create(user=self.user, schedule_event=event, override_title=f'My Python schedule {index}')
+
+        with CaptureQueriesContext(connection) as many_event_queries:
+            many_response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
+
+        self.assertEqual(single_response.status_code, 200)
+        self.assertEqual(many_response.status_code, 200)
+        self.assertEqual(len(many_response.json()['data']), 25)
+        self.assertLessEqual(len(many_event_queries), len(single_event_queries) + 3)
+
+    def test_calendar_monthly_query_filters_range_and_user_track_in_database_scope(self):
+        in_range = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))
+        outside_range = timezone.make_aware(timezone.datetime(2026, 8, 10, 9, 0))
+        expected = ScheduleEvent.objects.create(
+            title='Python in range',
+            start_at=in_range,
+            end_at=in_range + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
+        )
+        ScheduleEvent.objects.create(
+            title='Python outside range',
+            start_at=outside_range,
+            end_at=outside_range + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'python'},
+        )
+        ScheduleEvent.objects.create(
+            title='Data in range',
+            start_at=in_range,
+            end_at=in_range + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'track_key': 'data'},
+        )
+
+        response = self.client.get(reverse('calendar-events'), {'start': '2026-06-01', 'end': '2026-06-30'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['id'] for item in response.json()['data']], [expected.id])
 
     def test_calendar_track_filter_keeps_common_events(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 6, 10, 9, 0))

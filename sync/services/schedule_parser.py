@@ -4,7 +4,11 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
-from schedules.utils import is_meaningless_schedule_title, normalize_schedule_display_title
+from schedules.utils import (
+    is_meaningless_schedule_title,
+    normalize_event_title_for_dedupe,
+    normalize_schedule_display_title,
+)
 from sync.management.commands.seed_korean_holidays import get_korean_holidays
 from sync.services.ocr_grid_parser import GridParseDebug, parse_grid_schedule_candidates
 from sync.services.tracks import (
@@ -471,7 +475,14 @@ def _dedupe_schedules(schedules):
         _ensure_schedule_track_metadata(schedule)
         metadata = schedule.metadata_json or {}
         track_key = normalize_track_key(metadata.get('track_key') or metadata.get('track') or '')
-        key = (schedule.title, schedule.start_at, schedule.event_type, track_key or 'notice')
+        parser_type = metadata.get('parser_type') or metadata.get('parser') or ''
+        title_key = (
+            normalize_event_title_for_dedupe(schedule.title)
+            if parser_type in {'timetable_grid', 'ocr_timetable_grid'}
+            else schedule.title
+        )
+        time_key = schedule.start_at.date() if parser_type in {'timetable_grid', 'ocr_timetable_grid'} else schedule.start_at
+        key = (title_key, time_key, schedule.event_type, track_key or 'notice')
         if key in seen:
             continue
         seen.add(key)

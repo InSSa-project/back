@@ -78,6 +78,9 @@ class UserScheduleEvent(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        indexes = [
+            models.Index(fields=['user', 'is_hidden']),
+        ]
         constraints = [
             models.UniqueConstraint(fields=['user', 'schedule_event'], name='unique_user_schedule_event'),
         ]
