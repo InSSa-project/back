@@ -121,6 +121,9 @@ class ChatPipeline:
             if response:
                 return response
 
+        if verified_decision.route == VerifiedRoute.RAG and verified_decision.reason == 'notice_question':
+            return self._server_verified_notice_response(request, parsed_query, query_type, intent)
+
         retrieval_policy = self.retrieval_policy_router.decide(parsed_query)
         if retrieval_policy.use_schedule_metadata and query_type == parsed_query.query_type:
             schedule_filters = self._schedule_filters(request.message, filters)
@@ -151,10 +154,7 @@ class ChatPipeline:
         if llm_intent_response:
             return llm_intent_response
 
-        if verified_decision.route == VerifiedRoute.RAG and verified_decision.reason == 'notice_question':
-            rag_result = self.rag_service.search_notices(request.message, parsed_query=parsed_query)
-        else:
-            rag_result = self.rag_service.search_public(request.message, filters=filters)
+        rag_result = self.rag_service.search_public(request.message, filters=filters)
         retrieval_evaluation = rag_result.evaluation
         rag_validation = self.result_validator.validate_rag(retrieval_evaluation)
         if rag_validation.should_retry:
@@ -467,6 +467,8 @@ class ChatPipeline:
         schedule_filters = dict(filters)
         if constraints.scope == 'personal':
             schedule_filters['event_type'] = 'personal'
+        if 'exam' in (constraints.include_filters or []):
+            schedule_filters['event_type'] = 'exam'
         return schedule_filters
 
     def _apply_constraint_filters(self, chunks, constraints):
@@ -543,6 +545,11 @@ class ChatPipeline:
         academic_terms = (
             '학사규정', '규정', '과락', '퇴소', '중도퇴소', '수료', '재시험', '월말평가',
             '과목평가', '출결', '결석', '지각', '통과 기준', '불합격',
+        )
+        academic_terms = academic_terms + (
+            '학사규정', '학사 규정', '규정', '생활수칙', '생활 수칙', '출결관리', '출결 관리',
+            '과락', '퇴소', '중도퇴소', '수료', '재시험', '월말평가', '과목평가',
+            '출결', '결석', '지각', '조퇴', '공가', '사유결석', '교육지원금',
         )
         if 'official_docs' in (data_sources or []) or any(term in text for term in academic_terms):
             filters['source_type'] = 'academic_rule'
@@ -625,6 +632,114 @@ class ChatPipeline:
                 **verified_plan.as_usage(),
             },
         )
+
+
+    def _server_verified_notice_response(self, request: ChatRequest, parsed_query, query_type: str, intent: str):
+        rag_result = self.rag_service.search_notices(request.message, parsed_query=parsed_query)
+        retrieval_evaluation = rag_result.evaluation
+        rag_validation = self.result_validator.validate_rag(retrieval_evaluation)
+        policy = self.answer_policy_router.decide(query_type, retrieval_evaluation)
+        if rag_result.chunks and not retrieval_evaluation.insufficient_context:
+            answer, answer_usage = limit_answer(self._format_notice_direct_answer(rag_result.chunks))
+            return ChatResponse(
+                answer=answer,
+                intent=intent,
+                query_type=query_type,
+                answer_policy='NOTICE_DB_DIRECT',
+                references=rag_result.references,
+                usage={
+                    **answer_usage,
+                    'mode': 'notice_db_direct',
+                    'retrieval': retrieval_evaluation.__dict__,
+                    **rag_validation.as_usage(),
+                    'extracted_date': self._format_extracted_date(parsed_query),
+                    'server_verified_route': VerifiedRoute.RAG,
+                    'server_verified_reason': 'notice_question',
+                    'llm_tokens': 0,
+                },
+            )
+        if not policy.use_llm:
+            return ChatResponse(
+                answer=official_no_context_answer(),
+                intent=intent,
+                query_type=query_type,
+                answer_policy=policy.answer_policy,
+                references=[],
+                usage={
+                    'mode': 'notice_rag_no_context',
+                    'retrieval': retrieval_evaluation.__dict__,
+                    **rag_validation.as_usage(),
+                    'server_verified_route': VerifiedRoute.RAG,
+                    'server_verified_reason': 'notice_question',
+                },
+            )
+
+        chunks_for_prompt = [] if retrieval_evaluation.insufficient_context else rag_result.chunks
+        prompt_result = self._build_prompt(
+            request=request,
+            intent=intent,
+            query_type=query_type,
+            chunks=chunks_for_prompt,
+            retrieval_evaluation=retrieval_evaluation,
+            answer_policy=policy.answer_policy,
+            fallback_prefix=policy.fallback_prefix,
+            parsed_query=parsed_query,
+        )
+        llm_response = self.llm.complete(prompt_result.messages)
+        answer, answer_usage = limit_answer(llm_response['answer'])
+        return ChatResponse(
+            answer=answer,
+            intent=intent,
+            query_type=query_type,
+            answer_policy=policy.answer_policy,
+            references=rag_result.references if policy.use_references else [],
+            usage={
+                **llm_response.get('usage', {}),
+                **answer_usage,
+                'mode': 'notice_rag',
+                'retrieval': retrieval_evaluation.__dict__,
+                **rag_validation.as_usage(),
+                'extracted_date': self._format_extracted_date(parsed_query),
+                'prompt': prompt_result.metadata,
+                'server_verified_route': VerifiedRoute.RAG,
+                'server_verified_reason': 'notice_question',
+            },
+        )
+
+
+    def _format_notice_direct_answer(self, chunks) -> str:
+        lines = ['확인된 최신 공지는 다음과 같아요.']
+        for index, chunk in enumerate(chunks[:4], start=1):
+            metadata = chunk.metadata or {}
+            date_text = self._notice_display_date(metadata)
+            title = self._clean_notice_title(chunk.title)
+            suffix = f' ({date_text})' if date_text else ''
+            lines.append(f'{index}. {title}{suffix}')
+        if len(chunks) > 4:
+            lines.append(f'외 {len(chunks) - 4}개 공지가 더 있어요.')
+        return '\n'.join(lines)
+
+    def _notice_display_date(self, metadata: dict) -> str:
+        value = str(
+            metadata.get('published_at')
+            or metadata.get('posted_at')
+            or metadata.get('source_published_at')
+            or metadata.get('date')
+            or ''
+        ).strip()
+        if not value:
+            return ''
+        for fmt in ('%Y.%m.%d %H:%M', '%Y.%m.%d', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+            try:
+                parsed = datetime.strptime(value, fmt)
+                return f'{parsed.year}년 {parsed.month}월 {parsed.day}일'
+            except ValueError:
+                continue
+        return value
+
+    def _clean_notice_title(self, title: str) -> str:
+        title = re.sub(r'\s+', ' ', (title or '').strip())
+        return title or '제목 없는 공지'
 
 
     def _llm_intent_general_response(self, request: ChatRequest, parsed_query, filters: dict, query_type: str):
@@ -1097,7 +1212,11 @@ class ChatPipeline:
                     'extracted_date': self._format_extracted_date(parsed_query),
                 },
             )
-        answer, answer_usage = limit_answer(self._format_schedule_answer(parsed_query, format_result))
+        if self._is_exam_timeline_query(parsed_query):
+            answer_text = self._format_exam_timeline_answer(parsed_query, format_result)
+        else:
+            answer_text = self._format_schedule_answer(parsed_query, format_result)
+        answer, answer_usage = limit_answer(answer_text)
         memory_payload = self._schedule_memory_payload(parsed_query, format_result)
         return ChatResponse(
             answer=answer,
@@ -1206,6 +1325,36 @@ class ChatPipeline:
         visible_count = len(regular_events) + len(long_events)
         if total_count > visible_count:
             lines.append(f'\uc678 {total_count - visible_count}\uac74\uc740 \uce98\ub9b0\ub354\uc5d0\uc11c \ud655\uc778\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4.')
+        return '\n'.join(lines)
+
+    def _is_exam_timeline_query(self, parsed_query) -> bool:
+        return getattr(parsed_query, 'display_label', '') == '과목평가/월말평가 일정'
+
+    def _format_exam_timeline_answer(self, parsed_query, format_result) -> str:
+        events = [*format_result.regular_events, *format_result.long_events]
+        events.sort(key=lambda event: event.start_at or '')
+        today_text = datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y-%m-%d')
+        past_events = [event for event in events if (event.start_at or '')[:10] < today_text]
+        upcoming_events = [event for event in events if (event.start_at or '')[:10] >= today_text]
+
+        lines = [self.response_style.schedule_header(parsed_query.display_label, format_result.cleaned_count)]
+        lines.append('지난 평가 일정')
+        if past_events:
+            for index, event in enumerate(past_events[-4:], start=1):
+                lines.append(self._format_schedule_event_line(index, event))
+        else:
+            lines.append('- 확인된 지난 평가 일정이 없습니다.')
+
+        lines.append('앞으로 남은 평가 일정')
+        if upcoming_events:
+            for index, event in enumerate(upcoming_events[:4], start=1):
+                lines.append(self._format_schedule_event_line(index, event))
+        else:
+            lines.append('- 확인된 남은 평가 일정이 없습니다.')
+
+        hidden_count = max(len(past_events) - 4, 0) + max(len(upcoming_events) - 4, 0)
+        if hidden_count:
+            lines.append(f'외 {hidden_count}건은 캘린더에서 확인할 수 있습니다.')
         return '\n'.join(lines)
 
     def _format_schedule_event_line(self, index: int, event) -> str:

@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     lora_temperature: float = Field(default=0.2, alias='LORA_TEMPERATURE')
     lora_top_p: float = Field(default=0.85, alias='LORA_TOP_P')
     lora_repetition_penalty: float = Field(default=1.2, alias='LORA_REPETITION_PENALTY')
+    lora_preload_on_startup: bool = Field(default=True, alias='LORA_PRELOAD_ON_STARTUP')
 
     class Config:
         env_file = '.env'

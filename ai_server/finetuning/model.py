@@ -62,16 +62,17 @@ def generate_response(
     if isinstance(im_end_id, int) and im_end_id >= 0 and im_end_id not in eos_token_ids:
         eos_token_ids.append(im_end_id)
 
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        do_sample=temperature > 0,
-        repetition_penalty=repetition_penalty,
-        no_repeat_ngram_size=no_repeat_ngram_size,
-        eos_token_id=eos_token_ids or tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
-    )
+    with torch.inference_mode():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=temperature > 0,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            eos_token_id=eos_token_ids or tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
     new_tokens = outputs[0][inputs["input_ids"].shape[-1] :]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)

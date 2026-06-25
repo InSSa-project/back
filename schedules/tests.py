@@ -1336,6 +1336,66 @@ class ScheduleEventApiTests(TestCase):
         self.assertEqual(event.metadata_json['track_key'], 'meister')
         self.assertEqual(event.metadata_json['audience']['track_key'], 'meister')
         self.assertFalse(event.metadata_json['is_common'])
+
+    def test_backfill_schedule_event_tracks_corrects_generic_track_label(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='5\uc6d4 3\uc8fc\ucc28 Embedded Robot \ud2b8\ub799 \uc2dc\uac04\ud45c',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'SW/AI'}, 'track': 'SW/AI'},
+        )
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'embedded_robot')
+        self.assertEqual(event.metadata_json['track'], 'embedded_robot')
+        self.assertEqual(event.metadata_json['audience']['track_key'], 'embedded_robot')
+        self.assertFalse(event.metadata_json['is_common'])
+
+    def test_backfill_schedule_event_tracks_marks_whole_schedule_as_common(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 6, 1, 9, 0))
+        raw_data = RawSsafyData.objects.create(
+            source_type='notice',
+            title='[\ud559\uc2b5] 15\uae30 1\ud559\uae30 \uc804\uccb4 \uc77c\uc815',
+            raw_text='body',
+        )
+        event = ScheduleEvent.objects.create(
+            raw_data=raw_data,
+            title='\uad00\ud1b5 \ud504\ub85c\uc81d\ud2b8 \uc9d1\uc911\uae30\uac04',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {}},
+        )
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'all')
+        self.assertTrue(event.metadata_json['is_common'])
+        self.assertEqual(event.metadata_json['audience']['track_key'], 'all')
+
+    def test_backfill_schedule_event_tracks_preserves_existing_canonical_track(self):
+        start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
+        event = ScheduleEvent.objects.create(
+            title='Java(\uc804\uacf5) \ud2b8\ub799 \uc2dc\uac04\ud45c',
+            start_at=start_at,
+            end_at=start_at + timedelta(hours=1),
+            event_type='study',
+            source_type='notice',
+            metadata_json={'audience': {'track': 'python', 'track_key': 'python'}, 'track_key': 'python'},
+        )
+
+        call_command('backfill_schedule_event_tracks', '--apply', stdout=StringIO())
+        event.refresh_from_db()
+
+        self.assertEqual(event.metadata_json['track_key'], 'python')
+
     def test_profile_filter_keeps_unrestricted_events_and_matching_audience(self):
         start_at = timezone.make_aware(timezone.datetime(2026, 5, 20, 9, 0))
         unrestricted = ScheduleEvent.objects.create(

@@ -11,7 +11,13 @@ from sync.services.schedule_identity import (
     ensure_raw_identity_metadata,
     extracted_date_range_for_schedule,
 )
-from sync.services.tracks import COMMON_TRACK_KEY, common_track_metadata, normalize_track_key, track_key_from_text
+from sync.services.tracks import (
+    COMMON_TRACK_KEY,
+    canonical_track_keys,
+    common_track_metadata,
+    normalize_track_key,
+    track_key_from_text,
+)
 
 
 AUDIENCE_METADATA_KEYS = ('track', 'generation', 'class_number', 'campus')
@@ -32,6 +38,26 @@ CALENDAR_HIDDEN_SOURCE_TYPES = {
 CALENDAR_HIDDEN_EVENT_TYPES = {'mentoring'}
 CALENDAR_HIDDEN_URL_MARKERS = ('mento', 'mentor')
 logger = logging.getLogger(__name__)
+CANONICAL_TRACK_KEYS = set(canonical_track_keys())
+
+TRACK_INFERENCE_PATTERNS = (
+    ('embedded_robot', (r'embedded\s*robot', r'\uc784\ubca0\ub514\ub4dc\s*\ub85c\ubd07', r'\uc784\ubca0\ub514\ub4dc\ub85c\ubd07')),
+    ('java_non_major', (r'java\s*\(\s*\ube44\uc804\uacf5\s*\)', r'java\s*\ube44\uc804\uacf5', r'\ube44\uc804\uacf5')),
+    ('java_major', (r'java\s*\(\s*\uc804\uacf5\s*\)', r'java\s*\uc804\uacf5')),
+    ('embedded', (r'embedded', r'\uc784\ubca0\ub514\ub4dc')),
+    ('mobile', (r'mobile', r'\ubaa8\ubc14\uc77c')),
+    ('python', (r'python', r'\ud30c\uc774\uc36c')),
+    ('data', (r'\bdata\b', r'\ub370\uc774\ud130')),
+    ('meister', (r'meister', r'\ub9c8\uc774\uc2a4\ud130\uace0', r'\ub9c8\uc774\uc2a4\ud130')),
+)
+COMMON_TRACK_TEXT_PATTERNS = (
+    r'\uc804\uccb4\s*\uc77c\uc815',
+    r'\uacf5\ud1b5',
+    r'\uc804\s*\uacfc\uc815',
+    r'\uc628\ub77c\uc778\s*\uc704\ud06c',
+    r'\uad00\ud1b5\s*(pjt|pj|project|\ud504\ub85c\uc81d\ud2b8)',
+    r'\uc6d4\ub9d0\ud3c9\uac00',
+)
 
 
 def build_event_metadata_from_raw_data(raw_data):
@@ -74,6 +100,114 @@ def build_generated_event_metadata(raw_data, schedule):
     if warnings:
         metadata['parser_warnings'] = warnings
     return metadata
+
+
+def infer_schedule_event_track_metadata(event, *, override=False):
+    """Return normalized track metadata for one ScheduleEvent.
+
+    Existing canonical track labels are preserved by default. Generic labels
+    such as SW/AI or AI are treated as weak hints and can be corrected from
+    event/source titles.
+    """
+    metadata = dict(getattr(event, 'metadata_json', None) or {})
+    audience = dict(metadata.get('audience') or {})
+    current_track = _metadata_track_key(metadata, audience)
+
+    if current_track in CANONICAL_TRACK_KEYS and not override:
+        return metadata, False, {
+            'track_key': current_track,
+            'is_common': False,
+            'reason': 'existing_canonical',
+        }
+
+    candidates = _track_inference_candidates(event, metadata)
+    inferred_track = _infer_canonical_track_from_candidates(candidates)
+    if inferred_track in CANONICAL_TRACK_KEYS:
+        return _with_track_metadata(metadata, inferred_track, is_common=False), True, {
+            'track_key': inferred_track,
+            'is_common': False,
+            'reason': 'title_inferred',
+        }
+
+    if _looks_common_schedule(event, metadata, current_track, candidates):
+        return _with_track_metadata(metadata, COMMON_TRACK_KEY, is_common=True), True, {
+            'track_key': COMMON_TRACK_KEY,
+            'is_common': True,
+            'reason': 'common_inferred',
+        }
+
+    return metadata, False, {
+        'track_key': current_track,
+        'is_common': current_track == COMMON_TRACK_KEY,
+        'reason': 'unresolved',
+    }
+
+
+def _with_track_metadata(metadata, track_key, *, is_common):
+    metadata = dict(metadata or {})
+    audience = dict(metadata.get('audience') or {})
+    metadata['track_key'] = track_key
+    metadata['track'] = track_key
+    metadata['is_common'] = bool(is_common)
+    audience['track_key'] = track_key
+    audience['track'] = track_key
+    metadata['audience'] = audience
+    return metadata
+
+
+def _metadata_track_key(metadata, audience):
+    return normalize_track_key(
+        metadata.get('track_key')
+        or audience.get('track_key')
+        or metadata.get('track')
+        or audience.get('track')
+    )
+
+
+def _track_inference_candidates(event, metadata):
+    raw_data = getattr(event, 'raw_data', None)
+    raw_metadata = getattr(raw_data, 'metadata_json', None) or {}
+    return [
+        getattr(event, 'title', ''),
+        metadata.get('display_title', ''),
+        metadata.get('raw_title', ''),
+        metadata.get('source_title', ''),
+        raw_metadata.get('title', ''),
+        getattr(raw_data, 'title', '') if raw_data is not None else '',
+    ]
+
+
+def _infer_canonical_track_from_candidates(candidates):
+    for candidate in candidates:
+        inferred = _infer_canonical_track_from_text(candidate)
+        if inferred in CANONICAL_TRACK_KEYS:
+            return inferred
+    return ''
+
+
+def _infer_canonical_track_from_text(text):
+    source = str(text or '')
+    inferred = normalize_track_key(track_key_from_text(source))
+    if inferred in CANONICAL_TRACK_KEYS:
+        return inferred
+    for track_key, patterns in TRACK_INFERENCE_PATTERNS:
+        for pattern in patterns:
+            if re.search(pattern, source, flags=re.IGNORECASE):
+                return track_key
+    return ''
+
+
+def _looks_common_schedule(event, metadata, current_track, candidates):
+    if metadata.get('is_common') is True or metadata.get('is_global') is True:
+        return True
+    if current_track == COMMON_TRACK_KEY:
+        return True
+    event_type = _normalize_source_value(getattr(event, 'event_type', ''))
+    source_type = _normalize_source_value(getattr(event, 'source_type', ''))
+    if event_type == 'holiday' or source_type in CALENDAR_HOLIDAY_SOURCE_TYPES:
+        return True
+    source_text = '\n'.join(str(candidate or '') for candidate in candidates)
+    return any(re.search(pattern, source_text, flags=re.IGNORECASE) for pattern in COMMON_TRACK_TEXT_PATTERNS)
 
 
 def _normalize_generated_track_metadata(metadata):

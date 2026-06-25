@@ -124,6 +124,11 @@ class DateExtractor:
         end = self.today + timedelta(days=days)
         return self.today.isoformat(), end.isoformat(), False
 
+    def surrounding_range(self, days_back: int = 365, days_forward: int = 365) -> tuple[str, str, bool]:
+        start = self.today - timedelta(days=days_back)
+        end = self.today + timedelta(days=days_forward)
+        return start.isoformat(), end.isoformat(), False
+
 
 class ScheduleQueryParser:
     SCHEDULE_WORDS = [
@@ -137,6 +142,17 @@ class ScheduleQueryParser:
         '\uc55e\uc73c\ub85c', '\uace7', '\ub2e4\uc74c\uc73c\ub85c',
     ]
     IMPORTANT_WORDS = ['\uc911\uc694', '\uae09\ud55c', '\uae34\uae09', '\uc6b0\uc120\uc21c\uc704', '\uc870\uc2ec']
+    PAST_TIMELINE_WORDS = ['지금까지', '있었던', '지난', '이전', '과거']
+    FUTURE_TIMELINE_WORDS = ['앞으로', '남은', '예정', '이후']
+    EVALUATION_WORDS = ['과목평가', '월말평가', '평가', '시험']
+    ADVICE_OVERRIDE_WORDS = [
+        '\ub9dd\ud588', '\ub9dd\uce5c', '\ub9dd\ud55c', '\ud68c\ubcf5', '\ubd88\uc548', '\ud798\ub4e4',
+        '\uba58\ud0c8', '\ud3ec\uae30', '\uc9c0\ucce4', '\ub5a8\uc5b4\uc84c', '\ubabb\ubd24',
+    ]
+    SCHEDULE_ASK_WORDS = [
+        '\uc77c\uc815', '\uc2a4\ucf00\uc904', '\uc5b8\uc81c', '\ub0a0\uc9dc', '\uba87\uc77c', '\uba87 \uc2dc',
+        '\uac00\uae4c\uc6b4', '\ub2e4\uac00\uc624\ub294', '\uc608\uc815',
+    ]
 
     def __init__(self, date_extractor: DateExtractor | None = None):
         self.date_extractor = date_extractor or DateExtractor()
@@ -149,6 +165,24 @@ class ScheduleQueryParser:
         has_notice_word = any(word in normalized for word in self.NOTICE_WORDS)
         has_upcoming_word = any(word in normalized for word in self.UPCOMING_WORDS) or any(word in compact for word in self.UPCOMING_WORDS)
         has_important_word = any(word in normalized for word in self.IMPORTANT_WORDS) or any(word in compact for word in self.IMPORTANT_WORDS)
+        has_past_timeline = any(word in normalized for word in self.PAST_TIMELINE_WORDS) or any(word in compact for word in self.PAST_TIMELINE_WORDS)
+        has_future_timeline = any(word in normalized for word in self.FUTURE_TIMELINE_WORDS) or any(word in compact for word in self.FUTURE_TIMELINE_WORDS)
+        has_evaluation_word = any(word in normalized for word in self.EVALUATION_WORDS) or any(word in compact for word in self.EVALUATION_WORDS)
+        has_advice_override = any(word in normalized for word in self.ADVICE_OVERRIDE_WORDS) or any(word in compact for word in self.ADVICE_OVERRIDE_WORDS)
+        asks_schedule = any(word in normalized for word in self.SCHEDULE_ASK_WORDS) or any(word.replace(' ', '') in compact for word in self.SCHEDULE_ASK_WORDS)
+
+        if has_schedule_word and has_advice_override and not start_date and not asks_schedule:
+            return ParsedQuery(ScheduleQueryType.GENERAL_CHAT)
+
+        if has_schedule_word and has_evaluation_word and has_past_timeline and has_future_timeline:
+            start_date, end_date, exact = self.date_extractor.surrounding_range()
+            return ParsedQuery(
+                ScheduleQueryType.SCHEDULE_RANGE,
+                start_date,
+                end_date,
+                exact,
+                display_label='과목평가/월말평가 일정',
+            )
 
         if start_date and exact and has_schedule_word:
             return ParsedQuery(ScheduleQueryType.SCHEDULE_EXACT_DATE, start_date, end_date, True)
