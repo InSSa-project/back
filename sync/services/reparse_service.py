@@ -28,6 +28,8 @@ class ReparseSummary:
     failed_count: int = 0
     replaced_event_count: int = 0
     protected_event_count: int = 0
+    coverage_warning_count: int = 0
+    coverage_warnings: list = None
     dry_run: bool = False
 
 
@@ -52,6 +54,19 @@ def reparse_raw_data_to_events(raw_data_queryset, dry_run=False, limit=None, rep
                 ocr_boxes=raw_data.ocr_boxes,
             )
             _store_review_required_candidates(raw_data, grid_debug)
+            coverage_warnings = (getattr(grid_debug, 'metadata_json', {}) or {}).get('coverage_warnings') or []
+            summary.coverage_warning_count += len(coverage_warnings)
+            if coverage_warnings:
+                if summary.coverage_warnings is None:
+                    summary.coverage_warnings = []
+                summary.coverage_warnings.extend(
+                    {
+                        'raw_data_id': raw_data.id,
+                        'source_title': raw_data.title,
+                        **warning,
+                    }
+                    for warning in coverage_warnings
+                )
         except Exception:
             summary.failed_count += 1
             continue
